@@ -114,27 +114,20 @@ constructor(
             require(
                 proposal.status == ProposalStatus.PENDING && proposal.expiresAt > clock.nowMillis()
             )
-            val canonical =
-                ProposalWire.decode<ApprovalRequest>(
-                        ProposalWire.canonical(
-                            ApprovalRequest(
-                                UUID.randomUUID().toString(),
-                                proposal.currentVersion,
-                                draft,
-                            )
-                        )
-                    )
-                    .draft
+            // An editor draft can be temporarily incomplete (for example after a type change).
+            // Only approval canonicalizes and validates a request for the server.
+            val draftJson = ProposalWire.json.encodeToString(draft)
+            require(draftJson.toByteArray().size <= ProposalWire.REQUEST_LIMIT)
             dao.saveDraft(
                 TrainingProposalDraftEntity(
                     owner,
                     proposal.proposalId,
                     proposal.currentVersion,
                     ProposalWire.json.encodeToString(proposal),
-                    ProposalWire.json.encodeToString(canonical),
+                    draftJson,
                 )
             )
-            editor.copy(draft = canonical)
+            editor.copy(draft = draft)
           }
         }
       }

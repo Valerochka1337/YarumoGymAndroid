@@ -492,63 +492,12 @@ private fun PlannedSetRow(
   Row(verticalAlignment = Alignment.CenterVertically) {
     SetNumberBadge(number)
     Spacer(Modifier.width(10.dp))
-    Row(
-        modifier = Modifier.weight(1f),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-      when (type) {
-        ExerciseType.STRENGTH -> {
-          NumberField(
-              value = set.weightKg.toField(),
-              onValueChange = { onChange(set.copy(weightKg = it.toDoubleOrNull())) },
-              modifier = Modifier.weight(1f),
-              label = "кг",
-              decimal = true,
-          )
-          NumberField(
-              value = set.reps.toField(),
-              onValueChange = { onChange(set.copy(reps = it.toIntOrNull())) },
-              modifier = Modifier.weight(1f),
-              label = "повт",
-          )
-        }
-
-        ExerciseType.TIMED -> {
-          NumberField(
-              value = set.durationSec.toField(),
-              onValueChange = { onChange(set.copy(durationSec = it.toIntOrNull())) },
-              modifier = Modifier.weight(1f),
-              label = "сек",
-          )
-        }
-
-        ExerciseType.CARDIO -> {
-          NumberField(
-              value = set.speedKmh.toField(),
-              onValueChange = { onChange(set.copy(speedKmh = it.toDoubleOrNull())) },
-              modifier = Modifier.weight(1f),
-              label = "км/ч",
-              decimal = true,
-          )
-          NumberField(
-              value = set.inclinePct.toField(),
-              onValueChange = { onChange(set.copy(inclinePct = it.toDoubleOrNull())) },
-              modifier = Modifier.weight(1f),
-              label = "накл",
-              decimal = true,
-          )
-          NumberField(
-              value = set.durationSec.minutesField(),
-              onValueChange = {
-                onChange(set.copy(durationSec = it.toIntOrNull()?.let { min -> min * 60 }))
-              },
-              modifier = Modifier.weight(1f),
-              label = "мин",
-          )
-        }
-      }
-    }
+    com.valerochka1337.valerochkagym.ui.components.PlannedSetFields(
+        type,
+        set,
+        onChange,
+        Modifier.weight(1f),
+    )
     IconButton(onClick = onRemove, enabled = canRemove) {
       Icon(
           Icons.Default.Close,

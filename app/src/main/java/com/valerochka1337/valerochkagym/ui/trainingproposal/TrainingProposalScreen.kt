@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Undo
 import androidx.compose.material.icons.rounded.*
@@ -40,8 +39,9 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.valerochka1337.valerochkagym.data.db.PlannedSet
+import com.valerochka1337.valerochkagym.data.db.entity.ExerciseType
 import com.valerochka1337.valerochkagym.data.trainingproposal.ApprovalDraft
 import com.valerochka1337.valerochkagym.data.trainingproposal.ProposalAuthor
 import com.valerochka1337.valerochkagym.data.trainingproposal.ProposalPlannedExercise
@@ -52,10 +52,14 @@ import com.valerochka1337.valerochkagym.data.trainingproposal.TrainingProposal
 import com.valerochka1337.valerochkagym.ui.components.ExerciseAvatar
 import com.valerochka1337.valerochkagym.ui.components.GymCard
 import com.valerochka1337.valerochkagym.ui.components.PillButton
-import com.valerochka1337.valerochkagym.ui.components.PlanningChoiceField
+import com.valerochka1337.valerochkagym.ui.components.PlannedSetFields
 import com.valerochka1337.valerochkagym.ui.components.PlanningChoiceSheet
 import com.valerochka1337.valerochkagym.ui.components.PlanningDateTimeFields
+import com.valerochka1337.valerochkagym.ui.components.PlanningDateTimeResolution
 import com.valerochka1337.valerochkagym.ui.components.PlanningScreen
+import com.valerochka1337.valerochkagym.ui.components.displayPlanningDateTime
+import com.valerochka1337.valerochkagym.ui.components.rememberDeviceTimeZone
+import com.valerochka1337.valerochkagym.ui.components.resolvePlanningDateTime
 import com.valerochka1337.valerochkagym.ui.haptics.gymHaptics
 import com.valerochka1337.valerochkagym.ui.theme.proposalApproved
 import com.valerochka1337.valerochkagym.ui.theme.proposalPending
@@ -211,6 +215,8 @@ fun TrainingProposalDetailContent(
     onReject: () -> Unit,
     onBack: () -> Unit,
     onRetry: () -> Unit,
+    exerciseTypes: Map<String, ExerciseType> = emptyMap(),
+    availableExerciseIds: Set<String> = exerciseChoices.map { it.first }.toSet(),
 ) {
   val haptics = gymHaptics()
   val invalidInputs =
@@ -219,7 +225,14 @@ fun TrainingProposalDetailContent(
       }
   var validationEpoch by
       remember(proposal?.proposalId, proposal?.currentVersion) { mutableStateOf(0) }
-  val transientInputInvalid = invalidInputs.values.any { it }
+  val transientInputInvalid =
+      invalidInputs.values.any { it } ||
+          draft?.exercises?.any { exercise ->
+            exercise.exerciseId !in availableExerciseIds ||
+                exerciseTypes[exercise.exerciseId]?.let { type ->
+                  exercise.plannedSets.any { it != it.forType(type) }
+                } == true
+          } == true
   var editing by
       rememberSaveable(proposal?.proposalId, proposal?.currentVersion) { mutableStateOf(false) }
   PlanningScreen(
@@ -255,27 +268,29 @@ fun TrainingProposalDetailContent(
       Text("Применено")
     }
 
-    Text(
-        if (editing) "Оригинал" else "План тренировки",
-        style = MaterialTheme.typography.titleMedium,
-    )
-    ProposalDraftSummary(
-        if (editing) proposal.snapshot.draft else draft,
-        exerciseChoices,
-        gymChoices,
-    )
+    if (!editing)
+        Text(
+            "План тренировки",
+            style = MaterialTheme.typography.titleMedium,
+        )
+    if (!editing)
+        ProposalDraftSummary(
+            draft,
+            exerciseChoices,
+            gymChoices,
+        )
 
     val canEdit = proposal.status == ProposalStatus.PENDING && !applied && !isExpired(proposal)
     if (canEdit) {
       TextButton(
           onClick = { editing = !editing },
-          enabled = !saving && (!editing || !transientInputInvalid),
+          enabled = !saving && (!editing || (!transientInputInvalid && isDraftValid(draft))),
       ) {
         Text(if (editing) "Завершить редактирование" else "Изменить план")
       }
     }
     if (canEdit && editing) {
-      GymCard(modifier = Modifier.fillMaxWidth()) {
+      Column(modifier = Modifier.fillMaxWidth()) {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
           Text("Изменённый план", style = MaterialTheme.typography.titleMedium)
           if (draft != proposal.snapshot.draft) {
@@ -286,6 +301,8 @@ fun TrainingProposalDetailContent(
             DraftEditor(
                 draft = draft,
                 exerciseChoices = exerciseChoices,
+                availableExerciseIds = availableExerciseIds,
+                exerciseTypes = exerciseTypes,
                 gymChoices = gymChoices,
                 onDraftChange = onDraftChange,
                 invalidInputs = invalidInputs,
@@ -502,6 +519,8 @@ private fun DraftEditor(
     invalidInputs: MutableMap<String, Boolean>,
     validationEpoch: Int,
     onExerciseInputsChanged: () -> Unit,
+    exerciseTypes: Map<String, ExerciseType> = emptyMap(),
+    availableExerciseIds: Set<String> = exerciseChoices.map { it.first }.toSet(),
 ) {
   fun setInvalid(key: String, invalid: Boolean) {
     invalidInputs[key] = invalid
@@ -545,21 +564,30 @@ private fun DraftEditor(
   }
 
   draft.exercises.forEachIndexed { exerciseIndex, exercise ->
-    ExerciseEditor(
-        exerciseIndex = exerciseIndex,
-        exercise = exercise,
-        allExercises = draft.exercises,
-        exerciseChoices = exerciseChoices,
-        onChange = { updated -> onDraftChange(draft.copy(exercises = updated)) },
-        onInvalid = { key, invalid -> setInvalid(key, invalid) },
-        validationEpoch = validationEpoch,
-        onSetRemoved = ::clearExerciseInputErrors,
-        onExerciseRemoved = ::clearExerciseInputErrors,
-    )
+    key(exercise.exerciseId) {
+      val fallbackType = rememberSaveable { exercise.inferredType().name }
+      ExerciseEditor(
+          exerciseType = exerciseTypes[exercise.exerciseId] ?: ExerciseType.valueOf(fallbackType),
+          exerciseTypes = exerciseTypes,
+          availableExerciseIds = availableExerciseIds,
+          exerciseIndex = exerciseIndex,
+          exercise = exercise,
+          allExercises = draft.exercises,
+          exerciseChoices = exerciseChoices,
+          onChange = { updated -> onDraftChange(draft.copy(exercises = updated)) },
+          onInvalid = { key, invalid -> setInvalid(key, invalid) },
+          validationEpoch = validationEpoch,
+          onSetRemoved = ::clearExerciseInputErrors,
+          onExerciseRemoved = ::clearExerciseInputErrors,
+      )
+    }
   }
 
   var addExercise by rememberSaveable { mutableStateOf(false) }
-  val available = exerciseChoices.filter { (id, _) -> draft.exercises.none { it.exerciseId == id } }
+  val available =
+      exerciseChoices.filter { (id, _) ->
+        id in availableExerciseIds && draft.exercises.none { it.exerciseId == id }
+      }
   TextButton(
       onClick = { addExercise = true },
       enabled = available.isNotEmpty() && draft.exercises.size < 30,
@@ -596,28 +624,26 @@ private fun DateTimeEditor(
     onDraftChange: (ApprovalDraft) -> Unit,
     onInvalid: (Boolean) -> Unit,
 ) {
-  val zone = runCatching { ZoneId.of(draft.timeZoneId) }.getOrDefault(ZoneId.of("UTC"))
-  val local = Instant.ofEpochMilli(draft.startsAtMillis).atZone(zone).toLocalDateTime()
-  var invalidTime by
-      rememberSaveable(draft.startsAtMillis, draft.timeZoneId) { mutableStateOf(false) }
+  val zone = rememberDeviceTimeZone()
+  val local = displayPlanningDateTime(draft.startsAtMillis, zone)
+  var invalidTime by rememberSaveable(draft.startsAtMillis, zone.id) { mutableStateOf(false) }
   LaunchedEffect(invalidTime) { onInvalid(invalidTime) }
-  fun update(value: LocalDateTime, newZone: ZoneId = zone) {
-    invalidTime = newZone.rules.getValidOffsets(value).isEmpty()
-    if (!invalidTime)
+  fun update(date: String = local.date, time: String = local.time) {
+    val currentZone = ZoneId.systemDefault()
+    val result = resolvePlanningDateTime(date, time, currentZone, draft.startsAtMillis)
+    invalidTime = result !is PlanningDateTimeResolution.Resolved
+    if (result is PlanningDateTimeResolution.Resolved)
         onDraftChange(
-            draft.copy(
-                startsAtMillis = value.atZone(newZone).toInstant().toEpochMilli(),
-                timeZoneId = newZone.id,
-            )
+            draft.copy(startsAtMillis = result.instantMillis, timeZoneId = currentZone.id)
         )
   }
   PlanningDateTimeFields(
-      local.toLocalDate().toString(),
-      local.toLocalTime().toString(),
-      draft.timeZoneId,
-      { update(java.time.LocalDate.parse(it).atTime(local.toLocalTime())) },
-      { update(local.toLocalDate().atTime(java.time.LocalTime.parse(it))) },
-      { update(local, ZoneId.of(it)) },
+      local.date,
+      local.time,
+      zone.id,
+      { update(date = it) },
+      { update(time = it) },
+      {},
   )
   if (invalidTime)
       Text(
@@ -628,6 +654,9 @@ private fun DateTimeEditor(
 
 @Composable
 private fun ExerciseEditor(
+    exerciseType: ExerciseType,
+    exerciseTypes: Map<String, ExerciseType>,
+    availableExerciseIds: Set<String>,
     exerciseIndex: Int,
     exercise: ProposalPlannedExercise,
     allExercises: List<ProposalPlannedExercise>,
@@ -640,32 +669,58 @@ private fun ExerciseEditor(
 ) {
   GymCard(modifier = Modifier.fillMaxWidth()) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-      Text("Упражнение ${exerciseIndex + 1}", style = MaterialTheme.typography.titleSmall)
-      PlanningChoiceField(
-          title = exerciseChoices.nameFor(exercise.exerciseId) ?: "Выбрать упражнение",
-          choices =
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        ExerciseAvatar(
+            name = exerciseChoices.nameFor(exercise.exerciseId) ?: "Недоступное упражнение",
+            type = exerciseType,
+        )
+        Text(
+            exerciseChoices.nameFor(exercise.exerciseId) ?: "Недоступное упражнение",
+            Modifier.weight(1f).padding(start = 12.dp),
+            style = MaterialTheme.typography.titleMedium,
+        )
+      }
+      if (exercise.exerciseId !in availableExerciseIds)
+          Text(
+              "Упражнение недоступно в выбранных залах. Замените его или измените залы.",
+              color = MaterialTheme.colorScheme.error,
+          )
+      var replacing by rememberSaveable { mutableStateOf(false) }
+      TextButton(onClick = { replacing = true }) { Text("Заменить") }
+      if (replacing)
+          PlanningChoiceSheet(
+              "Заменить упражнение",
               exerciseChoices.filter { (id, _) ->
-                id == exercise.exerciseId || allExercises.none { it.exerciseId == id }
+                id in availableExerciseIds && allExercises.none { it.exerciseId == id }
               },
-          selected = setOf(exercise.exerciseId),
-          onToggle = { id ->
-            onChange(allExercises.replaceAt(exerciseIndex, exercise.copy(exerciseId = id)))
-          },
-          singleChoice = true,
-      )
+              emptySet(),
+              { id ->
+                val type = exerciseTypes[id] ?: exerciseType
+                onSetRemoved()
+                onChange(
+                    allExercises.replaceAt(exerciseIndex, exercise.replacingExercise(id, type))
+                )
+              },
+              { replacing = false },
+              singleChoice = true,
+          )
 
-      IntField(
+      com.valerochka1337.valerochkagym.ui.components.NumberField(
+          value = exercise.restSeconds?.toString().orEmpty(),
           label = "Отдых, сек",
-          value = exercise.restSeconds,
-          key = "rest-$exerciseIndex",
-          onInvalid = onInvalid,
-          validationEpoch = validationEpoch,
-          onChange = { value ->
-            onChange(allExercises.replaceAt(exerciseIndex, exercise.copy(restSeconds = value)))
+          modifier = Modifier.fillMaxWidth(),
+          onValueChange = { value ->
+            onChange(
+                allExercises.replaceAt(
+                    exerciseIndex,
+                    exercise.copy(restSeconds = value.toIntOrNull()),
+                )
+            )
           },
       )
       exercise.plannedSets.forEachIndexed { setIndex, plannedSet ->
         SetEditor(
+            exerciseType = exerciseType,
             exerciseIndex = exerciseIndex,
             setIndex = setIndex,
             plannedSet = plannedSet,
@@ -690,6 +745,7 @@ private fun ExerciseEditor(
         )
       }
       TextButton(
+          enabled = exercise.plannedSets.size < 20,
           onClick = {
             onChange(
                 allExercises.replaceAt(
@@ -737,6 +793,7 @@ private fun ExerciseEditor(
 
 @Composable
 private fun SetEditor(
+    exerciseType: ExerciseType,
     exerciseIndex: Int,
     setIndex: Int,
     plannedSet: ProposalPlannedSet,
@@ -746,159 +803,28 @@ private fun SetEditor(
     onRemove: () -> Unit,
 ) {
   Text("Подход ${setIndex + 1}", style = MaterialTheme.typography.titleSmall)
-  var timed by
-      rememberSaveable(exerciseIndex, setIndex, validationEpoch) {
-        mutableStateOf(
-            plannedSet.durationSec != null ||
-                plannedSet.speedKmh != null ||
-                plannedSet.inclinePct != null
-        )
-      }
-  // Reordering/removing exercises may reuse a position with a different set type.
-  // A temporarily empty duration must keep the current editor visible.
-  LaunchedEffect(
-      plannedSet.reps,
-      plannedSet.weightKg,
-      plannedSet.durationSec,
-      plannedSet.speedKmh,
-      plannedSet.inclinePct,
-  ) {
-    if (
-        plannedSet.durationSec != null ||
-            plannedSet.speedKmh != null ||
-            plannedSet.inclinePct != null
-    )
-        timed = true
-    else if (plannedSet.reps != null || plannedSet.weightKg != null) timed = false
-  }
-  FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-    listOf(false to "Повторения", true to "На время").forEach { (isTimed, label) ->
-      FilterChip(
-          selected = timed == isTimed,
-          onClick = {
-            if (timed != isTimed) {
-              timed = isTimed
-              listOf("weight", "reps", "duration", "speed", "incline").forEach {
-                onInvalid("$it-$exerciseIndex-$setIndex", false)
-              }
-              onChange(
-                  if (isTimed) ProposalPlannedSet(null, null, 60, null, null)
-                  else ProposalPlannedSet(null, 10, null, null, null)
-              )
-            }
-          },
-          label = { Text(label) },
-      )
-    }
-  }
-  if (!timed) {
-    DecimalField(
-        label = "Вес подхода ${setIndex + 1}, кг",
-        value = plannedSet.weightKg,
-        key = "weight-$exerciseIndex-$setIndex",
-        onInvalid = onInvalid,
-        validationEpoch = validationEpoch,
-        onChange = { onChange(plannedSet.copy(weightKg = it)) },
-    )
-    IntField(
-        label = "Повторы подхода ${setIndex + 1}",
-        value = plannedSet.reps,
-        key = "reps-$exerciseIndex-$setIndex",
-        onInvalid = onInvalid,
-        validationEpoch = validationEpoch,
-        onChange = { onChange(plannedSet.copy(reps = it)) },
-    )
-  } else {
-    IntField(
-        label = "Длительность подхода ${setIndex + 1}, сек",
-        value = plannedSet.durationSec,
-        key = "duration-$exerciseIndex-$setIndex",
-        onInvalid = onInvalid,
-        validationEpoch = validationEpoch,
-        onChange = { onChange(plannedSet.copy(durationSec = it)) },
-    )
-    DecimalField(
-        label = "Скорость подхода ${setIndex + 1}, км/ч",
-        value = plannedSet.speedKmh,
-        key = "speed-$exerciseIndex-$setIndex",
-        onInvalid = onInvalid,
-        validationEpoch = validationEpoch,
-        onChange = { onChange(plannedSet.copy(speedKmh = it)) },
-    )
-    DecimalField(
-        label = "Наклон подхода ${setIndex + 1}, %",
-        value = plannedSet.inclinePct,
-        key = "incline-$exerciseIndex-$setIndex",
-        onInvalid = onInvalid,
-        validationEpoch = validationEpoch,
-        onChange = { onChange(plannedSet.copy(inclinePct = it)) },
+  key(validationEpoch, setIndex) {
+    PlannedSetFields(
+        exerciseType,
+        PlannedSet(
+            plannedSet.weightKg,
+            plannedSet.reps,
+            plannedSet.durationSec,
+            plannedSet.speedKmh,
+            plannedSet.inclinePct,
+        ),
+        {
+          onChange(
+              ProposalPlannedSet(it.weightKg, it.reps, it.durationSec, it.speedKmh, it.inclinePct)
+          )
+        },
+        Modifier.fillMaxWidth(),
+        number = setIndex + 1,
     )
   }
   TextButton(onClick = onRemove, modifier = Modifier.heightIn(min = 48.dp)) {
     Text("Удалить подход")
   }
-}
-
-@Composable
-private fun IntField(
-    label: String,
-    value: Int?,
-    key: String,
-    onInvalid: (String, Boolean) -> Unit,
-    validationEpoch: Int,
-    onChange: (Int?) -> Unit,
-) {
-  var text by rememberSaveable(key, value) { mutableStateOf(value?.toString().orEmpty()) }
-  val invalid = text.isNotBlank() && text.toIntOrNull() == null
-  LaunchedEffect(key, text, validationEpoch) { onInvalid(key, invalid) }
-  OutlinedTextField(
-      value = text,
-      onValueChange = {
-        text = it
-        val parsed = it.toIntOrNull()
-        if (it.isBlank() || parsed != null) onChange(parsed)
-      },
-      modifier = Modifier.fillMaxWidth(),
-      label = { Text(label) },
-      singleLine = true,
-      keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-      isError = invalid,
-      supportingText =
-          if (invalid) {
-            { Text("Введите целое число") }
-          } else null,
-  )
-}
-
-@Composable
-private fun DecimalField(
-    label: String,
-    value: Double?,
-    key: String,
-    onInvalid: (String, Boolean) -> Unit,
-    validationEpoch: Int,
-    onChange: (Double?) -> Unit,
-) {
-  var text by rememberSaveable(key, value) { mutableStateOf(value?.toString().orEmpty()) }
-  val invalid = text.isNotBlank() && text.replace(',', '.').toDoubleOrNull() == null
-  LaunchedEffect(key, text, validationEpoch) { onInvalid(key, invalid) }
-  OutlinedTextField(
-      value = text,
-      onValueChange = {
-        text = it
-        val parsed = it.replace(',', '.').toDoubleOrNull()
-        if (it.isBlank() || parsed != null) onChange(parsed)
-      },
-      modifier = Modifier.fillMaxWidth(),
-      label = { Text(label) },
-      singleLine = true,
-      keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-      isError = invalid,
-      supportingText =
-          if (invalid) {
-            { Text("Введите число") }
-          } else null,
-  )
 }
 
 private fun emptyPlannedSet() = ProposalPlannedSet(null, null, null, null, null)
@@ -962,9 +888,14 @@ private fun statusLabel(status: ProposalStatus): String =
 private fun isExpired(proposal: TrainingProposal): Boolean =
     proposal.expiresAt <= System.currentTimeMillis()
 
+@Composable
 private fun formatStart(startsAtMillis: Long, timeZoneId: String): String {
-  val zone = runCatching { ZoneId.of(timeZoneId) }.getOrElse { ZoneId.of("UTC") }
-  return "${Instant.ofEpochMilli(startsAtMillis).atZone(zone).format(DateTimeFormatter.ofPattern("d MMM yyyy, HH:mm", java.util.Locale.forLanguageTag("ru")))} ($timeZoneId)"
+  val zone = rememberDeviceTimeZone()
+  return Instant.ofEpochMilli(startsAtMillis)
+      .atZone(zone)
+      .format(
+          DateTimeFormatter.ofPattern("d MMM yyyy, HH:mm", java.util.Locale.forLanguageTag("ru"))
+      )
 }
 
 private fun formatEditableStart(startsAtMillis: Long, timeZoneId: String): String {
@@ -1005,10 +936,20 @@ fun ProposalDraftForm(
     gymChoices: List<Pair<String, String>>,
     onDraftChange: (ApprovalDraft) -> Unit,
     onValidity: (Boolean) -> Unit,
+    exerciseTypes: Map<String, ExerciseType> = emptyMap(),
 ) {
   val invalid = remember { mutableStateMapOf<String, Boolean>() }
   var epoch by remember { mutableStateOf(0) }
   val valid = invalid.values.none { it } && isDraftValid(draft)
   LaunchedEffect(valid) { onValidity(valid) }
-  DraftEditor(draft, exerciseChoices, gymChoices, onDraftChange, invalid, epoch, { epoch++ })
+  DraftEditor(
+      draft,
+      exerciseChoices,
+      gymChoices,
+      onDraftChange,
+      invalid,
+      epoch,
+      { epoch++ },
+      exerciseTypes,
+  )
 }

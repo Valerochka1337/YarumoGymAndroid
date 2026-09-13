@@ -3,15 +3,19 @@ package com.valerochka1337.valerochkagym.ui.calendarai
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import com.valerochka1337.valerochkagym.data.RoomDaoTest
+import com.valerochka1337.valerochkagym.data.ai.CalendarAiIntent
 import com.valerochka1337.valerochkagym.data.ai.CalendarAiRepository
 import com.valerochka1337.valerochkagym.data.backend.*
 import com.valerochka1337.valerochkagym.data.profile.AiProfilePromptGate
 import com.valerochka1337.valerochkagym.data.settings.SettingsRepository
+import com.valerochka1337.valerochkagym.data.trainingproposal.ProposalWire
 import com.valerochka1337.valerochkagym.domain.*
 import com.valerochka1337.valerochkagym.service.WallClock
 import com.valerochka1337.valerochkagym.util.MainDispatcherRule
+import java.util.TimeZone
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.test.*
@@ -23,7 +27,10 @@ import org.junit.Test
 class CalendarAiViewModelTest : RoomDaoTest() {
   @get:Rule val mainDispatcherRule = MainDispatcherRule()
 
-  private suspend fun vm(sessions: Sessions = Sessions()): CalendarAiViewModel {
+  private suspend fun vm(
+      sessions: Sessions = Sessions(),
+      savedStateHandle: SavedStateHandle = SavedStateHandle(),
+  ): CalendarAiViewModel {
     val api = Server()
     val clock = WallClock { 100L }
     val source =
@@ -48,6 +55,7 @@ class CalendarAiViewModelTest : RoomDaoTest() {
         clock,
         TestExercises(db.exerciseDao()),
         TestGyms(db.gymDao()),
+        savedStateHandle,
     )
   }
 
@@ -105,6 +113,131 @@ class CalendarAiViewModelTest : RoomDaoTest() {
         advanceUntilIdle()
         assertEquals("", viewModel.uiState.value.form.preferences)
         viewModel.viewModelScope.cancel()
+      }
+
+  @Test
+  fun `form survives process recreation for the same owner and session`() =
+      runTest(mainDispatcherRule.testDispatcher.scheduler) {
+        val savedStateHandle = SavedStateHandle()
+        val first = vm(savedStateHandle = savedStateHandle)
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { first.uiState.collect {} }
+        advanceUntilIdle()
+        first.setDate("1970-01-03")
+        first.setTime("19:30")
+        first.setDuration("75")
+        first.setPreferences("Без прыжков")
+        first.viewModelScope.cancel()
+
+        val restored = vm(savedStateHandle = savedStateHandle)
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+          restored.uiState.collect {}
+        }
+        advanceUntilIdle()
+
+        assertEquals("1970-01-03", restored.uiState.value.form.date)
+        assertEquals("19:30", restored.uiState.value.form.time)
+        assertEquals("75", restored.uiState.value.form.availableDurationMinutes)
+        assertEquals("Без прыжков", restored.uiState.value.form.preferences)
+        restored.viewModelScope.cancel()
+      }
+
+  @Test
+  fun `restored form is cleared when its owner no longer matches the session`() =
+      runTest(mainDispatcherRule.testDispatcher.scheduler) {
+        val sessions = Sessions()
+        val savedStateHandle = SavedStateHandle()
+        val first = vm(sessions, savedStateHandle)
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { first.uiState.collect {} }
+        advanceUntilIdle()
+        first.setPreferences("Только для первого аккаунта")
+        first.viewModelScope.cancel()
+        sessions.save(BackendTokens("other", "", "", ""))
+
+        val restored = vm(sessions, savedStateHandle)
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+          restored.uiState.collect {}
+        }
+        advanceUntilIdle()
+
+        assertEquals("", restored.uiState.value.form.preferences)
+        restored.viewModelScope.cancel()
+      }
+
+  @Test
+  fun `future date and duration errors explain the invalid field`() =
+      runTest(mainDispatcherRule.testDispatcher.scheduler) {
+        val viewModel = vm()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+          viewModel.uiState.collect {}
+        }
+        advanceUntilIdle()
+
+        viewModel.setDate("1969-12-30")
+        viewModel.generate()
+        assertEquals("Выберите будущие дату и время.", viewModel.uiState.value.error)
+
+        viewModel.setDate("1970-01-03")
+        viewModel.setDuration("9")
+        viewModel.generate()
+        assertEquals("Укажите длительность от 10 до 240 минут.", viewModel.uiState.value.error)
+        viewModel.viewModelScope.cancel()
+      }
+
+  @Test
+  fun `generation retains its saved instant when the device zone changes before UI synchronization`() =
+      runTest(mainDispatcherRule.testDispatcher.scheduler) {
+        val originalZone = TimeZone.getDefault()
+        TimeZone.setDefault(TimeZone.getTimeZone("UTC"))
+        val viewModel = vm()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+          viewModel.uiState.collect {}
+        }
+        advanceUntilIdle()
+        val savedEvent = CompletableDeferred<Long>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+          viewModel.saved.collect { savedEvent.complete(it) }
+        }
+        val expectedInstant = checkNotNull(viewModel.uiState.value.form.preservedInstantMillis)
+        try {
+          TimeZone.setDefault(TimeZone.getTimeZone("Europe/Berlin"))
+          viewModel.generate()
+          advanceUntilIdle()
+          savedEvent.await()
+
+          val saved = checkNotNull(db.preparationDao().get("owner"))
+          val intent = ProposalWire.json.decodeFromString<CalendarAiIntent>(saved.intentJson)
+          assertEquals(expectedInstant, intent.startsAtMillis)
+          assertEquals("Europe/Berlin", intent.timeZoneId)
+        } finally {
+          TimeZone.setDefault(originalZone)
+          viewModel.viewModelScope.cancel()
+        }
+      }
+
+  @Test
+  fun `form survives a process epoch reset when its owner remains the same`() =
+      runTest(mainDispatcherRule.testDispatcher.scheduler) {
+        val savedStateHandle = SavedStateHandle()
+        val activeSessions = Sessions()
+        activeSessions.save(BackendTokens("owner", "", "", ""))
+        val first = vm(activeSessions, savedStateHandle)
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { first.uiState.collect {} }
+        advanceUntilIdle()
+        first.setPreferences("Сохранить после перезапуска")
+        first.viewModelScope.cancel()
+        savedStateHandle["calendar_ai_form_process_token"] = "new-process"
+
+        val afterProcessDeath = vm(Sessions(), savedStateHandle)
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+          afterProcessDeath.uiState.collect {}
+        }
+        advanceUntilIdle()
+
+        assertEquals(
+            "Сохранить после перезапуска",
+            afterProcessDeath.uiState.value.form.preferences,
+        )
+        afterProcessDeath.viewModelScope.cancel()
       }
 }
 
