@@ -14,14 +14,12 @@ import com.valerochka1337.valerochkagym.data.backup.ClearDataUseCaseImpl
 import com.valerochka1337.valerochkagym.data.backup.DatabaseExporter
 import com.valerochka1337.valerochkagym.data.backup.DatabaseExporterImpl
 import com.valerochka1337.valerochkagym.data.health.HealthConsentStoreImpl
-import com.valerochka1337.valerochkagym.data.health.HealthRepositoryImpl
 import com.valerochka1337.valerochkagym.data.profile.ProfileRepositoryImpl
 import com.valerochka1337.valerochkagym.domain.ActiveWorkoutRepository
 import com.valerochka1337.valerochkagym.domain.ExerciseCatalogRepository
 import com.valerochka1337.valerochkagym.domain.ExercisePersonalHintRepository
 import com.valerochka1337.valerochkagym.domain.GymRepository
 import com.valerochka1337.valerochkagym.domain.HealthConsentStore
-import com.valerochka1337.valerochkagym.domain.HealthRepository
 import com.valerochka1337.valerochkagym.domain.ProfileRepository
 import com.valerochka1337.valerochkagym.worker.ConfigurationUploadScheduler
 import com.valerochka1337.valerochkagym.worker.MeasurementUploadScheduler
@@ -57,8 +55,6 @@ abstract class DomainModule {
   @Binds
   @Singleton
   abstract fun bindProfileRepository(impl: ProfileRepositoryImpl): ProfileRepository
-
-  @Binds @Singleton abstract fun bindHealthRepository(impl: HealthRepositoryImpl): HealthRepository
 
   @Binds
   @Singleton

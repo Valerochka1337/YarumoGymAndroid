@@ -181,7 +181,7 @@ class CalendarAiRepositoryTest : RoomDaoTest() {
     val (r, s) = fixture()
     r.blocked = true
     assertEquals(
-        "ai_context_stale",
+        "ai_sync_failed",
         (runCatching { repo(r, s).generate(intent()) }.exceptionOrNull() as BackendException).code,
     )
     assertEquals(0, s.calls)

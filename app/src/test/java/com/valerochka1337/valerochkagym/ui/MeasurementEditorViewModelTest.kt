@@ -377,9 +377,6 @@ class MeasurementEditorViewModelTest {
       rows.value = rows.value.map { if (it.id == measurement.id) measurement else it }
     }
 
-    override fun observeByIds(ids: Set<String>) =
-        observeAll().map { rows -> rows.filter { it.id in ids } }
-
     override fun observeAll(): Flow<List<BodyMeasurementEntity>> = rows
 
     override suspend fun getById(id: String): BodyMeasurementEntity? =

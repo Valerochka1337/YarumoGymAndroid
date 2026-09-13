@@ -114,7 +114,7 @@ constructor(
         when (val result = readySource.await()) {
           is SyncReady.Ready -> result
           SyncReady.Blocked ->
-              throw BackendException(409, "ai_context_stale", "Сначала завершите синхронизацию")
+              throw BackendException(409, "ai_sync_failed", "Сначала завершите синхронизацию")
           is SyncReady.Failure ->
               throw when (val cause = result.cause) {
                 is kotlinx.coroutines.CancellationException,

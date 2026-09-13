@@ -1,13 +1,19 @@
 package com.valerochka1337.valerochkagym.ui.trainingproposal
 
 import android.app.Application
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotSelected
+import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -38,6 +44,92 @@ class TrainingProposalComposeTest {
   @get:Rule val compose = createComposeRule()
 
   @Test
+  fun `program button reflects opening and closing its form`() {
+    compose.setContent {
+      var manual by remember { mutableStateOf(false) }
+      GymTheme {
+        TrainingProposalInboxContent(
+            emptyList(),
+            false,
+            null,
+            false,
+            {},
+            {},
+            {},
+            {},
+            onCreateAi = {},
+            onManual = { manual = !manual },
+            manualSelected = manual,
+        )
+      }
+    }
+    compose.onNodeWithText("Из программы").assertIsNotSelected().performClick()
+    compose.onNodeWithText("Из программы").assertIsSelected().performClick()
+    compose.onNodeWithText("Из программы").assertIsNotSelected()
+  }
+
+  @Test
+  fun `status icon explains the decision without opening the proposal`() {
+    var opened = 0
+    compose.setContent {
+      GymTheme {
+        TrainingProposalInboxContent(
+            listOf(proposal()),
+            false,
+            null,
+            false,
+            {},
+            {},
+            { opened++ },
+            {},
+        )
+      }
+    }
+    compose.onNodeWithText("Ожидает решения").assertDoesNotExist()
+    compose.onNodeWithContentDescription("Статус: Ожидает решения").performClick()
+    compose.onNodeWithText("Ожидает решения").assertIsDisplayed()
+    compose.onNodeWithText("Проверьте план, затем примите или отклоните его.").assertIsDisplayed()
+    compose.runOnIdle { assertEquals(0, opened) }
+    compose.onNodeWithText("Понятно").performClick()
+    compose.onNodeWithText("Силовой план").performClick()
+    compose.runOnIdle { assertEquals(1, opened) }
+  }
+
+  @Test
+  @Config(qualifiers = "w360dp-h800dp-xhdpi")
+  fun `planning hub exposes both creation actions with empty proposals at large font`() {
+    var ai = 0
+    var manual = 0
+    compose.setContent {
+      val density = LocalDensity.current
+      CompositionLocalProvider(LocalDensity provides Density(density.density, 2f)) {
+        GymTheme {
+          TrainingProposalInboxContent(
+              emptyList(),
+              false,
+              null,
+              false,
+              {},
+              {},
+              {},
+              {},
+              onCreateAi = { ai++ },
+              onManual = { manual++ },
+          )
+        }
+      }
+    }
+    compose.onNodeWithText("Составить с ИИ").performScrollTo().performClick()
+    compose.onNodeWithText("Из программы").performScrollTo().performClick()
+    compose.onNodeWithText("Пока нет предложений").performScrollTo().assertIsDisplayed()
+    compose.onNodeWithContentDescription("Обновить предложения").assertIsDisplayed()
+    compose.runOnIdle {
+      assertEquals(1, ai)
+      assertEquals(1, manual)
+    }
+  }
+
+  @Test
   fun `detail exposes original source version and distinct apply reject back callbacks`() {
     var applyCalls = 0
     var rejectCalls = 0
@@ -61,13 +153,18 @@ class TrainingProposalComposeTest {
       }
     }
 
-    compose.onNodeWithText("Оригинал").assertIsDisplayed()
     compose
-        .onNodeWithText("Источник: Тренер · Автор: Тренер · версия 3 · Ожидает решения")
+        .onNodeWithContentDescription("Статус: Ожидает решения")
         .assertIsDisplayed()
+        .performClick()
+    compose.onNodeWithText("Ожидает решения").assertIsDisplayed()
+    compose.onNodeWithText("Понятно").performClick()
+    compose.onNodeWithText("Ожидает решения").assertDoesNotExist()
+    compose.onNodeWithText("План тренировки").assertIsDisplayed()
+    compose.onNodeWithText("Источник: Тренер · Автор: Тренер · версия 3").assertIsDisplayed()
     compose.onNodeWithContentDescription("Применить предложение").performScrollTo().performClick()
     compose.onNodeWithContentDescription("Отклонить предложение").performScrollTo().performClick()
-    compose.onNodeWithText("Назад").performScrollTo().performClick()
+    compose.onNodeWithContentDescription("Назад").performClick()
 
     compose.runOnIdle {
       assertEquals(1, applyCalls)
@@ -102,11 +199,69 @@ class TrainingProposalComposeTest {
       }
     }
 
+    compose.onNodeWithText("Изменить план").performScrollTo().performClick()
     compose.onNodeWithText("Вес подхода 1, кг").performScrollTo().performTextReplacement("70.5")
 
     compose.runOnIdle {
       assertEquals(70.5, latestDraft.exercises.first().plannedSets.first().weightKg)
     }
+  }
+
+  @Test
+  fun `adding exercise waits for explicit search selection`() {
+    var latest = draft()
+    compose.setContent {
+      var displayed by remember { mutableStateOf(draft()) }
+      GymTheme {
+        androidx.compose.foundation.layout.Column(Modifier.verticalScroll(rememberScrollState())) {
+          ProposalDraftForm(
+              displayed,
+              listOf("bench" to "Жим лёжа", "squat" to "Присед", "row" to "Тяга"),
+              emptyList(),
+              {
+                displayed = it
+                latest = it
+              },
+              {},
+          )
+        }
+      }
+    }
+    compose.onNodeWithText("Добавить упражнение").performScrollTo().performClick()
+    compose.runOnIdle { assertEquals(1, latest.exercises.size) }
+    compose.onNodeWithText("Поиск").performTextReplacement("Тяг")
+    compose.onNodeWithText("Тяга").performClick()
+    compose.runOnIdle {
+      assertEquals(listOf("bench", "row"), latest.exercises.map { it.exerciseId })
+    }
+  }
+
+  @Test
+  fun `clearing duration preserves timed input until user finishes editing`() {
+    compose.setContent {
+      var displayed by remember { mutableStateOf(draft()) }
+      GymTheme {
+        androidx.compose.foundation.layout.Column(Modifier.verticalScroll(rememberScrollState())) {
+          ProposalDraftForm(
+              displayed,
+              listOf("bench" to "Жим лёжа"),
+              emptyList(),
+              { displayed = it },
+              {},
+          )
+        }
+      }
+    }
+    compose.onNodeWithText("На время").performScrollTo().performClick()
+    compose
+        .onNodeWithText("Длительность подхода 1, сек")
+        .performScrollTo()
+        .performTextReplacement("")
+    compose
+        .onNodeWithText("Длительность подхода 1, сек")
+        .assertExists()
+        .performTextReplacement("90")
+    compose.onNodeWithText("Вес подхода 1, кг").assertDoesNotExist()
   }
 
   @Test
@@ -133,7 +288,7 @@ class TrainingProposalComposeTest {
       }
     }
 
-    compose.onNodeWithText("Оригинал").assertIsDisplayed()
+    compose.onNodeWithText("План тренировки").assertIsDisplayed()
     compose
         .onNodeWithContentDescription("Применить предложение")
         .performScrollTo()
@@ -166,8 +321,15 @@ class TrainingProposalComposeTest {
       }
     }
 
-    compose.onNodeWithContentDescription("Загрузить результат").assertIsEnabled().performClick()
-    compose.onNodeWithText("Этот вариант больше нельзя редактировать.").assertIsDisplayed()
+    compose
+        .onNodeWithContentDescription("Загрузить результат")
+        .performScrollTo()
+        .assertIsEnabled()
+        .performClick()
+    compose
+        .onNodeWithText("Этот вариант больше нельзя редактировать.")
+        .performScrollTo()
+        .assertIsDisplayed()
     compose.runOnIdle { assertEquals(1, recoverCalls) }
   }
 
@@ -253,7 +415,8 @@ class TrainingProposalComposeTest {
       }
     }
 
-    compose.onNodeWithText("Дом").performClick()
+    compose.onNodeWithText("Изменить план").performScrollTo().performClick()
+    compose.onNodeWithText("Дом").performScrollTo().performClick()
     compose.runOnIdle { assertEquals(emptyList<String>(), latestDraft.gymIds) }
   }
 
@@ -283,6 +446,7 @@ class TrainingProposalComposeTest {
       }
     }
 
+    compose.onNodeWithText("Изменить план").performScrollTo().performClick()
     compose.onNodeWithText("Вес подхода 2, кг").performScrollTo().performTextReplacement("не число")
     compose.onAllNodesWithText("Удалить подход")[1].performScrollTo().performClick()
 

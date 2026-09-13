@@ -10,7 +10,6 @@ import com.valerochka1337.valerochkagym.data.db.entity.BodyMeasurementEntity
 import com.valerochka1337.valerochkagym.data.db.entity.UploadStatus
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -74,9 +73,6 @@ class MeasurementUploadSchedulerTest {
     override suspend fun insert(measurement: BodyMeasurementEntity) = Unit
 
     override suspend fun update(measurement: BodyMeasurementEntity) = Unit
-
-    override fun observeByIds(ids: Set<String>) =
-        observeAll().map { rows -> rows.filter { it.id in ids } }
 
     override fun observeAll(): Flow<List<BodyMeasurementEntity>> = flowOf(emptyList())
 

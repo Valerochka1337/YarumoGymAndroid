@@ -1,22 +1,14 @@
 package com.valerochka1337.valerochkagym.ui.calendarai
 
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
@@ -32,12 +24,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.valerochka1337.valerochkagym.ui.components.GlowBackground
 import com.valerochka1337.valerochkagym.ui.components.GymCard
 import com.valerochka1337.valerochkagym.ui.components.PillButton
+import com.valerochka1337.valerochkagym.ui.components.PlanningChoiceField
+import com.valerochka1337.valerochkagym.ui.components.PlanningDateTimeFields
+import com.valerochka1337.valerochkagym.ui.components.PlanningScreen
 import com.valerochka1337.valerochkagym.ui.haptics.gymHaptics
 import com.valerochka1337.valerochkagym.ui.profile.AiProfilePromptDialog
 
@@ -102,108 +97,97 @@ internal fun CalendarAiContent(
     onPromptDismiss: (String) -> Unit,
 ) {
   var extras by rememberSaveable { mutableStateOf(false) }
-  GlowBackground {
-    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-      val horizontalPadding = if (maxWidth < 600.dp) 16.dp else 24.dp
-      Column(
-          modifier =
-              Modifier.fillMaxSize()
-                  .widthIn(max = 840.dp)
-                  .verticalScroll(rememberScrollState())
-                  .padding(horizontal = horizontalPadding, vertical = 16.dp),
-          verticalArrangement = Arrangement.spacedBy(12.dp),
-      ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-          IconButton(onClick = onBack) {
-            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")
-          }
-          Text("Подготовить следующую тренировку", style = MaterialTheme.typography.headlineSmall)
-        }
-        Text(
-            "Выберите дату и условия. Расчёт продолжится в фоне; результат появится в календаре. Программа и план создаются только после подтверждения.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        CalendarAiTimeCard(state.form, onDate, onTime, onZone, onDuration)
-        ChoiceCard("Залы", state.gyms, state.form.gymIds, onGym, "Доступных залов нет.")
-        if (state.form.gymIds.isEmpty()) Text("Без привязки к залу: доступны все упражнения")
-        TextButton(onClick = { extras = !extras }) {
-          Text(
-              if (extras) "Скрыть дополнительные пожелания"
-              else "Исключения и дополнительные пожелания"
-          )
-        }
-        if (extras) {
-          ChoiceCard(
-              "Исключить упражнения",
-              state.exercises,
-              state.form.excludedExerciseIds,
-              onExcludedExercise,
-              "Упражнения загрузятся после синхронизации.",
-          )
-          ChoiceCard(
-              "Исключить оборудование",
-              state.equipment,
-              state.form.excludedEquipmentIds,
-              onExcludedEquipment,
-              "Оборудование не найдено.",
-          )
-          ChoiceCard(
-              "Приоритетные мышцы",
-              state.muscles,
-              state.form.priorityMuscles,
-              onPriorityMuscle,
-              null,
-          )
-          GymCard(modifier = Modifier.fillMaxWidth()) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-              Column(modifier = Modifier.weight(1f)) {
-                Text("Использовать заметки", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "Заметки завершённых тренировок и личные подсказки помогут составить запрос.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-              }
-              Switch(
-                  checked = state.form.includeNotes,
-                  onCheckedChange = onIncludeNotes,
-                  modifier = Modifier.semantics { contentDescription = "Использовать заметки" },
-              )
-            }
-          }
-          GymCard(modifier = Modifier.fillMaxWidth()) {
-            Text("Дополнительно", style = MaterialTheme.typography.titleMedium)
-            OutlinedTextField(
-                value = state.form.currentState,
-                onValueChange = onCurrentState,
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("Текущее состояние (необязательно)") },
-                minLines = 2,
-            )
-            OutlinedTextField(
-                value = state.form.preferences,
-                onValueChange = onPreferences,
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("Предпочтения (необязательно)") },
-                minLines = 2,
-            )
-          }
-        }
-        state.error?.let { message ->
-          Text(
-              message,
-              color = MaterialTheme.colorScheme.error,
-              modifier = Modifier.semantics { contentDescription = "Ошибка: $message" },
-          )
-        }
+  PlanningScreen(
+      "Тренировка с ИИ",
+      onBack,
+      bottomBar = {
         PillButton(
             text = if (state.generating) "Сохраняем заявку…" else "Начать расчёт",
             onClick = onGenerate,
             enabled = !state.generating,
-            modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Начать расчёт" },
+            modifier =
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp).semantics {
+                  contentDescription = "Начать расчёт"
+                },
+        )
+      },
+  ) {
+    Text(
+        "Укажите, когда и где хотите заниматься. ИИ предложит план — вы сможете проверить и изменить его перед добавлением в календарь.",
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    CalendarAiTimeCard(state.form, onDate, onTime, onZone, onDuration)
+    ChoiceCard("Залы", state.gyms, state.form.gymIds, onGym, "Доступных залов нет.")
+    if (state.form.gymIds.isEmpty()) Text("Без привязки к залу: доступны все упражнения")
+    TextButton(onClick = { extras = !extras }) {
+      Text(if (extras) "Скрыть пожелания" else "Настроить пожелания и исключения")
+    }
+    if (extras) {
+      ChoiceCard(
+          "Исключить упражнения",
+          state.exercises,
+          state.form.excludedExerciseIds,
+          onExcludedExercise,
+          "Упражнения загрузятся после синхронизации.",
+      )
+      ChoiceCard(
+          "Исключить оборудование",
+          state.equipment,
+          state.form.excludedEquipmentIds,
+          onExcludedEquipment,
+          "Оборудование не найдено.",
+      )
+      ChoiceCard(
+          "Приоритетные мышцы",
+          state.muscles,
+          state.form.priorityMuscles,
+          onPriorityMuscle,
+          null,
+      )
+      GymCard(modifier = Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+          Column(modifier = Modifier.weight(1f)) {
+            Text("Использовать заметки", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Заметки завершённых тренировок и личные подсказки помогут составить запрос.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+          }
+          Switch(
+              checked = state.form.includeNotes,
+              onCheckedChange = onIncludeNotes,
+              modifier = Modifier.semantics { contentDescription = "Использовать заметки" },
+          )
+        }
+      }
+      GymCard(modifier = Modifier.fillMaxWidth()) {
+        Text("Дополнительно", style = MaterialTheme.typography.titleMedium)
+        OutlinedTextField(
+            value = state.form.currentState,
+            onValueChange = onCurrentState,
+            modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+            shape = MaterialTheme.shapes.medium,
+            label = { Text("Текущее состояние (необязательно)") },
+            minLines = 2,
+        )
+        OutlinedTextField(
+            value = state.form.preferences,
+            onValueChange = onPreferences,
+            modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+            shape = MaterialTheme.shapes.medium,
+            label = { Text("Предпочтения (необязательно)") },
+            minLines = 2,
         )
       }
+    }
+    state.error?.let { message ->
+      Text(
+          message,
+          color = MaterialTheme.colorScheme.error,
+          modifier = Modifier.semantics { contentDescription = "Ошибка: $message" },
+      )
     }
   }
   state.profilePrompt?.let { prompt ->
@@ -228,31 +212,13 @@ private fun CalendarAiTimeCard(
 ) {
   GymCard(modifier = Modifier.fillMaxWidth()) {
     Text("Когда тренироваться", style = MaterialTheme.typography.titleMedium)
-    OutlinedTextField(
-        value = form.date,
-        onValueChange = onDate,
-        modifier = Modifier.fillMaxWidth(),
-        label = { Text("Дата (ГГГГ-ММ-ДД)") },
-        singleLine = true,
-    )
-    OutlinedTextField(
-        value = form.time,
-        onValueChange = onTime,
-        modifier = Modifier.fillMaxWidth(),
-        label = { Text("Время (ЧЧ:ММ)") },
-        singleLine = true,
-    )
-    OutlinedTextField(
-        value = form.timeZoneId,
-        onValueChange = onZone,
-        modifier = Modifier.fillMaxWidth(),
-        label = { Text("Часовой пояс") },
-        singleLine = true,
-    )
+    PlanningDateTimeFields(form.date, form.time, form.timeZoneId, onDate, onTime, onZone)
     OutlinedTextField(
         value = form.availableDurationMinutes,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
         onValueChange = onDuration,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+        shape = MaterialTheme.shapes.medium,
         label = { Text("Доступное время, мин") },
         singleLine = true,
     )
@@ -268,15 +234,22 @@ private fun ChoiceCard(
     emptyMessage: String?,
 ) {
   GymCard(modifier = Modifier.fillMaxWidth()) {
+    if (choices.isNotEmpty() && (title != "Залы" || choices.size > 4)) {
+      PlanningChoiceField(
+          title,
+          choices.map { it.id to it.label },
+          selected,
+          onToggle,
+          emptyText = if (title.startsWith("Исключить")) "Без исключений" else "На усмотрение ИИ",
+      )
+      return@GymCard
+    }
     Text(title, style = MaterialTheme.typography.titleMedium)
     if (choices.isEmpty()) {
       if (emptyMessage != null)
           Text(emptyMessage, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    } else {
-      FlowRow(
-          horizontalArrangement = Arrangement.spacedBy(8.dp),
-          verticalArrangement = Arrangement.spacedBy(8.dp),
-      ) {
+    } else if (title == "Залы" && choices.size <= 4) {
+      FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         choices.forEach { choice ->
           FilterChip(
               selected = choice.id in selected,

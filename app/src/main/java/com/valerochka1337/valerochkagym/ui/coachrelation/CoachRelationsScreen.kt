@@ -17,6 +17,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.valerochka1337.valerochkagym.data.coachrelation.*
 import com.valerochka1337.valerochkagym.data.trainingproposal.*
 import com.valerochka1337.valerochkagym.ui.components.GlowBackground
+import com.valerochka1337.valerochkagym.ui.components.GymCard
+import com.valerochka1337.valerochkagym.ui.components.PillButton
+import com.valerochka1337.valerochkagym.ui.components.PlanningScreen
 import com.valerochka1337.valerochkagym.ui.haptics.gymHaptics
 import com.valerochka1337.valerochkagym.ui.trainingproposal.ProposalDraftForm
 import java.time.Instant
@@ -42,61 +45,133 @@ fun CoachRelationsScreen(
       completed = false
     }
   }
-  GlowBackground {
-    RelationLayout {
-      Text("Связи с тренером", style = MaterialTheme.typography.headlineSmall)
-      RelationAction("Назад", onBack)
-      RelationAction("Мои подопечные", { viewModel.refresh(true) }, !s.busy)
-      RelationAction("Мои тренеры", { viewModel.refresh(false) }, !s.busy)
-      Status(s)
-      RelationAction("Обновить", { viewModel.refresh() }, !s.busy)
-      if (s.relations.isEmpty() && !s.busy) Text("Связей пока нет")
-      s.relations.forEach { r ->
-        RelationAction(
-            "Участник ${r.counterpartyId} · ${if(r.state=="ACTIVE")"Активна"else"Отозвана"}",
-            { onOpen(r.relationId, s.clients) },
-            !s.busy,
-        )
-      }
-      Text("Пригласить подопечного", style = MaterialTheme.typography.titleMedium)
-      RelationAction("Создать приглашение", { viewModel.createInvite() }, !s.busy)
-      s.invite?.let { invite ->
-        Text("Одноразовый код: ${invite.token}")
-        Text(
-            "Действует до ${Instant.ofEpochMilli(invite.expiresAtMillis).atZone(ZoneId.systemDefault())}"
-        )
-        RelationAction("Скопировать код", { clipboard.setText(AnnotatedString(invite.token)) })
-        RelationAction("Скрыть код", { viewModel.clearInvite() })
-      }
-      Text("Принять приглашение тренера", style = MaterialTheme.typography.titleMedium)
-      OutlinedTextField(
-          token,
-          { token = it },
-          label = { Text("Код приглашения") },
-          modifier = Modifier.fillMaxWidth(),
+  PlanningScreen("Тренеры и подопечные", onBack) {
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+      FilterChip(
+          selected = !s.clients,
+          onClick = { viewModel.refresh(false) },
           enabled = !s.busy,
+          label = { Text("Мои тренеры") },
       )
-      RelationGrant("Разрешить просмотр календаря", calendar, { calendar = it }, !s.busy)
-      RelationGrant(
-          "Разрешить просмотр завершённых тренировок",
-          completed,
-          { completed = it },
-          !s.busy,
+      FilterChip(
+          selected = s.clients,
+          onClick = { viewModel.refresh(true) },
+          enabled = !s.busy,
+          label = { Text("Подопечные") },
       )
-      Text("Каждое разрешение независимо. Профиль, заметки и здоровье не передаются.")
-      RelationAction(
-          "Принять с выбранными разрешениями",
-          {
-            val value = token
-            token = ""
-            viewModel.accept(value, calendar, completed)
-          },
-          !s.busy && Regex("[A-Za-z0-9_-]{43}").matches(token),
-      )
-      Pending(s, viewModel::retry)
     }
+    Status(s)
+    TextButton(onClick = { viewModel.refresh() }, enabled = !s.busy) { Text("Обновить список") }
+    if (s.relations.isEmpty() && !s.busy) {
+      GymCard(Modifier.fillMaxWidth()) {
+        Text(
+            if (s.clients) "Подопечных пока нет" else "Тренер ещё не подключён",
+            style = MaterialTheme.typography.titleMedium,
+        )
+        Text(
+            if (s.clients)
+                "Создайте приглашение и передайте код подопечному. После подключения здесь появятся доступные тренировки."
+            else
+                "Попросите у тренера код приглашения. Вы сами выбираете, какими тренировками делиться.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+      }
+    }
+    s.relations.forEach { r ->
+      GymCard(Modifier.fillMaxWidth(), onClick = { onOpen(r.relationId, s.clients) }) {
+        Text(
+            "${if (s.clients) "Подопечный" else "Тренер"} · ${r.counterpartyId}",
+            style = MaterialTheme.typography.titleMedium,
+        )
+        Text(
+            if (r.state == "ACTIVE") "Подключён" else "Доступ отозван",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            listOfNotNull(
+                    if (r.calendar) "Календарь" else null,
+                    if (r.completedWorkouts) "История тренировок" else null,
+                )
+                .joinToString(" · ")
+                .ifEmpty { "Без доступа к тренировкам" },
+            style = MaterialTheme.typography.bodySmall,
+        )
+      }
+    }
+    if (s.clients) {
+      GymCard(Modifier.fillMaxWidth()) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+          Text("Пригласить подопечного", style = MaterialTheme.typography.titleMedium)
+          Text(
+              "Одноразовый код подключает одного человека. Разрешения он выберет при подключении.",
+              style = MaterialTheme.typography.bodyMedium,
+          )
+          if (s.invite == null)
+              PillButton(
+                  "Создать приглашение",
+                  { viewModel.createInvite() },
+                  enabled = !s.busy,
+                  modifier = Modifier.fillMaxWidth(),
+              )
+          s.invite?.let { invite ->
+            Text(invite.token, style = MaterialTheme.typography.bodyLarge)
+            Text(
+                "Действует до ${relationDate(invite.expiresAtMillis)}",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            RelationAction("Скопировать код", { clipboard.setText(AnnotatedString(invite.token)) })
+            TextButton(onClick = { viewModel.clearInvite() }) { Text("Скрыть код") }
+          }
+        }
+      }
+    } else {
+      GymCard(Modifier.fillMaxWidth()) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+          Text("Подключить тренера", style = MaterialTheme.typography.titleMedium)
+          OutlinedTextField(
+              token,
+              { token = it.trim() },
+              label = { Text("Код приглашения") },
+              modifier = Modifier.fillMaxWidth(),
+              enabled = !s.busy,
+              singleLine = true,
+              supportingText = { Text("Вставьте код, который прислал тренер") },
+          )
+          Text("Чем поделиться", style = MaterialTheme.typography.titleSmall)
+          RelationGrant("Календарь тренировок", calendar, { calendar = it }, !s.busy)
+          RelationGrant("Завершённые тренировки", completed, { completed = it }, !s.busy)
+          Text(
+              "Профиль, заметки и данные здоровья не передаются. Доступ можно отозвать в любой момент.",
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+          )
+          PillButton(
+              "Подключить тренера",
+              {
+                val value = token
+                token = ""
+                viewModel.accept(value, calendar, completed)
+              },
+              enabled = !s.busy && Regex("[A-Za-z0-9_-]{43}").matches(token),
+              modifier = Modifier.fillMaxWidth(),
+          )
+        }
+      }
+    }
+    Pending(s, viewModel::retry)
   }
 }
+
+private fun relationDate(millis: Long, zone: String = ZoneId.systemDefault().id): String =
+    Instant.ofEpochMilli(millis)
+        .atZone(runCatching { ZoneId.of(zone) }.getOrDefault(ZoneId.systemDefault()))
+        .format(
+            java.time.format.DateTimeFormatter.ofPattern(
+                "d MMM yyyy, HH:mm",
+                java.util.Locale.forLanguageTag("ru"),
+            )
+        )
 
 @Composable
 fun CoachRelationDetailScreen(
@@ -107,34 +182,68 @@ fun CoachRelationDetailScreen(
 ) {
   val s by viewModel.uiState.collectAsStateWithLifecycle()
   LaunchedEffect(id, clients) { viewModel.refresh(clients, id) }
+  var confirmRevoke by remember { mutableStateOf(false) }
+  var confirmCloseDraft by remember { mutableStateOf(false) }
   GlowBackground {
-    RelationLayout {
-      Text("Связь с участником", style = MaterialTheme.typography.headlineSmall)
-      RelationAction("Назад", onBack)
+    PlanningScreen(if (clients) "Подопечный" else "Тренер", onBack) {
       Status(s)
       RelationAction("Обновить доступ", { viewModel.refresh(clients, id) }, !s.busy)
       val r = s.relation
       if (r == null) {
         if (!s.busy) Text("Связь недоступна")
-        return@RelationLayout
+        return@PlanningScreen
       }
-      Text("Участник ${r.counterpartyId}")
-      Text(if (r.state == "ACTIVE") "Активная связь" else "Связь отозвана")
-      Text("Календарь: ${if(r.calendar)"разрешён"else"закрыт"}")
-      Text("Завершённые тренировки: ${if(r.completedWorkouts)"разрешены"else"закрыты"}")
+      GymCard(Modifier.fillMaxWidth()) {
+        Text("Участник ${r.counterpartyId}", style = MaterialTheme.typography.titleMedium)
+        Text(if (r.state == "ACTIVE") "Активная связь" else "Связь отозвана")
+        Text("Календарь: ${if(r.calendar)"разрешён"else"закрыт"}")
+        Text("Завершённые тренировки: ${if(r.completedWorkouts)"разрешены"else"закрыты"}")
+      }
       if (r.state == "ACTIVE") {
-        RelationAction("Отозвать связь", viewModel::revoke, !s.busy)
+        TextButton(
+            onClick = { confirmRevoke = true },
+            enabled = !s.busy,
+            colors =
+                ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+        ) {
+          Text("Отозвать доступ")
+        }
+        if (confirmRevoke)
+            AlertDialog(
+                onDismissRequest = { confirmRevoke = false },
+                title = { Text("Отозвать доступ?") },
+                text = {
+                  Text(
+                      "Участник больше не сможет просматривать тренировки через эту связь. Для повторного подключения понадобится новое приглашение."
+                  )
+                },
+                confirmButton = {
+                  TextButton(
+                      onClick = {
+                        confirmRevoke = false
+                        viewModel.revoke()
+                      },
+                      enabled = !s.busy,
+                  ) {
+                    Text("Отозвать")
+                  }
+                },
+                dismissButton = {
+                  TextButton(onClick = { confirmRevoke = false }) { Text("Отмена") }
+                },
+            )
         if (clients) {
           if (r.calendar) {
             RelationAction("Показать календарь", { viewModel.projection(true) }, !s.busy)
             s.calendar.forEach { item ->
-              Text(item.title, style = MaterialTheme.typography.titleMedium)
-              Text(
-                  Instant.ofEpochMilli(item.startsAtMillis)
-                      .atZone(ZoneId.of(item.timeZoneId))
-                      .toString()
-              )
-              item.exercises.forEach { Text("${it.name}: ${it.plannedSetCount} подходов") }
+              GymCard(Modifier.fillMaxWidth()) {
+                Text(item.title, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    relationDate(item.startsAtMillis, item.timeZoneId),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                item.exercises.forEach { Text("${it.name} · ${it.plannedSetCount} подходов") }
+              }
             }
             if (s.calendarCursor != null)
                 RelationAction("Ещё планы", { viewModel.projection(true, true) }, !s.busy)
@@ -146,16 +255,16 @@ fun CoachRelationDetailScreen(
                 !s.busy,
             )
             s.completed.forEach { item ->
-              Text(
-                  Instant.ofEpochMilli(item.finishedAtMillis)
-                      .atZone(ZoneId.systemDefault())
-                      .toString(),
-                  style = MaterialTheme.typography.titleMedium,
-              )
-              item.exercises.forEach { e ->
-                Text(e.name)
-                e.sets.forEachIndexed { index, set ->
-                  Text("${index+1}. ${projectionSetText(set)}")
+              GymCard(Modifier.fillMaxWidth()) {
+                Text(
+                    relationDate(item.finishedAtMillis),
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                item.exercises.forEach { e ->
+                  Text(e.name)
+                  e.sets.forEachIndexed { index, set ->
+                    Text("${index+1}. ${projectionSetText(set)}")
+                  }
                 }
               }
             }
@@ -164,18 +273,36 @@ fun CoachRelationDetailScreen(
           }
           if (s.recipientRevision != null && s.calendar.isEmpty() && s.completed.isEmpty())
               Text("В выбранном разделе пока нет тренировок")
-          RelationAction(
-              "Подготовить предложение",
-              viewModel::newDraft,
-              !s.busy && (r.calendar || r.completedWorkouts),
-          )
+          if (s.draft == null)
+              PillButton(
+                  "Подготовить предложение",
+                  viewModel::newDraft,
+                  enabled = !s.busy && (r.calendar || r.completedWorkouts),
+                  modifier = Modifier.fillMaxWidth(),
+              )
           if (!r.calendar && !r.completedWorkouts)
               Text("Для подготовки предложения участник должен открыть календарь или историю.")
           s.proposals.forEach { p ->
-            Text("${p.snapshot.draft.name} · версия ${p.currentVersion} · ${p.status}")
-            if (p.status == ProposalStatus.PENDING) {
-              RelationAction("Изменить предложение", { viewModel.edit(p) }, !s.busy)
-              RelationAction("Отозвать предложение", { viewModel.revokeProposal(p) }, !s.busy)
+            GymCard(Modifier.fillMaxWidth()) {
+              Text(p.snapshot.draft.name, style = MaterialTheme.typography.titleMedium)
+              Text(
+                  when (p.status) {
+                    ProposalStatus.PENDING -> "Ожидает решения"
+                    ProposalStatus.APPROVED -> "Принято"
+                    ProposalStatus.REJECTED -> "Отклонено"
+                    ProposalStatus.REVOKED -> "Отозвано"
+                    ProposalStatus.STALE -> "Устарело"
+                  },
+                  style = MaterialTheme.typography.bodySmall,
+              )
+              if (p.status == ProposalStatus.PENDING) {
+                RelationAction(
+                    "Изменить предложение",
+                    { viewModel.edit(p) },
+                    !s.busy && s.draft == null,
+                )
+                RelationAction("Отозвать предложение", { viewModel.revokeProposal(p) }, !s.busy)
+              }
             }
           }
           s.draft?.let { draft ->
@@ -189,12 +316,37 @@ fun CoachRelationDetailScreen(
                   { valid = it },
               )
             }
-            RelationAction(
+            PillButton(
                 if (s.editing == null) "Отправить предложение" else "Сохранить новую версию",
                 viewModel::submit,
-                !s.busy && valid,
+                enabled = !s.busy && valid,
+                modifier = Modifier.fillMaxWidth(),
             )
-            RelationAction("Закрыть черновик", viewModel::closeDraft, !s.busy)
+            TextButton(onClick = { confirmCloseDraft = true }, enabled = !s.busy) {
+              Text("Закрыть черновик")
+            }
+            if (confirmCloseDraft)
+                AlertDialog(
+                    onDismissRequest = { confirmCloseDraft = false },
+                    title = { Text("Закрыть черновик?") },
+                    text = { Text("Несохранённые изменения предложения будут потеряны.") },
+                    confirmButton = {
+                      TextButton(
+                          onClick = {
+                            confirmCloseDraft = false
+                            viewModel.closeDraft()
+                          },
+                          enabled = !s.busy,
+                      ) {
+                        Text("Закрыть")
+                      }
+                    },
+                    dismissButton = {
+                      TextButton(onClick = { confirmCloseDraft = false }) {
+                        Text("Продолжить редактирование")
+                      }
+                    },
+                )
           }
         }
       }

@@ -12,6 +12,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -27,7 +28,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
-import androidx.compose.material.icons.rounded.DateRange
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -43,6 +44,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -56,6 +58,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.valerochka1337.valerochkagym.ui.components.CircleIconButton
 import com.valerochka1337.valerochkagym.ui.components.GlowBackground
 import com.valerochka1337.valerochkagym.ui.components.GymTopBar
+import com.valerochka1337.valerochkagym.ui.components.PillButton
 import com.valerochka1337.valerochkagym.ui.theme.GymMotion
 import java.time.Instant
 import java.time.LocalDate
@@ -70,17 +73,14 @@ private val WEEKDAY_LABELS = listOf("Пн", "Вт", "Ср", "Чт", "Пт", "С�
 
 /**
  * Вкладка «Календарь»: месячная сетка (что сделано + что запланировано), навигация по месяцам
- * стрелками и свайпом, нижняя шторка выбранного дня и переход в редактор расписания.
+ * стрелками и свайпом, нижняя шторка выбранного дня и переход к планированию тренировок.
  */
 @Composable
 fun CalendarScreen(
     onWorkoutClick: (String) -> Unit,
     onStartWorkout: () -> Unit,
-    onOpenSchedule: () -> Unit,
+    onOpenPlanning: () -> Unit,
     onOpenSettings: () -> Unit,
-    onOpenProposals: () -> Unit = {},
-    onOpenAi: () -> Unit = {},
-    onOpenProposal: (String) -> Unit = {},
     modifier: Modifier = Modifier,
     viewModel: CalendarViewModel = hiltViewModel(),
 ) {
@@ -106,31 +106,41 @@ fun CalendarScreen(
   GlowBackground(modifier = modifier) {
     Box(modifier = Modifier.fillMaxSize()) {
       Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        GymTopBar(
-            title = "Календарь",
-            onOpenSettings = onOpenSettings,
-            actions = {
-              CircleIconButton(
-                  icon = Icons.Rounded.DateRange,
-                  contentDescription = "Расписание",
-                  onClick = onOpenSchedule,
-                  enabled = calendarStatus.editingEnabled,
+        BoxWithConstraints {
+          val separatePlanningRow = maxWidth < 360.dp || LocalDensity.current.fontScale > 1.3f
+          Column {
+            GymTopBar(
+                title = "Календарь",
+                onOpenSettings = onOpenSettings,
+                actions = {
+                  if (!separatePlanningRow) {
+                    PillButton(
+                        "AI-план",
+                        {
+                          haptics.tap()
+                          onOpenPlanning()
+                        },
+                        leadingIcon = Icons.Rounded.AutoAwesome,
+                        compact = true,
+                    )
+                  }
+                },
+            )
+            if (separatePlanningRow) {
+              PillButton(
+                  "AI-план",
+                  {
+                    haptics.tap()
+                    onOpenPlanning()
+                  },
+                  leadingIcon = Icons.Rounded.AutoAwesome,
+                  compact = true,
+                  modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
               )
-            },
-        )
-
-        TextButton(
-            onClick = {
-              haptics.tap()
-              onOpenProposals()
             }
-        ) {
-          Text("Предложения тренировок")
+          }
         }
-        com.valerochka1337.valerochkagym.ui.calendarai.WorkoutPreparationCard(
-            onOpenAi,
-            onOpenProposal,
-        )
+
         CalendarStatusBanner(status = calendarStatus, onRetry = viewModel::retryMigration)
         month.planMessage?.let { message ->
           androidx.compose.material3.TextButton(onClick = viewModel::retryMigration) {
@@ -201,10 +211,6 @@ fun CalendarScreen(
         onMoveRecurring = { item ->
           movingRecurring = item
           viewModel.onSheetDismissed()
-        },
-        onEditSchedule = {
-          viewModel.onSheetDismissed()
-          onOpenSchedule()
         },
         onPlan = {
           planningDate = day.date
