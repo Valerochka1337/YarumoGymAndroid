@@ -25,6 +25,8 @@ class TrainingProposalApiTest {
     val bodies = mutableListOf<ByteArray>()
     var beforeReturn: () -> Unit = {}
     var cancellation = false
+    var responseBody = RESULT
+    val retryFlags = mutableListOf<Boolean>()
 
     override suspend fun public(method: String, path: String, body: JsonElement?) = error("unused")
 
@@ -43,21 +45,36 @@ class TrainingProposalApiTest {
     ): BackendResponse {
       assertEquals(OWNER, expectedOwner)
       assertEquals(store.sessionEpoch, expectedSessionEpoch)
-      assertFalse(retryOnUnauthorized)
+      assertEquals(method == "GET", retryOnUnauthorized)
+      retryFlags += retryOnUnauthorized
       assertEquals(1_048_576, maxResponseBytes)
       bodies += rawBody.copyOf()
       if (cancellation) throw CancellationException("cancelled")
       beforeReturn()
-      val response = Json.parseToJsonElement(RESULT)
+      val response = Json.parseToJsonElement(responseBody)
       return BackendResponse(
           response,
-          RESULT.encodeToByteArray(),
+          responseBody.encodeToByteArray(),
           setOf("calendar-plans"),
           expectedOwner,
           requireNotNull(expectedSessionEpoch),
       )
     }
   }
+
+  @Test
+  fun `reading proposals allows bounded auth refresh while approval never auto replays`() =
+      runTest {
+        val store = Store()
+        val transport = Transport(store)
+        val api = TrainingProposalApi(transport, store)
+        val session = requireNotNull(store.snapshot())
+        transport.responseBody = """{"items":[],"nextCursor":null}"""
+        assertTrue(api.list(session).items.isEmpty())
+        transport.responseBody = RESULT
+        api.approve(session, PROPOSAL, rawRequest())
+        assertEquals(listOf(true, false), transport.retryFlags)
+      }
 
   @Test
   fun `approval sends literal durable bytes on first dispatch and retry`() = runTest {

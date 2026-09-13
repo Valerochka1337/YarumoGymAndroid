@@ -31,9 +31,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -69,6 +66,7 @@ import com.valerochka1337.valerochkagym.ui.analysis.formatDecimal
 import com.valerochka1337.valerochkagym.ui.components.CircleIconButton
 import com.valerochka1337.valerochkagym.ui.components.GlowBackground
 import com.valerochka1337.valerochkagym.ui.components.GymCard
+import com.valerochka1337.valerochkagym.ui.components.GymSectionTabs
 import com.valerochka1337.valerochkagym.ui.components.PillButton
 import com.valerochka1337.valerochkagym.ui.components.UploadStatusBadge
 import com.valerochka1337.valerochkagym.ui.haptics.gymHaptics
@@ -161,24 +159,15 @@ fun MeasurementsScreen(
           )
         }
         item {
-          SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-            MeasurementsSection.entries.forEachIndexed { index, item ->
-              SegmentedButton(
-                  selected = section == item,
-                  onClick = {
-                    haptics.tap()
-                    section = item
-                  },
-                  shape =
-                      SegmentedButtonDefaults.itemShape(
-                          index = index,
-                          count = MeasurementsSection.entries.size,
-                      ),
-              ) {
-                Text(item.label)
-              }
-            }
-          }
+          GymSectionTabs(
+              options = MeasurementsSection.entries,
+              selected = section,
+              label = { it.label },
+              onSelect = { item ->
+                haptics.tap()
+                section = item
+              },
+          )
         }
 
         if (measurements.isEmpty()) {

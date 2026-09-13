@@ -61,6 +61,72 @@ class WorkoutPreparationRepositoryTest : RoomDaoTest() {
   }
 
   @Test
+  fun `unfinished synchronization keeps request waiting and resumes without reentering form`() =
+      runTest {
+        val (_, repo) = fixture()
+        val id = repo.enqueue(intent())
+        ready.blocked = true
+        assertTrue(repo.step())
+        assertEquals("WAITING", db.preparationDao().get(OWNER)!!.state)
+        assertEquals("ai_sync_failed", db.preparationDao().get(OWNER)!!.errorCode)
+        assertTrue(api.posts.isEmpty())
+        ready.blocked = false
+        assertTrue(repo.step())
+        assertEquals(id, db.preparationDao().get(OWNER)!!.requestId)
+        assertEquals("QUEUED", db.preparationDao().get(OWNER)!!.state)
+      }
+
+  @Test
+  fun `local generation change keeps running job visible and reacknowledges unchanged server revisions`() =
+      runTest {
+        val (_, repo) = fixture()
+        repo.enqueue(intent())
+        repo.step()
+        db.openHelper.writableDatabase.execSQL("UPDATE backend_state SET generation=generation+1")
+        assertEquals("QUEUED", repo.current.first()!!.state)
+        ready.receipt = ready.receipt.copy(cacheGeneration = 2)
+        api.readyResult = true
+        assertFalse(repo.step())
+        assertEquals("READY", db.preparationDao().get(OWNER)!!.state)
+        assertNotNull(db.preparationDao().get(OWNER)!!.proposalJson)
+      }
+
+  @Test
+  fun `changed server revision rejects result and manual retry preserves conditions with a fresh identity`() =
+      runTest {
+        val (_, repo) = fixture()
+        val old = repo.enqueue(intent())
+        repo.step()
+        ready.receipt = ready.receipt.copy(cacheGeneration = 2, revision = 5)
+        api.readyResult = true
+        assertFalse(repo.step())
+        val stale = db.preparationDao().get(OWNER)!!
+        assertEquals("STALE", stale.state)
+        assertNull(stale.proposalJson)
+        repo.retryCurrent(old)
+        val next = db.preparationDao().get(OWNER)!!
+        assertNotEquals(old, next.requestId)
+        assertEquals(stale.intentJson, next.intentJson)
+        assertEquals("WAITING", next.state)
+        assertNull(next.requestJson)
+        assertTrue(next.replacesJson.contains(old))
+        repo.retryCurrent(old)
+        assertEquals(next.requestId, db.preparationDao().get(OWNER)!!.requestId)
+      }
+
+  @Test
+  fun `changed catalog revision rejects ready result`() = runTest {
+    val (_, repo) = fixture()
+    repo.enqueue(intent())
+    repo.step()
+    ready.receipt = ready.receipt.copy(cacheGeneration = 2, catalogRevision = 8)
+    api.readyResult = true
+    assertFalse(repo.step())
+    assertEquals("STALE", db.preparationDao().get(OWNER)!!.state)
+    assertNull(db.preparationDao().get(OWNER)!!.proposalJson)
+  }
+
+  @Test
   fun `invalid typed result fails safely without replacing retained proposal`() = runTest {
     val (_, repo) = fixture()
     repo.enqueue(intent())
@@ -200,9 +266,12 @@ private class Sessions : BackendSessionStore {
 }
 
 private class Ready : SyncReadySource {
-  override suspend fun await() = SyncReady.Ready(OWNER, 4, 7, 1, 1)
+  var receipt = SyncReady.Ready(OWNER, 4, 7, 1, 1)
+  var blocked = false
 
-  override suspend fun isCurrent(ready: SyncReady.Ready) = true
+  override suspend fun await(): SyncReady = if (blocked) SyncReady.Blocked else receipt
+
+  override suspend fun isCurrent(ready: SyncReady.Ready) = !blocked && ready == receipt
 }
 
 private class Server : BackendTransport {

@@ -1,18 +1,23 @@
 package com.valerochka1337.valerochkagym.ui.trainingproposal
 
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.valerochka1337.valerochkagym.ui.calendar.ManualPlanningForm
+import com.valerochka1337.valerochkagym.ui.calendarai.WorkoutPreparationCard
 import com.valerochka1337.valerochkagym.ui.components.GlowBackground
 
 @Composable
 fun TrainingProposalInboxScreen(
+    onCreateAi: () -> Unit,
     onOpen: (String) -> Unit,
     onBack: () -> Unit,
     viewModel: TrainingProposalViewModel = hiltViewModel(),
 ) {
   val state by viewModel.uiState.collectAsStateWithLifecycle()
   LaunchedEffect(viewModel) { viewModel.refresh() }
+  var manual by rememberSaveable { mutableStateOf(false) }
   GlowBackground {
     TrainingProposalInboxContent(
         state.items,
@@ -23,6 +28,11 @@ fun TrainingProposalInboxScreen(
         { viewModel.refresh(true) },
         onOpen,
         onBack,
+        onCreateAi = onCreateAi,
+        onManual = { manual = !manual },
+        manualSelected = manual,
+        manualContent = { if (manual) ManualPlanningForm(onClose = { manual = false }) },
+        preparationContent = { WorkoutPreparationCard(onCreateAi, onOpen) },
     )
   }
 }

@@ -122,7 +122,7 @@ constructor(
             headers = mapOf("X-Gym-Capabilities" to "calendar-plans"),
             expectedOwner = session.tokens.userId,
             expectedSessionEpoch = session.epoch,
-            retryOnUnauthorized = false,
+            retryOnUnauthorized = method == "GET",
             maxResponseBytes = ProposalWire.RESPONSE_LIMIT,
         )
     assertSession(session)

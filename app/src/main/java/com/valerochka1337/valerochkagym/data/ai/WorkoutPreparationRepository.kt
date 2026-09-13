@@ -44,19 +44,8 @@ constructor(
       sessions.session.flatMapLatest { session ->
         if (session == null) flowOf(null)
         else
-            combine(dao.observe(session.userId), dao.observeGeneration(session.userId)) {
-                row,
-                generation ->
+            combine(dao.observe(session.userId), dao.observeGeneration(session.userId)) { row, _ ->
               row?.takeIf { sync.owner() == session.userId }
-                  ?.let {
-                    if (
-                        it.generation != null &&
-                            it.generation != generation &&
-                            it.state in setOf("READY", "QUEUED", "RUNNING")
-                    )
-                        it.copy(state = "STALE")
-                    else it
-                  }
             }
       }
 
@@ -104,6 +93,18 @@ constructor(
           )
       )
       id
+    }
+  }
+
+  suspend fun retryCurrent(expectedId: String) {
+    val session = sessions.snapshot() ?: throw BackendException(401, "unauthorized", "")
+    db.withTransaction {
+      guard(session)
+      val row = dao.get(session.tokens.userId) ?: return@withTransaction
+      if (row.requestId != expectedId || row.state in activeStates || row.state == "READY")
+          return@withTransaction
+      enqueue(ProposalWire.json.decodeFromString<CalendarAiIntent>(row.intentJson))
+      guard(session)
     }
   }
 
@@ -182,7 +183,29 @@ constructor(
                 payload.context.capturedAtMillis < 0
         )
             throw BackendException(502, "ai_invalid_response", "")
-        val proposal = calendar.validate(intent, ready, payload)
+        // Cache generation can change during a background sync without changing the server
+        // context. Re-acknowledge it instead of treating a local write counter as a revision.
+        val validationReady =
+            if (readySource.isCurrent(ready)) ready
+            else {
+              val refreshed =
+                  when (val value = readySource.await()) {
+                    is SyncReady.Ready -> value
+                    SyncReady.Blocked -> throw BackendException(409, "ai_sync_failed", "")
+                    is SyncReady.Failure ->
+                        throw (value.cause ?: BackendException(409, "ai_sync_failed", ""))
+                  }
+              guard(session)
+              if (refreshed.owner != ready.owner || refreshed.sessionEpoch != session.epoch)
+                  throw BackendException(401, "owner_changed", "")
+              if (
+                  refreshed.revision != ready.revision ||
+                      refreshed.catalogRevision != ready.catalogRevision
+              )
+                  throw BackendException(409, "ai_context_stale", "")
+              refreshed
+            }
+        val proposal = calendar.validate(intent, validationReady, payload)
         proposalJson = ProposalWire.json.encodeToString(proposal)
       }
       update(session, row) {

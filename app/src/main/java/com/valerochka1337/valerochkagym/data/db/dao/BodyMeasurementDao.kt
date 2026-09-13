@@ -22,12 +22,6 @@ interface BodyMeasurementDao {
   @Query("SELECT * FROM body_measurements WHERE id = :id")
   suspend fun getById(id: String): BodyMeasurementEntity?
 
-  /**
-   * Health stores only these stable references; it never copies measurement values into its ledger.
-   */
-  @Query("SELECT * FROM body_measurements WHERE id IN (:ids) ORDER BY measuredAt DESC, id")
-  fun observeByIds(ids: Set<String>): Flow<List<BodyMeasurementEntity>>
-
   @Query(
       "UPDATE body_measurements SET uploadStatus = :status, uploadError = :error WHERE id = :measurementId",
   )

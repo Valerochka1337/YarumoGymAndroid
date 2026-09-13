@@ -245,6 +245,23 @@ class CalendarViewModelTest {
       }
 
   @Test
+  fun `repeated planning taps share one in flight operation and release busy state`() =
+      runTest(mainDispatcherRule.testDispatcher.scheduler) {
+        val calendar = FakeCalendarPlanRepository(suspendCreate = true)
+        val vm = viewModel(calendarPlanRepository = calendar)
+        collect(vm)
+        val at = System.currentTimeMillis() + 60_000
+        vm.schedule(1L, at)
+        vm.schedule(1L, at)
+        assertTrue(vm.isPlanning.value)
+        assertEquals(1, calendar.scheduleCalls)
+        calendar.releaseCreate.complete(Unit)
+        runCurrent()
+        assertFalse(vm.isPlanning.value)
+        assertEquals(1, calendar.scheduleCalls)
+      }
+
+  @Test
   fun `recreated scheduling command reuses its saved UUID until Room accepts it`() =
       runTest(mainDispatcherRule.testDispatcher.scheduler) {
         val calendar =
@@ -684,6 +701,7 @@ class CalendarViewModelTest {
       initialWeekly: WeeklySchedule = WeeklySchedule(),
       private val saveResult: CalendarPlanResult = CalendarPlanResult.Success,
       private val clearResult: CalendarPlanResult = CalendarPlanResult.Success,
+      private val suspendCreate: Boolean = false,
       private val suspendSave: Boolean = false,
       private val suspendClear: Boolean = false,
       private val saveThrowable: Throwable? = null,
@@ -710,6 +728,7 @@ class CalendarViewModelTest {
     var clearCalls = 0
       private set
 
+    val releaseCreate = CompletableDeferred<Unit>()
     val releaseSave = CompletableDeferred<Unit>()
     val releaseClear = CompletableDeferred<Unit>()
 
@@ -757,6 +776,7 @@ class CalendarViewModelTest {
     ): CalendarPlanResult {
       scheduleCalls++
       planCommandIds += commandId
+      if (suspendCreate) releaseCreate.await()
       return createResult
     }
 

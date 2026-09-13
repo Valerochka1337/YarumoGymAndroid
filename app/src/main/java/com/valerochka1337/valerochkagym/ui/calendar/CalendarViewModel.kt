@@ -149,6 +149,9 @@ constructor(
   private val displayedMonth = MutableStateFlow(YearMonth.now(zone))
   private val selectedDate = MutableStateFlow<LocalDate?>(null)
 
+  private val _isPlanning = MutableStateFlow(false)
+  val isPlanning: StateFlow<Boolean> = _isPlanning.asStateFlow()
+
   private var startInFlight = false
   private var scheduleActionInFlight = false
   private val _isScheduleBusy = MutableStateFlow(false)
@@ -282,19 +285,25 @@ constructor(
 
   /** Планирует ad-hoc тренировку; прошедшее время отклоняется без обращения к календарю. */
   fun schedule(routineId: Long, dateTimeMillis: Long) {
+    if (_isPlanning.value) return
+    _isPlanning.value = true
     viewModelScope.launch {
-      if (migrationState.value != CalendarMigrationUiState.Ready) {
-        _events.send(PREPARING_CALENDAR_MESSAGE)
-        return@launch
+      try {
+        if (migrationState.value != CalendarMigrationUiState.Ready) {
+          _events.send(PREPARING_CALENDAR_MESSAGE)
+          return@launch
+        }
+        if (dateTimeMillis < System.currentTimeMillis()) {
+          _events.send(PAST_TIME_MESSAGE)
+          return@launch
+        }
+        val command = pendingPlanCommand(routineId, dateTimeMillis)
+        val result = calendarPlanRepository.createPlan(command.id, routineId, dateTimeMillis, zone)
+        if (result is CalendarPlanResult.Success) clearPendingPlanCommand()
+        _events.send(calendarPlanResultMessage(result, "Запланировано"))
+      } finally {
+        _isPlanning.value = false
       }
-      if (dateTimeMillis < System.currentTimeMillis()) {
-        _events.send(PAST_TIME_MESSAGE)
-        return@launch
-      }
-      val command = pendingPlanCommand(routineId, dateTimeMillis)
-      val result = calendarPlanRepository.createPlan(command.id, routineId, dateTimeMillis, zone)
-      if (result is CalendarPlanResult.Success) clearPendingPlanCommand()
-      _events.send(calendarPlanResultMessage(result, "Запланировано"))
     }
   }
 

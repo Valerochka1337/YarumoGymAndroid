@@ -30,8 +30,8 @@ import com.valerochka1337.valerochkagym.ui.components.PillButton
 
 /**
  * Нижняя шторка выбранного дня. Показывает все секции дня сразу: завершённые тренировки (тап —
- * детали), ad-hoc запланированные («Начать»/«Удалить»), правило расписания («Начать»/«Изменить
- * расписание») и — для сегодня/будущего — кнопку «Запланировать».
+ * детали), ad-hoc запланированные («Начать»/«Удалить»), ранее созданные повторяющиеся занятия
+ * («Начать»/«Перенести»/«Отменить») и — для сегодня/будущего — кнопку «Запланировать».
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -45,7 +45,6 @@ internal fun DayModalBottomSheet(
     onStartRecurring: (Long) -> Unit,
     onCancelRecurring: (RecurringUi) -> Unit,
     onMoveRecurring: (RecurringUi) -> Unit,
-    onEditSchedule: () -> Unit,
     onPlan: () -> Unit,
     editingEnabled: Boolean,
 ) {
@@ -130,9 +129,6 @@ internal fun DayModalBottomSheet(
                   onClick = { onStartRecurring(rule.routineId) },
                   modifier = Modifier.weight(1f),
               )
-            }
-            TextButton(onClick = onEditSchedule, enabled = editingEnabled) {
-              Text("Изменить расписание")
             }
           }
           Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

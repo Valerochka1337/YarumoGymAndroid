@@ -19,7 +19,6 @@ import java.io.FileOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.map
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -175,9 +174,6 @@ class MeasurementsRenderTest {
     override suspend fun insert(measurement: BodyMeasurementEntity) = Unit
 
     override suspend fun update(measurement: BodyMeasurementEntity) = Unit
-
-    override fun observeByIds(ids: Set<String>) =
-        observeAll().map { rows -> rows.filter { it.id in ids } }
 
     override fun observeAll(): Flow<List<BodyMeasurementEntity>> = measurements
 

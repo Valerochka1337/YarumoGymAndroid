@@ -12,7 +12,6 @@ import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.unit.Density
 import com.valerochka1337.valerochkagym.ui.theme.GymTheme
@@ -52,6 +51,35 @@ class CalendarAiComposeTest {
     compose.onNodeWithText("Следующая тренировка").assertIsDisplayed()
     compose.onNodeWithText("Повторить").assertIsDisplayed().assertIsEnabled().performClick()
     compose.runOnIdle { assertEquals(1, retries) }
+  }
+
+  @Test
+  fun `stale preparation retries saved conditions separately from editing`() {
+    var retries = 0
+    var edits = 0
+    compose.setContent {
+      GymTheme {
+        WorkoutPreparationCardContent(
+            com.valerochka1337.valerochkagym.data.ai.PreparationEntity(
+                "owner",
+                "id",
+                "{}",
+                "[]",
+                state = "STALE",
+            ),
+            onPrepare = { edits++ },
+            onOpen = {},
+            onRetry = { retries++ },
+        )
+      }
+    }
+    compose.onNodeWithText("Повторить расчёт").performClick()
+    compose.runOnIdle {
+      assertEquals(1, retries)
+      assertEquals(0, edits)
+    }
+    compose.onNodeWithText("Изменить условия").performClick()
+    compose.runOnIdle { assertEquals(1, edits) }
   }
 
   @Test
@@ -108,11 +136,7 @@ class CalendarAiComposeTest {
 
     compose.onNodeWithText("Дом").performClick()
     compose.onNodeWithText("Доступное время, мин").performTextReplacement("75")
-    compose
-        .onNodeWithContentDescription("Начать расчёт")
-        .performScrollTo()
-        .assertIsEnabled()
-        .performClick()
+    compose.onNodeWithContentDescription("Начать расчёт").assertIsEnabled().performClick()
 
     compose.runOnIdle {
       assertEquals(1, generated)
@@ -198,7 +222,7 @@ class CalendarAiComposeTest {
     }
 
     compose.onNodeWithText("Когда тренироваться").assertIsDisplayed()
-    compose.onNodeWithContentDescription("Начать расчёт").performScrollTo().assertIsEnabled()
+    compose.onNodeWithContentDescription("Начать расчёт").assertIsDisplayed().assertIsEnabled()
   }
 }
 

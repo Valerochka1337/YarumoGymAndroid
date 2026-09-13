@@ -2,13 +2,11 @@ package com.valerochka1337.valerochkagym.ui.analysis
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -35,21 +33,18 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.valerochka1337.valerochkagym.R
 import com.valerochka1337.valerochkagym.data.db.entity.Muscle
-import com.valerochka1337.valerochkagym.domain.HealthRecordKind
 import com.valerochka1337.valerochkagym.domain.analysis.AnalysisPeriod
 import com.valerochka1337.valerochkagym.ui.components.GlowBackground
-import com.valerochka1337.valerochkagym.ui.components.GymFilterChip
+import com.valerochka1337.valerochkagym.ui.components.GymSectionTabs
 import com.valerochka1337.valerochkagym.ui.components.GymTopBar
 import com.valerochka1337.valerochkagym.ui.components.PillButton
 import com.valerochka1337.valerochkagym.ui.haptics.gymHaptics
-import com.valerochka1337.valerochkagym.ui.health.HealthAnalysisScreen
 import java.time.LocalDate
 
 private enum class AnalysisSection(val label: String) {
   OVERVIEW("Обзор"),
   LOAD("Нагрузка"),
   PROGRESS("Прогресс"),
-  HEALTH("Здоровье"),
 }
 
 /**
@@ -68,9 +63,6 @@ fun AnalysisScreen(
     onOpenSettings: () -> Unit,
     onOpenMeasurements: () -> Unit,
     onExerciseClick: (Long) -> Unit,
-    onOpenHealthDetail: (String) -> Unit = {},
-    onCreateHealth: (HealthRecordKind) -> Unit = {},
-    onOpenMeasurement: (String) -> Unit = {},
     modifier: Modifier = Modifier,
     viewModel: AnalysisViewModel = hiltViewModel(),
 ) {
@@ -98,9 +90,6 @@ fun AnalysisScreen(
       onWeeklyMetricSelected = viewModel::onWeeklyMetricSelected,
       onWeekSelected = viewModel::onWeekSelected,
       onSessionSelected = viewModel::onSessionSelected,
-      healthContent = {
-        HealthAnalysisScreen(onOpenHealthDetail, onCreateHealth, onOpenMeasurement)
-      },
   )
 }
 
@@ -121,10 +110,11 @@ internal fun AnalysisScreenContent(
     onWeeklyMetricSelected: (WeeklyMetric) -> Unit = {},
     onWeekSelected: (Int?) -> Unit = {},
     onSessionSelected: (Int?) -> Unit = {},
-    healthContent: @Composable () -> Unit,
 ) {
   val haptics = gymHaptics()
-  var section by rememberSaveable { mutableStateOf(AnalysisSection.OVERVIEW) }
+  var section by rememberSaveable { mutableStateOf(AnalysisSection.OVERVIEW.name) }
+  val selectedSection =
+      AnalysisSection.entries.firstOrNull { it.name == section } ?: AnalysisSection.OVERVIEW
   GlowBackground(modifier = modifier) {
     Column(modifier = Modifier.fillMaxSize()) {
       GymTopBar(
@@ -159,6 +149,17 @@ internal fun AnalysisScreenContent(
           }
         }
         item {
+          GymSectionTabs(
+              options = AnalysisSection.entries,
+              selected = selectedSection,
+              label = { it.label },
+              onSelect = { item ->
+                haptics.tap()
+                section = item.name
+              },
+          )
+        }
+        item {
           AnalysisPeriodSelector(
               period = state.period,
               range = state.report.range,
@@ -172,29 +173,8 @@ internal fun AnalysisScreenContent(
               },
           )
         }
-        item {
-          FlowRow(
-              modifier = Modifier.fillMaxWidth(),
-              horizontalArrangement = Arrangement.spacedBy(8.dp),
-              verticalArrangement = Arrangement.spacedBy(8.dp),
-          ) {
-            AnalysisSection.entries.forEach { item ->
-              GymFilterChip(
-                  selected = section == item,
-                  label = item.label,
-                  modifier = Modifier.heightIn(min = 48.dp),
-                  onClick = {
-                    haptics.tap()
-                    section = item
-                  },
-              )
-            }
-          }
-        }
 
-        if (section == AnalysisSection.HEALTH) {
-          item { healthContent() }
-        } else if (state.loading && !state.report.hasData) {
+        if (state.loading && !state.report.hasData) {
           item {
             Column(
                 modifier = Modifier.fillMaxWidth().padding(40.dp),
@@ -223,7 +203,7 @@ internal fun AnalysisScreenContent(
             }
           }
         } else {
-          when (section) {
+          when (selectedSection) {
             AnalysisSection.OVERVIEW -> {
               item { SummaryCard(state) }
               item {
@@ -281,7 +261,6 @@ internal fun AnalysisScreenContent(
                 )
               }
             }
-            AnalysisSection.HEALTH -> Unit
           }
         }
       }
