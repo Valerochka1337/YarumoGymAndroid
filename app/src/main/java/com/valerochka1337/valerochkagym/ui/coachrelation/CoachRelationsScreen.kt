@@ -314,6 +314,7 @@ fun CoachRelationDetailScreen(
                   emptyList(),
                   viewModel::updateDraft,
                   { valid = it },
+                  exerciseTypes = s.exerciseTypes,
               )
             }
             PillButton(

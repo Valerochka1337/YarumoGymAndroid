@@ -1,10 +1,15 @@
 package com.valerochka1337.valerochkagym.ui.calendarai
 
 import android.app.Application
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
@@ -26,6 +31,52 @@ import org.robolectric.annotation.Config
 @Config(application = Application::class, qualifiers = "w840dp-h900dp-xhdpi")
 class CalendarAiComposeTest {
   @get:Rule val compose = createComposeRule()
+
+  @Test
+  @Config(qualifiers = "w360dp-h800dp-xhdpi")
+  fun `exclusions show selected only with removal and searchable cancellation at large font`() {
+    var latest = setOf("archived")
+    val choices =
+        (1..500).map { CalendarAiChoice("id-$it", "Упражнение $it") } +
+            CalendarAiChoice("archived", "Старое упражнение", archived = true)
+    compose.setContent {
+      val density = LocalDensity.current
+      CompositionLocalProvider(LocalDensity provides Density(density.density, 2f)) {
+        var selection by remember { mutableStateOf(latest) }
+        GymTheme {
+          Column(Modifier.verticalScroll(rememberScrollState())) {
+            ExcludedExercises(
+                "Исключить упражнения",
+                choices,
+                selection,
+                { id ->
+                  selection = selection.toggle(id)
+                  latest = selection
+                },
+            )
+          }
+        }
+      }
+    }
+    compose.onNodeWithText("Упражнение 500").assertDoesNotExist()
+    compose.onNodeWithText("Старое упражнение").assertIsDisplayed()
+    compose.onNodeWithContentDescription("Убрать из исключений: Старое упражнение").performClick()
+    compose.onNodeWithText("Без исключений").assertIsDisplayed()
+    compose.onNodeWithText("Добавить исключение").performClick()
+    compose.onNodeWithText("Поиск").performTextReplacement("Старое")
+    compose.onNodeWithText("Старое упражнение").assertDoesNotExist()
+    compose.onNodeWithText("Ничего не найдено. Измените поиск или фильтр.").assertExists()
+    compose.onNodeWithText("Готово").performClick()
+    compose.runOnIdle { assertEquals(emptySet<String>(), latest) }
+    compose.onNodeWithText("Добавить исключение").performClick()
+    compose.onNodeWithText("Поиск").performTextReplacement("500")
+    compose.onNodeWithText("Упражнение 500").performClick()
+    compose.onNodeWithText("Упражнение 500").assertIsDisplayed()
+    compose.runOnIdle { assertEquals(setOf("id-500"), latest) }
+    compose.onNodeWithText("Добавить исключение").performClick()
+    compose.onNodeWithText("Поиск").performTextReplacement("500")
+    compose.onNodeWithText("Ничего не найдено. Измените поиск или фильтр.").assertExists()
+  }
 
   @Test
   fun `paused preparation exposes retry at font scale two`() {

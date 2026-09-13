@@ -6,6 +6,7 @@ import com.valerochka1337.valerochkagym.data.backend.*
 import com.valerochka1337.valerochkagym.data.coachrelation.*
 import com.valerochka1337.valerochkagym.data.db.GymDatabase
 import com.valerochka1337.valerochkagym.data.db.dao.ExerciseDao
+import com.valerochka1337.valerochkagym.data.db.entity.ExerciseType
 import com.valerochka1337.valerochkagym.data.trainingproposal.*
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -30,6 +31,7 @@ data class CoachRelationsState(
     val draft: ApprovalDraft? = null,
     val editing: TrainingProposal? = null,
     val exercises: List<Pair<String, String>> = emptyList(),
+    val exerciseTypes: Map<String, ExerciseType> = emptyMap(),
 )
 
 @HiltViewModel
@@ -46,11 +48,26 @@ constructor(
   val uiState =
       combine(state, exercises.getAll()) { s, es ->
             s.copy(
+                exerciseTypes =
+                    s.completed
+                        .flatMap { it.exercises }
+                        .associate { exercise ->
+                          exercise.exerciseId to
+                              when {
+                                exercise.sets.any {
+                                  it.speedKmh != null || it.inclinePct != null
+                                } -> ExerciseType.CARDIO
+                                exercise.sets.any { it.durationSec != null } -> ExerciseType.TIMED
+                                else -> ExerciseType.STRENGTH
+                              }
+                        } +
+                        es.filter { !it.archived && it.origin == "STANDARD" }
+                            .associate { it.syncId to it.type },
                 exercises =
                     (es.filter { !it.archived && it.origin == "STANDARD" }
                             .map { it.syncId to it.name } +
                             s.completed.flatMap { it.exercises }.map { it.exerciseId to it.name })
-                        .distinctBy { it.first }
+                        .distinctBy { it.first },
             )
           }
           .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), CoachRelationsState())

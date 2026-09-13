@@ -1,5 +1,9 @@
 package com.valerochka1337.valerochkagym.ui.components
 
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -11,14 +15,53 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.valerochka1337.valerochkagym.ui.haptics.gymHaptics
 import java.time.*
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
+/** Refreshes device-zone dependent planning displays after travel or returning to the app. */
+@Composable
+internal fun rememberDeviceTimeZone(): ZoneId {
+  val context = LocalContext.current
+  val lifecycleOwner = LocalLifecycleOwner.current
+  var zone by remember { mutableStateOf(ZoneId.systemDefault()) }
+
+  DisposableEffect(context, lifecycleOwner) {
+    fun refresh() {
+      zone = ZoneId.systemDefault()
+    }
+    val receiver =
+        object : BroadcastReceiver() {
+          override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action == Intent.ACTION_TIMEZONE_CHANGED) refresh()
+          }
+        }
+    val observer = LifecycleEventObserver { _, event ->
+      if (event == Lifecycle.Event.ON_RESUME) refresh()
+    }
+    context.registerReceiver(
+        receiver,
+        IntentFilter(Intent.ACTION_TIMEZONE_CHANGED),
+        Context.RECEIVER_NOT_EXPORTED,
+    )
+    lifecycleOwner.lifecycle.addObserver(observer)
+    onDispose {
+      lifecycleOwner.lifecycle.removeObserver(observer)
+      context.unregisterReceiver(receiver)
+    }
+  }
+  return zone
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
+@Suppress("UNUSED_PARAMETER")
 internal fun PlanningDateTimeFields(
     date: String,
     time: String,
@@ -30,7 +73,6 @@ internal fun PlanningDateTimeFields(
 ) {
   var dateOpen by rememberSaveable { mutableStateOf(false) }
   var timeOpen by rememberSaveable { mutableStateOf(false) }
-  var zoneOpen by rememberSaveable { mutableStateOf(false) }
   val parsedDate = runCatching { LocalDate.parse(date) }.getOrNull()
   val parsedTime = runCatching { LocalTime.parse(time) }.getOrNull()
   Column(
@@ -49,13 +91,6 @@ internal fun PlanningDateTimeFields(
         parsedTime?.format(DateTimeFormatter.ofPattern("HH:mm")) ?: "Выбрать",
         Icons.Rounded.Schedule,
         { timeOpen = true },
-    )
-    PlanningPickerField(
-        "Часовой пояс",
-        zone,
-        Icons.Rounded.Public,
-        { zoneOpen = true },
-        allowZoneSelection,
     )
   }
   if (dateOpen) {
@@ -109,17 +144,6 @@ internal fun PlanningDateTimeFields(
           }
         },
         dismissButton = { TextButton(onClick = { timeOpen = false }) { Text("Отмена") } },
-    )
-  }
-  if (zoneOpen) {
-    val zones = remember { ZoneId.getAvailableZoneIds().sorted().map { it to it } }
-    PlanningChoiceSheet(
-        "Часовой пояс",
-        zones,
-        setOf(zone),
-        onZone,
-        { zoneOpen = false },
-        singleChoice = true,
     )
   }
 }

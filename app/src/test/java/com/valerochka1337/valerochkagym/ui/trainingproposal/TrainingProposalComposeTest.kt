@@ -22,6 +22,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.unit.Density
+import com.valerochka1337.valerochkagym.data.db.entity.ExerciseType
 import com.valerochka1337.valerochkagym.data.trainingproposal.ApprovalDraft
 import com.valerochka1337.valerochkagym.data.trainingproposal.ProposalAuthor
 import com.valerochka1337.valerochkagym.data.trainingproposal.ProposalPlannedExercise
@@ -32,6 +33,7 @@ import com.valerochka1337.valerochkagym.data.trainingproposal.ProposalStatus
 import com.valerochka1337.valerochkagym.data.trainingproposal.TrainingProposal
 import com.valerochka1337.valerochkagym.ui.theme.GymTheme
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -239,7 +241,21 @@ class TrainingProposalComposeTest {
   @Test
   fun `clearing duration preserves timed input until user finishes editing`() {
     compose.setContent {
-      var displayed by remember { mutableStateOf(draft()) }
+      var displayed by remember {
+        mutableStateOf(
+            draft()
+                .copy(
+                    exercises =
+                        listOf(
+                            ProposalPlannedExercise(
+                                "bench",
+                                60,
+                                listOf(ProposalPlannedSet(null, null, 60, null, null)),
+                            )
+                        )
+                )
+        )
+      }
       GymTheme {
         androidx.compose.foundation.layout.Column(Modifier.verticalScroll(rememberScrollState())) {
           ProposalDraftForm(
@@ -252,7 +268,6 @@ class TrainingProposalComposeTest {
         }
       }
     }
-    compose.onNodeWithText("На время").performScrollTo().performClick()
     compose
         .onNodeWithText("Длительность подхода 1, сек")
         .performScrollTo()
@@ -262,6 +277,70 @@ class TrainingProposalComposeTest {
         .assertExists()
         .performTextReplacement("90")
     compose.onNodeWithText("Вес подхода 1, кг").assertDoesNotExist()
+  }
+
+  @Test
+  @Config(qualifiers = "w360dp-h800dp-xhdpi")
+  fun `replacement searches only eligible exercises cancels cleanly and adapts typed sets at large font`() {
+    var latest = draft()
+    var applyCalls = 0
+    compose.setContent {
+      val density = LocalDensity.current
+      CompositionLocalProvider(LocalDensity provides Density(density.density, 2f)) {
+        var value by remember { mutableStateOf(draft()) }
+        GymTheme {
+          TrainingProposalDetailContent(
+              proposal(),
+              value,
+              false,
+              false,
+              null,
+              listOf(
+                  "bench" to "Жим лёжа",
+                  "plank" to "Планка",
+                  "blocked" to "Недоступный тренажёр",
+              ) + (1..500).map { "id-$it" to "Упражнение $it" },
+              emptyList(),
+              {
+                latest = it
+                value = it
+              },
+              { applyCalls++ },
+              {},
+              {},
+              {},
+              exerciseTypes =
+                  mapOf("bench" to ExerciseType.STRENGTH, "plank" to ExerciseType.TIMED),
+              availableExerciseIds = setOf("bench", "plank"),
+          )
+        }
+      }
+    }
+    compose.onNodeWithText("Упражнение 500").assertDoesNotExist()
+    compose.onNodeWithText("Изменить план").performScrollTo().performClick()
+    compose.onNodeWithText("Часовой пояс").assertDoesNotExist()
+    compose.onNodeWithText("Планка").assertDoesNotExist()
+    compose.onNodeWithText("Заменить").performScrollTo().performClick()
+    compose.onNodeWithText("Недоступный тренажёр").assertDoesNotExist()
+    compose.onNodeWithText("Поиск").performTextReplacement("нет совпадений")
+    compose.onNodeWithText("Ничего не найдено. Измените поиск или фильтр.").assertExists()
+    compose.onNodeWithText("Готово").performClick()
+    compose.runOnIdle { assertEquals(draft(), latest) }
+    compose.onNodeWithText("Заменить").performScrollTo().performClick()
+    compose.onNodeWithText("Поиск").performTextReplacement("План")
+    compose.onNodeWithText("Планка").performClick()
+    compose.onNodeWithText("Вес подхода 1, кг").assertDoesNotExist()
+    compose
+        .onNodeWithText("Длительность подхода 1, сек")
+        .performScrollTo()
+        .performTextReplacement("90")
+    compose.runOnIdle {
+      assertEquals("plank", latest.exercises.single().exerciseId)
+      assertEquals(90, latest.exercises.single().plannedSets.single().durationSec)
+      assertNull(latest.exercises.single().plannedSets.single().weightKg)
+      assertNull(latest.exercises.single().plannedSets.single().reps)
+      assertEquals(0, applyCalls)
+    }
   }
 
   @Test

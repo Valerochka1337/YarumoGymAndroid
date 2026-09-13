@@ -8,7 +8,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
@@ -31,8 +35,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.valerochka1337.valerochkagym.ui.components.GymCard
 import com.valerochka1337.valerochkagym.ui.components.PillButton
 import com.valerochka1337.valerochkagym.ui.components.PlanningChoiceField
+import com.valerochka1337.valerochkagym.ui.components.PlanningChoiceSheet
 import com.valerochka1337.valerochkagym.ui.components.PlanningDateTimeFields
 import com.valerochka1337.valerochkagym.ui.components.PlanningScreen
+import com.valerochka1337.valerochkagym.ui.components.rememberDeviceTimeZone
 import com.valerochka1337.valerochkagym.ui.haptics.gymHaptics
 import com.valerochka1337.valerochkagym.ui.profile.AiProfilePromptDialog
 
@@ -45,6 +51,8 @@ fun CalendarAiScreen(
 ) {
   val state by viewModel.uiState.collectAsStateWithLifecycle()
   val haptics = gymHaptics()
+  val zone = rememberDeviceTimeZone()
+  LaunchedEffect(viewModel, zone) { viewModel.synchronizeDeviceTimeZone() }
   LaunchedEffect(viewModel, onBack) { viewModel.saved.collect { onBack() } }
   LaunchedEffect(viewModel, onOpenProposal) { viewModel.openProposal.collect(onOpenProposal) }
   LaunchedEffect(viewModel, onOpenProfile) { viewModel.openProfile.collect { onOpenProfile() } }
@@ -124,12 +132,11 @@ internal fun CalendarAiContent(
       Text(if (extras) "Скрыть пожелания" else "Настроить пожелания и исключения")
     }
     if (extras) {
-      ChoiceCard(
+      ExcludedExercises(
           "Исключить упражнения",
           state.exercises,
           state.form.excludedExerciseIds,
           onExcludedExercise,
-          "Упражнения загрузятся после синхронизации.",
       )
       ChoiceCard(
           "Исключить оборудование",
@@ -261,4 +268,51 @@ private fun ChoiceCard(
       }
     }
   }
+}
+
+@Composable
+internal fun ExcludedExercises(
+    title: String,
+    choices: List<CalendarAiChoice>,
+    selected: Set<String>,
+    onToggle: (String) -> Unit,
+) {
+  var open by rememberSaveable { mutableStateOf(false) }
+  val haptics = gymHaptics()
+  GymCard(modifier = Modifier.fillMaxWidth()) {
+    Text(title, style = MaterialTheme.typography.titleMedium)
+    if (selected.isEmpty())
+        Text("Без исключений", color = MaterialTheme.colorScheme.onSurfaceVariant)
+    selected.forEach { id ->
+      val name = choices.firstOrNull { it.id == id }?.label ?: "Недоступное упражнение"
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(name, Modifier.weight(1f))
+        IconButton(
+            onClick = {
+              haptics.toggle(false)
+              onToggle(id)
+            }
+        ) {
+          Icon(Icons.Rounded.Close, "Убрать из исключений: $name")
+        }
+      }
+    }
+    TextButton(
+        onClick = {
+          haptics.tap()
+          open = true
+        }
+    ) {
+      Text("Добавить исключение")
+    }
+  }
+  if (open)
+      PlanningChoiceSheet(
+          title,
+          choices.filterNot { it.archived || it.id in selected }.map { it.id to it.label },
+          emptySet(),
+          { id -> if (id !in selected) onToggle(id) },
+          { open = false },
+          singleChoice = true,
+      )
 }

@@ -27,6 +27,9 @@ data class TrainingProposalUiState(
     val saving: Boolean = false,
     val error: String? = null,
     val exerciseChoices: List<Pair<String, String>> = emptyList(),
+    val exerciseTypes: Map<String, com.valerochka1337.valerochkagym.data.db.entity.ExerciseType> =
+        emptyMap(),
+    val availableExerciseIds: Set<String> = emptySet(),
     val gymChoices: List<Pair<String, String>> = emptyList(),
 )
 
@@ -40,16 +43,30 @@ constructor(
     exercises: ExerciseDao,
     gyms: GymDao,
     private val savedState: SavedStateHandle,
+    private val gymRepository: com.valerochka1337.valerochkagym.domain.GymRepository,
 ) : ViewModel() {
   private val mutableState = MutableStateFlow(TrainingProposalUiState())
   private val edits = Mutex()
   private var generation = 0L
   private var load: Job? = null
   private var bound: BackendSessionSnapshot? = null
+  @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+  private val availableExercises =
+      mutableState
+          .map { it.editor?.draft?.gymIds.orEmpty().toSet() }
+          .distinctUntilChanged()
+          .flatMapLatest(gymRepository::observeAvailableExercises)
+
   val uiState =
-      combine(mutableState, exercises.getAll(), gyms.observeGyms()) { state, exerciseList, gymList
-            ->
+      combine(mutableState, exercises.getAll(), gyms.observeGyms(), availableExercises) {
+              state,
+              exerciseList,
+              gymList,
+              available ->
             state.copy(
+                exerciseTypes = exerciseList.associate { it.syncId to it.type },
+                availableExerciseIds =
+                    available.filterNot { it.archived }.map { it.syncId }.toSet(),
                 exerciseChoices =
                     exerciseList.filterNot { it.archived }.map { it.syncId to it.name },
                 gymChoices = gymList.filterNot { it.archived }.map { it.syncId to it.name },

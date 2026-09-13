@@ -59,6 +59,8 @@ fun TrainingProposalDetailScreen(
         viewModel::reject,
         onBack,
         { viewModel.open(id) },
+        exerciseTypes = state.exerciseTypes,
+        availableExerciseIds = state.availableExerciseIds,
     )
   }
 }

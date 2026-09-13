@@ -238,6 +238,23 @@ class TrainingProposalRepositoryTest : RoomDaoTest() {
       }
 
   @Test
+  fun `incomplete replacement survives reopening without sending approval`() = runTest {
+    val f = fixture()
+    val editor = f.repository.open(PROPOSAL)
+    val incomplete =
+        editor.draft.copy(
+            exercises =
+                editor.draft.exercises.map {
+                  it.copy(plannedSets = listOf(ProposalPlannedSet(null, null, null, null, null)))
+                }
+        )
+    f.repository.save(editor, incomplete)
+    assertEquals(incomplete, f.repository.open(PROPOSAL).draft)
+    assertTrue(f.server.posts.isEmpty())
+    assertFalse(ProposalWire.validDraft(incomplete))
+  }
+
+  @Test
   fun `edited draft survives recreation and approval imports one linked projection preserving existing outbox`() =
       runTest {
         val f = fixture()

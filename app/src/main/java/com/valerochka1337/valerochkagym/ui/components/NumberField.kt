@@ -31,6 +31,7 @@ fun NumberField(
     placeholder: String? = null,
     decimal: Boolean = false,
     enabled: Boolean = true,
+    signed: Boolean = false,
 ) {
   val interactionSource = remember { MutableInteractionSource() }
   val focused by interactionSource.collectIsFocusedAsState()
@@ -42,7 +43,7 @@ fun NumberField(
   OutlinedTextField(
       value = text,
       onValueChange = { raw ->
-        val filtered = filterNumeric(raw, decimal)
+        val filtered = filterNumeric(raw, decimal, signed)
         text = filtered
         onValueChange(filtered)
       },
@@ -60,12 +61,13 @@ fun NumberField(
 }
 
 /** Оставляет только цифры и, при [decimal], первую точку. */
-private fun filterNumeric(raw: String, decimal: Boolean): String {
+private fun filterNumeric(raw: String, decimal: Boolean, signed: Boolean): String {
   var dotSeen = false
   return buildString {
     for (ch in raw) {
       when {
         ch.isDigit() -> append(ch)
+        signed && ch == '-' && isEmpty() -> append(ch)
         decimal && (ch == '.' || ch == ',') && !dotSeen -> {
           dotSeen = true
           append('.')
