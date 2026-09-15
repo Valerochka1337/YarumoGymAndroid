@@ -11,7 +11,7 @@ import retrofit2.http.Streaming
 import retrofit2.http.Url
 
 private const val REPOSITORY_OWNER = "Valerochka1337"
-private const val REPOSITORY_NAME = "ValerochkaGym"
+private const val REPOSITORY_NAME = "YarumoGymAndroid"
 internal const val MAX_UPDATE_APK_BYTES = 100L * 1024L * 1024L
 
 @Serializable
@@ -83,7 +83,7 @@ internal fun GitHubReleaseDto.toAppRelease(installedVersionName: String): AppRel
   val sha256 =
       asset.digest?.let(SHA256_DIGEST_PATTERN::matchEntire)?.groupValues?.get(1)?.lowercase()
           ?: throw AppUpdateException("Не удалось проверить целостность файла обновления")
-  if (!asset.browserDownloadUrl.isTrustedReleaseAssetUrl()) {
+  if (!asset.browserDownloadUrl.isTrustedReleaseAssetUrl(tagName, expectedApkName)) {
     throw AppUpdateException("Получена небезопасная ссылка на обновление")
   }
 
@@ -103,12 +103,16 @@ internal fun GitHubReleaseDto.toAppRelease(installedVersionName: String): AppRel
   )
 }
 
-private fun String.isTrustedReleaseAssetUrl(): Boolean =
+private fun String.isTrustedReleaseAssetUrl(tagName: String, apkName: String): Boolean =
     try {
       val uri = URI(this)
       uri.scheme == "https" &&
           uri.host.equals("github.com", ignoreCase = true) &&
-          uri.path.startsWith("/$REPOSITORY_OWNER/$REPOSITORY_NAME/releases/download/")
+          uri.userInfo == null &&
+          uri.port == -1 &&
+          uri.rawQuery == null &&
+          uri.rawFragment == null &&
+          uri.rawPath == "/$REPOSITORY_OWNER/$REPOSITORY_NAME/releases/download/$tagName/$apkName"
     } catch (_: Exception) {
       false
     }
