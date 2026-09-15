@@ -29,6 +29,17 @@ class SettingsScreenTest {
   @get:Rule val compose = createComposeRule()
 
   @Test
+  fun `account settings omit relation entry while profile remains reachable`() {
+    compose.setContent {
+      GymTheme { SettingsCategoryList(onSelect = {}, onOpenGyms = {}, onOpenProfile = {}) }
+    }
+
+    compose.onNodeWithText("Профиль").assertIsDisplayed()
+    compose.onNodeWithText("Связи с тренером").assertDoesNotExist()
+    compose.onNodeWithText("Тренеры и подопечные").assertDoesNotExist()
+  }
+
+  @Test
   fun `calendar account state and actions remain reachable at font scale two`() {
     compose.setContent {
       val density = LocalDensity.current

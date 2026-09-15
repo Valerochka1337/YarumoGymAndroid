@@ -82,7 +82,7 @@ import com.valerochka1337.valerochkagym.ui.update.AppUpdateStatus
 import com.valerochka1337.valerochkagym.ui.update.AppUpdateUiState
 import com.valerochka1337.valerochkagym.ui.update.formatUpdateBytes
 
-private enum class SettingsCategory(
+internal enum class SettingsCategory(
     val label: String,
     val supportingText: String,
 ) {
@@ -108,7 +108,6 @@ fun SettingsScreen(
     onBack: () -> Unit,
     onOpenGyms: () -> Unit,
     onOpenProfile: () -> Unit = {},
-    onOpenRelations: () -> Unit = {},
     appUpdateState: AppUpdateUiState,
     onCheckUpdate: () -> Unit,
     onDownloadUpdate: () -> Unit,
@@ -169,7 +168,6 @@ fun SettingsScreen(
                     onSelect = { selectedCategory = it },
                     onOpenGyms = onOpenGyms,
                     onOpenProfile = onOpenProfile,
-                    onOpenRelations = onOpenRelations,
                 )
               }
 
@@ -368,11 +366,10 @@ private fun SettingsHeader(title: String, onBack: () -> Unit) {
 }
 
 @Composable
-private fun SettingsCategoryList(
+internal fun SettingsCategoryList(
     onSelect: (SettingsCategory) -> Unit,
     onOpenGyms: () -> Unit,
     onOpenProfile: () -> Unit,
-    onOpenRelations: () -> Unit,
 ) {
   SettingsCategory.entries.forEach { category ->
     SettingsNavigationCard(
@@ -391,19 +388,7 @@ private fun SettingsCategoryList(
     if (category == SettingsCategory.WORKOUT) {
       GymsSettingsCard(onOpen = onOpenGyms)
     }
-    if (category == SettingsCategory.ACCOUNT) {
-      ProfileSettingsCard(onOpen = onOpenProfile)
-      val haptics = gymHaptics()
-      TextButton(
-          onClick = {
-            haptics.tap()
-            onOpenRelations()
-          },
-          modifier = Modifier.heightIn(min = 48.dp),
-      ) {
-        Text("Связи с тренером")
-      }
-    }
+    if (category == SettingsCategory.ACCOUNT) ProfileSettingsCard(onOpen = onOpenProfile)
   }
 }
 

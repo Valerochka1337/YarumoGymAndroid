@@ -6,8 +6,6 @@ import androidx.room.TypeConverters
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.valerochka1337.valerochkagym.data.backend.GuestMergeDao
-import com.valerochka1337.valerochkagym.data.coachrelation.CoachRelationOperationDao
-import com.valerochka1337.valerochkagym.data.coachrelation.CoachRelationOperationEntity
 import com.valerochka1337.valerochkagym.data.db.dao.BodyMeasurementDao
 import com.valerochka1337.valerochkagym.data.db.dao.CalendarEventAccountLinkDao
 import com.valerochka1337.valerochkagym.data.db.dao.CalendarPlanDao
@@ -113,7 +111,6 @@ import kotlinx.serialization.json.JsonPrimitive
             HealthAiConsentOutboxEntity::class,
             HealthAiConsentIntentEntity::class,
             TrainingProposalDraftEntity::class,
-            CoachRelationOperationEntity::class,
             TrainingProposalOperationEntity::class,
             TrainingProposalProjectionEntity::class,
             HealthLogicalRecordEntity::class,
@@ -140,7 +137,7 @@ import kotlinx.serialization.json.JsonPrimitive
             CoachSessionContextEntity::class,
             CoachSyncStateEntity::class,
         ],
-    version = 28,
+    version = 29,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -168,8 +165,6 @@ abstract class GymDatabase : RoomDatabase() {
   abstract fun gymDao(): GymDao
 
   abstract fun healthAiConsentDao(): HealthAiConsentDao
-
-  abstract fun coachRelationOperationDao(): CoachRelationOperationDao
 
   abstract fun trainingProposalDao(): TrainingProposalDao
 
@@ -1079,6 +1074,56 @@ abstract class GymDatabase : RoomDatabase() {
           }
         }
 
+    /** v28 → v29: remove the retired inter-account relation queue and its cached proposals. */
+    val MIGRATION_28_29: Migration =
+        object : Migration(28, 29) {
+          override fun migrate(db: SupportSQLiteDatabase) {
+            removeSocialProposalJournal(db)
+            db.execSQL("DROP TABLE IF EXISTS coach_relation_operations")
+          }
+        }
+
+    private fun removeSocialProposalJournal(db: SupportSQLiteDatabase) {
+      val socialRows = mutableListOf<Triple<String, String, Int>>()
+      db.query("SELECT owner,proposalId,version,proposalJson FROM training_proposal_drafts").use {
+          rows ->
+        val owner = rows.getColumnIndexOrThrow("owner")
+        val proposalId = rows.getColumnIndexOrThrow("proposalId")
+        val version = rows.getColumnIndexOrThrow("version")
+        val proposalJson = rows.getColumnIndexOrThrow("proposalJson")
+        while (rows.moveToNext()) {
+          val source =
+              runCatching {
+                    (legacyCoachJson.parseToJsonElement(rows.getString(proposalJson))
+                            as? JsonObject)
+                        ?.get("source")
+                        ?.let { it as? JsonPrimitive }
+                        ?.takeIf(JsonPrimitive::isString)
+                        ?.content
+                  }
+                  .getOrNull()
+          if (source == "COACH")
+              socialRows +=
+                  Triple(rows.getString(owner), rows.getString(proposalId), rows.getInt(version))
+        }
+      }
+      socialRows.forEach { (owner, proposalId, version) ->
+        val args = arrayOf<Any>(owner, proposalId, version)
+        db.execSQL(
+            "DELETE FROM training_proposal_operations WHERE owner=? AND proposalId=? AND version=?",
+            args,
+        )
+        db.execSQL(
+            "DELETE FROM training_proposal_projections WHERE owner=? AND proposalId=? AND version=?",
+            args,
+        )
+        db.execSQL(
+            "DELETE FROM training_proposal_drafts WHERE owner=? AND proposalId=? AND version=?",
+            args,
+        )
+      }
+    }
+
     private fun sanitizeLegacyUndoPackets(db: SupportSQLiteDatabase) {
       db.query(
               "SELECT workoutId,lastUndoPacketJson FROM coach_session_context WHERE lastUndoPacketJson IS NOT NULL"
@@ -1375,6 +1420,7 @@ abstract class GymDatabase : RoomDatabase() {
             MIGRATION_25_26,
             MIGRATION_26_27,
             MIGRATION_27_28,
+            MIGRATION_28_29,
         )
 
     private val legacyCoachJson = Json {

@@ -48,9 +48,7 @@ class TrainingProposalComposeTest {
   @Test
   @Config(qualifiers = "w360dp-h900dp-xhdpi")
   fun `ai explanation stays readable at large font and disappears after editing the plan`() {
-    val ai =
-        proposal()
-            .copy(source = ProposalSource.AI, author = ProposalAuthor(ProposalSource.AI, null))
+    val ai = proposal()
     val explanation =
         com.valerochka1337.valerochkagym.data.trainingproposal.PlannerExplanation(
             ai.proposalId,
@@ -222,7 +220,7 @@ class TrainingProposalComposeTest {
     compose.onNodeWithText("Понятно").performClick()
     compose.onNodeWithText("Ожидает решения").assertDoesNotExist()
     compose.onNodeWithText("План тренировки").assertIsDisplayed()
-    compose.onNodeWithText("Источник: Тренер · Автор: Тренер · версия 3").assertIsDisplayed()
+    compose.onNodeWithText("Версия 3").assertIsDisplayed()
     compose.onNodeWithContentDescription("Применить предложение").performScrollTo().performClick()
     compose.onNodeWithContentDescription("Отклонить предложение").performScrollTo().performClick()
     compose.onNodeWithContentDescription("Назад").performClick()
@@ -615,9 +613,9 @@ private fun draft() =
 private fun proposal(status: ProposalStatus = ProposalStatus.PENDING) =
     TrainingProposal(
         proposalId = "proposal-1",
-        author = ProposalAuthor(ProposalSource.COACH, "coach-7"),
+        author = ProposalAuthor(ProposalSource.AI, null),
         recipientId = "recipient-1",
-        source = ProposalSource.COACH,
+        source = ProposalSource.AI,
         status = status,
         currentVersion = 3,
         createdAt = 1_700_000_000_000L,

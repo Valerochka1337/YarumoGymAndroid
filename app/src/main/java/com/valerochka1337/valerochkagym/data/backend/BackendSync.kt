@@ -464,7 +464,6 @@ constructor(
           authorized(user, "DELETE", "/me", buildJsonObject { put("code", code) })
           database.withTransaction {
             clearAccountData()
-            db.execSQL("DELETE FROM coach_relation_operations WHERE owner=?", arrayOf(user))
             db.execSQL("DELETE FROM workout_preparations WHERE owner=?", arrayOf(user))
             db.execSQL("DELETE FROM training_proposal_drafts WHERE owner=?", arrayOf(user))
             db.execSQL("DELETE FROM training_proposal_operations WHERE owner=?", arrayOf(user))

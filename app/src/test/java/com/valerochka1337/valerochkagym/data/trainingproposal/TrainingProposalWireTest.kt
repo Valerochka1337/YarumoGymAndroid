@@ -1,6 +1,7 @@
 package com.valerochka1337.valerochkagym.data.trainingproposal
 
 import java.security.MessageDigest
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
 import org.junit.Assert.*
 import org.junit.Test
@@ -107,6 +108,39 @@ class TrainingProposalWireTest {
             ),
         )
         .forEach { assertFalse(ProposalWire.validDraft(it)) }
+  }
+
+  @Test
+  fun `personal AI proposal rejects a human author and retired source`() {
+    val personal =
+        TrainingProposal(
+            proposalId = "11111111-1111-4111-8111-111111111111",
+            author = ProposalAuthor(ProposalSource.AI, null),
+            recipientId = "22222222-2222-4222-8222-222222222222",
+            source = ProposalSource.AI,
+            status = ProposalStatus.PENDING,
+            currentVersion = 1,
+            createdAt = 1,
+            updatedAt = 1,
+            expiresAt = 2,
+            snapshot = ProposalSnapshot(1, vector(0).draft, 0, 0, 1),
+        )
+
+    assertTrue(ProposalWire.valid(personal))
+    assertFalse(
+        ProposalWire.valid(
+            personal.copy(
+                author = ProposalAuthor(ProposalSource.AI, "33333333-3333-4333-8333-333333333333")
+            )
+        )
+    )
+    val retired =
+        ProposalWire.json
+            .encodeToString(personal)
+            .replace("\"source\":\"AI\"", "\"source\":\"COACH\"")
+    assertTrue(
+        runCatching { ProposalWire.decode<TrainingProposal>(retired.encodeToByteArray()) }.isFailure
+    )
   }
 
   private fun vector(index: Int): ApprovalRequest =
