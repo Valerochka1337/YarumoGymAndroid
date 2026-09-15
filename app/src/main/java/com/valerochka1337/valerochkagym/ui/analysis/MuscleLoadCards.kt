@@ -2,31 +2,45 @@ package com.valerochka1337.valerochkagym.ui.analysis
 
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Accessibility
 import androidx.compose.material.icons.rounded.BarChart
+import androidx.compose.material.icons.rounded.ExpandLess
+import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Schedule
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -48,9 +62,9 @@ import com.valerochka1337.valerochkagym.ui.theme.GymMotion
 /**
  * Тепловая карта тела: интерактивный человек, закрашенный по недельному объёму каждой мышцы.
  *
- * Шкала ступенчатая и подписана легендой, а числа выбранной мышцы выводятся текстом под картой —
- * цвет здесь нигде не остаётся единственным носителем смысла. Тёмно-зелёный — ориентир для роста, а
- * не верхний лимит или оценка восстановления.
+ * Категория объёма и числа выбранной мышцы выводятся текстом справа — цвет здесь нигде не остаётся
+ * единственным носителем смысла. Тёмно-зелёный — ориентир для роста, а не верхний лимит или оценка
+ * восстановления.
  */
 @Composable
 internal fun MuscleHeatmapCard(
@@ -61,33 +75,39 @@ internal fun MuscleHeatmapCard(
 ) {
   // Производные от отчёта, а не от выбора: пересобирать их на каждый тап по карте незачем.
   val loads = remember(state.report) { state.report.muscleLoads.associateBy { it.muscle } }
+  val summaryWeight = if (LocalDensity.current.fontScale >= 1.5f) 1.6f else 1f
 
   AnalysisCard(
       title = "Карта нагрузки",
-      subtitle = "Эффективные подходы в неделю: прямой вклад — 1, косвенный — 0,5",
       icon = Icons.Rounded.Accessibility,
       modifier = modifier,
   ) {
-    BodyMapFlip(
-        fillFor = heatmapSectorFillFor(loads),
-        selectedMuscle = state.selectedMuscle,
-        onMuscleClick = onMuscleClicked,
-    )
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+      BodyMapFlip(
+          fillFor = heatmapSectorFillFor(loads),
+          selectedMuscle = state.selectedMuscle,
+          onMuscleClick = onMuscleClicked,
+          modifier = Modifier.weight(1.3f),
+          figureWidthFraction = 1f,
+          showViewLabel = false,
+      )
+      SelectedMuscleDetails(
+          state.selectedMuscleLoad,
+          modifier = Modifier.weight(summaryWeight).animateContentSize(GymMotion.spatialDefault()),
+      )
+    }
 
     MuscleSelector(
         selected = state.selectedMuscle,
         onSelected = onSelectorSelected,
     )
 
-    Spacer(Modifier.height(12.dp))
-    HeatLegend()
     Spacer(Modifier.height(14.dp))
-    EffectiveSetsExplanation()
-    Spacer(Modifier.height(14.dp))
-    SelectedMuscleDetails(
-        state.selectedMuscleLoad,
-        modifier = Modifier.animateContentSize(GymMotion.spatialDefault()),
-    )
+    TopMuscleExercises(state.selectedMuscleLoad)
   }
 }
 
@@ -96,44 +116,6 @@ internal fun heatmapSectorFillFor(
     loads: Map<Muscle, MuscleLoadSummary>,
 ): (MuscleSector) -> androidx.compose.ui.graphics.Color = { sector ->
   ChartPalette.zoneColor(sector.maxMember(loads) { it.weeklySets }?.zone ?: VolumeZone.LOW)
-}
-
-/** Правила, по которым рабочий подход превращается в вклад в конкретную мышцу. */
-@Composable
-private fun EffectiveSetsExplanation() {
-  Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-    Text(
-        text = "Как считаем",
-        style = MaterialTheme.typography.labelLarge,
-        fontWeight = FontWeight.SemiBold,
-        color = MaterialTheme.colorScheme.onSurface,
-    )
-    Text(
-        text =
-            "Это не оценка качества подхода: кардио и разминка легче 60% лучшего веса " +
-                "упражнения не попадают в расчёт.",
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-    Text(
-        text = "На одну мышцу: основная — 1 подход, вторичная — 0,5, стабилизатор — 0.",
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-  }
-}
-
-@Composable
-private fun HeatLegend() {
-  FlowRow(
-      modifier = Modifier.fillMaxWidth(),
-      horizontalArrangement = Arrangement.spacedBy(14.dp),
-      verticalArrangement = Arrangement.spacedBy(6.dp),
-  ) {
-    ChartPalette.legendZones.forEach { zone ->
-      LegendSwatch(color = ChartPalette.zoneColor(zone), label = zone.displayName())
-    }
-  }
 }
 
 /** Числа выбранной мышцы: без них карта — только «красиво», но не ответ на вопрос. */
@@ -151,42 +133,111 @@ private fun SelectedMuscleDetails(
     )
     return
   }
-  Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
+  Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Text(
+        text = load.muscle.displayName(),
+        style = MaterialTheme.typography.titleSmall,
+        fontWeight = FontWeight.SemiBold,
+        color = MaterialTheme.colorScheme.onSurface,
+    )
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
       Text(
-          text = load.muscle.displayName(),
-          style = MaterialTheme.typography.titleSmall,
-          fontWeight = FontWeight.SemiBold,
-          color = MaterialTheme.colorScheme.onSurface,
-          modifier = Modifier.weight(1f),
+          "Объём",
+          style = MaterialTheme.typography.labelMedium,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
       )
-      StatusPill(
-          text = load.zone.displayName(),
-          color = ChartPalette.zoneColor(load.zone),
-      )
+      Row(
+          horizontalArrangement = Arrangement.spacedBy(6.dp),
+          verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Box(Modifier.size(10.dp).background(ChartPalette.zoneColor(load.zone), CircleShape))
+        Text(
+            text =
+                when (load.zone) {
+                  VolumeZone.LOW -> "Малый"
+                  VolumeZone.BASE -> "Базовый"
+                  VolumeZone.WORKING -> "Рабочий"
+                  VolumeZone.GROWTH_GUIDE -> "Эталонный"
+                },
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(1f),
+        )
+      }
     }
-    ValueRow(
-        label = "Подходов в неделю",
-        value = formatDecimal(load.weeklySets),
-        accent = true,
+    MuscleSummaryMetric("Подходы", formatDecimal(load.totalSets))
+    MuscleSummaryMetric("Эфф. подходы", "${formatDecimal(load.weeklySets)} / нед.")
+    MuscleSummaryMetric("Пауза", load.daysSinceLast?.let { "$it дн." } ?: "—")
+  }
+}
+
+@Composable
+private fun MuscleSummaryMetric(label: String, value: String) {
+  Column {
+    Text(
+        label,
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
-    ValueRow(
-        label = "Границы шкалы",
-        value = "2 · 5 · 10",
+    Text(
+        value,
+        style = MaterialTheme.typography.titleMedium,
+        color = MaterialTheme.colorScheme.primary,
     )
-    ValueBlock(
-        label = "Как читать",
-        value = "0–2 — малый; >2–<5 — базовый; 5–<10 — рабочий; ≥10 — ориентир для роста.",
-    )
-    ValueRow(label = "Раз в неделю", value = formatDecimal(load.sessionsPerWeek))
-    ValueRow(
-        label = "Дней с последней работы",
-        value = load.daysSinceLast?.toString() ?: "—",
-    )
-    if (load.topExercises.isNotEmpty()) {
-      // Названия упражнений в строку «подпись — значение» не помещаются: три названия
-      // длиннее всей карточки, поэтому они идут отдельным блоком с переносом.
-      ValueBlock(label = "Больше всего дают", value = load.topExercises.joinToString(", "))
+  }
+}
+
+@Composable
+private fun TopMuscleExercises(load: MuscleLoadSummary?) {
+  if (load == null || load.topExercises.isEmpty()) return
+  var expanded by rememberSaveable(load.muscle) { mutableStateOf(false) }
+  val haptics = gymHaptics()
+  Column(
+      modifier = Modifier.animateContentSize(GymMotion.spatialDefault()),
+      verticalArrangement = Arrangement.spacedBy(6.dp),
+  ) {
+    TextButton(
+        onClick = {
+          haptics.tap()
+          expanded = !expanded
+        },
+        modifier =
+            Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics {
+              stateDescription = if (expanded) "Развернуто" else "Свернуто"
+            },
+    ) {
+      Text(
+          "Основной вклад",
+          modifier = Modifier.weight(1f),
+          style = MaterialTheme.typography.labelLarge,
+          fontWeight = FontWeight.SemiBold,
+      )
+      Icon(if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore, null)
+    }
+    if (expanded) {
+      load.topExercises.forEachIndexed { index, exercise ->
+        Surface(
+            shape = MaterialTheme.shapes.small,
+            color = MaterialTheme.colorScheme.surfaceContainerHighest,
+        ) {
+          Row(
+              modifier = Modifier.fillMaxWidth().padding(12.dp),
+              horizontalArrangement = Arrangement.spacedBy(10.dp),
+          ) {
+            Text(
+                "${index + 1}",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            Text(
+                exercise,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.weight(1f),
+            )
+          }
+        }
+      }
     }
   }
 }
@@ -194,7 +245,7 @@ private fun SelectedMuscleDetails(
 /**
  * Объём по мышцам в виде bullet-графика: фактическое значение поверх общей шкалы 2 / 5 / 10.
  *
- * Строки отсортированы от меньшего объёма к большему: это снимок распределения, а не рецепт
+ * Строки отсортированы от большего объёма к меньшему: это снимок распределения, а не рецепт
  * «добрать до потолка». Больший объём в среднем помогает гипертрофии с убывающей отдачей, но
  * единого оптимума или максимального восстанавливаемого объёма не существует.
  */
@@ -204,10 +255,12 @@ internal fun MuscleVolumeCard(
     onMuscleClicked: (Muscle?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-  val rows = state.report.muscleLoads.sortedBy { it.weeklySets }
+  val rows =
+      state.report.muscleLoads.filter { it.totalSets > 0.0 }.sortedByDescending { it.weeklySets }
 
   AnalysisCard(
       title = "Объём по мышцам",
+      collapsible = true,
       subtitle = "Эффективные подходы в неделю — ориентир для гипертрофии, не диагноз тренировки",
       icon = Icons.Rounded.BarChart,
       modifier = modifier,
@@ -219,23 +272,6 @@ internal fun MuscleVolumeCard(
           onClick = { onMuscleClicked(load.muscle) },
       )
     }
-    Spacer(Modifier.height(10.dp))
-    Text(
-        text =
-            "Больше объём в среднем помогает росту, но отдача снижается; единого " +
-                "универсального оптимума или максимального восстанавливаемого объёма нет. " +
-                "Основа: мета-анализ 2026 (PMID 41343037).",
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-    Spacer(Modifier.height(6.dp))
-    Text(
-        text =
-            "Приложение не знает близость подходов к отказу, технику, сон и восстановление. " +
-                "При стабильном прогрессе меньший объём не делает программу неправильной.",
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
   }
 }
 
@@ -374,6 +410,7 @@ internal fun MuscleFrequencyCard(
 
   AnalysisCard(
       title = "Частота и пауза",
+      collapsible = true,
       subtitle =
           "До недели — обычный ритм; дальше — мягкое напоминание. Раз в неделю может " +
               "быть достаточно при умеренном объёме: при равном объёме частота сама по себе не определяет рост",

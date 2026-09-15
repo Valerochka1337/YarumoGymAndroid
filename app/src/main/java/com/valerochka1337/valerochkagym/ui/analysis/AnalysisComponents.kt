@@ -1,7 +1,9 @@
 package com.valerochka1337.valerochkagym.ui.analysis
 
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,6 +14,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -22,6 +25,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ArrowDropDown
 import androidx.compose.material.icons.rounded.CalendarMonth
+import androidx.compose.material.icons.rounded.ExpandLess
+import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.DateRangePicker
 import androidx.compose.material3.DropdownMenu
@@ -38,14 +43,17 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -55,6 +63,8 @@ import com.valerochka1337.valerochkagym.domain.analysis.AnalysisPeriod
 import com.valerochka1337.valerochkagym.domain.analysis.MIN_ANALYSIS_RANGE_DAYS
 import com.valerochka1337.valerochkagym.ui.components.GymCard
 import com.valerochka1337.valerochkagym.ui.components.GymFilterChip
+import com.valerochka1337.valerochkagym.ui.haptics.gymHaptics
+import com.valerochka1337.valerochkagym.ui.theme.GymMotion
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
@@ -73,13 +83,37 @@ internal fun AnalysisCard(
     modifier: Modifier = Modifier,
     subtitle: String? = null,
     icon: ImageVector? = null,
+    collapsible: Boolean = false,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+  var expanded by rememberSaveable { mutableStateOf(false) }
+  val haptics = gymHaptics()
   GymCard(
-      modifier = modifier.fillMaxWidth(),
+      modifier =
+          modifier
+              .fillMaxWidth()
+              .then(
+                  if (collapsible) Modifier.animateContentSize(GymMotion.spatialDefault())
+                  else Modifier
+              ),
       contentPadding = PaddingValues(horizontal = 18.dp, vertical = 16.dp),
   ) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
+    Row(
+        modifier =
+            if (collapsible) {
+              Modifier.fillMaxWidth()
+                  .heightIn(min = 48.dp)
+                  .semantics { stateDescription = if (expanded) "Развернуто" else "Свернуто" }
+                  .clickable(
+                      role = Role.Button,
+                      onClickLabel = if (expanded) "Свернуть" else "Развернуть",
+                  ) {
+                    haptics.tap()
+                    expanded = !expanded
+                  }
+            } else Modifier,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
       if (icon != null) {
         Icon(
             imageVector = icon,
@@ -91,21 +125,32 @@ internal fun AnalysisCard(
       }
       Text(
           text = title,
+          modifier = if (collapsible) Modifier.weight(1f) else Modifier,
           style = MaterialTheme.typography.titleMedium,
           fontWeight = FontWeight.SemiBold,
           color = MaterialTheme.colorScheme.onSurface,
       )
+      if (collapsible) {
+        Icon(
+            imageVector = if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(24.dp),
+        )
+      }
     }
-    if (subtitle != null) {
-      Spacer(Modifier.height(2.dp))
-      Text(
-          text = subtitle,
-          style = MaterialTheme.typography.bodySmall,
-          color = MaterialTheme.colorScheme.onSurfaceVariant,
-      )
+    if (!collapsible || expanded) {
+      if (subtitle != null) {
+        Spacer(Modifier.height(2.dp))
+        Text(
+            text = subtitle,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+      }
+      Spacer(Modifier.height(14.dp))
+      content()
     }
-    Spacer(Modifier.height(14.dp))
-    content()
   }
 }
 

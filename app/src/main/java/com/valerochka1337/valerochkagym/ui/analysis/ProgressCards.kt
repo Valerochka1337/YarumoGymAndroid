@@ -2,27 +2,38 @@ package com.valerochka1337.valerochkagym.ui.analysis
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ShowChart
+import androidx.compose.material.icons.rounded.ArrowDropDown
 import androidx.compose.material.icons.rounded.EmojiEvents
 import androidx.compose.material.icons.rounded.FitnessCenter
 import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.valerochka1337.valerochkagym.domain.analysis.CardioMet
 import com.valerochka1337.valerochkagym.domain.analysis.ExerciseProgress
 import com.valerochka1337.valerochkagym.domain.analysis.TrendVerdict
 import com.valerochka1337.valerochkagym.ui.analysis.charts.ColumnChart
@@ -30,6 +41,7 @@ import com.valerochka1337.valerochkagym.ui.analysis.charts.ColumnDatum
 import com.valerochka1337.valerochkagym.ui.analysis.charts.LinePoint
 import com.valerochka1337.valerochkagym.ui.analysis.charts.StatTile
 import com.valerochka1337.valerochkagym.ui.analysis.charts.TrendLineChart
+import com.valerochka1337.valerochkagym.ui.haptics.gymHaptics
 import com.valerochka1337.valerochkagym.ui.theme.ChartPalette
 import java.time.ZoneId
 
@@ -40,7 +52,6 @@ internal fun SummaryCard(
     modifier: Modifier = Modifier,
 ) {
   val report = state.report
-  val trend = report.weeklyPoints.map { it.hardSets.toFloat() }
 
   AnalysisCard(
       title = "Итоги периода",
@@ -59,7 +70,6 @@ internal fun SummaryCard(
           label = "Рабочих подходов",
           value = formatDecimal(report.totalHardSets, 0),
           caption = "${formatDecimal(report.totalHardSets / report.periodWeeks, 0)} в неделю",
-          trend = trend,
           modifier = Modifier.weight(1f),
       )
     }
@@ -86,12 +96,6 @@ internal fun SummaryCard(
     )
     if (report.cardioMinutes > 0) {
       ValueRow(label = "Кардио", value = formatMinutes(report.cardioMinutes))
-      ValueRow(
-          label =
-              "МЕТ-минут в неделю (норма ВОЗ " +
-                  "${formatDecimal(CardioMet.WHO_RANGE.start, 0)}–${formatDecimal(CardioMet.WHO_RANGE.endInclusive, 0)})",
-          value = formatDecimal(report.aerobicMetMinutesPerWeek, 0),
-      )
     }
   }
 }
@@ -122,10 +126,9 @@ internal fun ExerciseProgressCard(
       modifier = modifier,
   ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-      ScrollableChipRow(
-          options = exercises.take(MAX_PICKABLE_EXERCISES).map { it.exerciseId },
-          selected = shown.exerciseId,
-          label = { id -> exercises.first { it.exerciseId == id }.name },
+      ProgressExerciseSelector(
+          exercises = exercises,
+          selected = shown,
           onSelect = onExerciseSelected,
           modifier = Modifier.weight(1f),
       )
@@ -187,6 +190,66 @@ internal fun ExerciseProgressCard(
                 value = "${formatKg(point.weightKg)} · ${formatDate(point.dateMillis, state.zone)}",
             )
           }
+    }
+  }
+}
+
+/** Поиск только среди упражнений с точками прогресса за выбранный период. */
+@Composable
+internal fun ProgressExerciseSelector(
+    exercises: List<ExerciseProgress>,
+    selected: ExerciseProgress,
+    onSelect: (Long) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+  var expanded by rememberSaveable { mutableStateOf(false) }
+  var query by rememberSaveable { mutableStateOf("") }
+  val haptics = gymHaptics()
+  val filtered =
+      exercises.filter {
+        it.points.isNotEmpty() && it.name.contains(query.trim(), ignoreCase = true)
+      }
+  BoxWithConstraints(modifier) {
+    OutlinedButton(
+        onClick = {
+          haptics.tap()
+          query = ""
+          expanded = true
+        },
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+      Text(selected.name, modifier = Modifier.weight(1f))
+      Icon(Icons.Rounded.ArrowDropDown, contentDescription = null)
+    }
+    DropdownMenu(
+        expanded = expanded,
+        onDismissRequest = { expanded = false },
+        modifier = Modifier.width(maxWidth).heightIn(max = 400.dp),
+    ) {
+      OutlinedTextField(
+          value = query,
+          onValueChange = { query = it },
+          label = { Text("Поиск упражнения") },
+          singleLine = true,
+          modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+      )
+      if (filtered.isEmpty()) {
+        Text(
+            "Ничего не найдено",
+            modifier = Modifier.padding(16.dp),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+      }
+      filtered.forEach { exercise ->
+        DropdownMenuItem(
+            text = { Text(exercise.name) },
+            onClick = {
+              haptics.tap()
+              onSelect(exercise.exerciseId)
+              expanded = false
+            },
+        )
+      }
     }
   }
 }
@@ -319,9 +382,3 @@ internal fun RecordsCard(
 private val KEY_REPS = setOf(1, 3, 5, 8, 10, 12)
 
 private const val MAX_RECORDS = 12
-
-/**
- * Сколько упражнений попадает в переключатель прогресса. Список отсортирован по числу тренировок,
- * поэтому первыми идут те, по которым действительно есть тренд.
- */
-private const val MAX_PICKABLE_EXERCISES = 10
