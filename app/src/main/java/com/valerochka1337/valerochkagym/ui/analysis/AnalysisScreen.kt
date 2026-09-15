@@ -243,13 +243,6 @@ internal fun AnalysisScreenContent(
 
             AnalysisSection.PROGRESS -> {
               item {
-                WeeklyVolumeCard(
-                    state = state,
-                    onMetricSelected = onWeeklyMetricSelected,
-                    onWeekSelected = onWeekSelected,
-                )
-              }
-              item {
                 ExerciseProgressCard(
                     state = state,
                     onExerciseSelected = onExerciseSelected,
@@ -258,6 +251,13 @@ internal fun AnalysisScreenContent(
                       haptics.tap()
                       onExerciseClick(it)
                     },
+                )
+              }
+              item {
+                WeeklyVolumeCard(
+                    state = state,
+                    onMetricSelected = onWeeklyMetricSelected,
+                    onWeekSelected = onWeekSelected,
                 )
               }
             }
