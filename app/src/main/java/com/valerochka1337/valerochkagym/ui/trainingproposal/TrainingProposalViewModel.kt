@@ -23,6 +23,7 @@ data class TrainingProposalUiState(
     val items: List<TrainingProposal> = emptyList(),
     val nextCursor: String? = null,
     val editor: ProposalEditor? = null,
+    val explanation: PlannerExplanation? = null,
     val loading: Boolean = false,
     val saving: Boolean = false,
     val error: String? = null,
@@ -126,7 +127,9 @@ constructor(
     savedState["proposalId"] = id
     val token = ++generation
     load?.cancel()
-    mutableState.update { it.copy(editor = null, loading = true, saving = false, error = null) }
+    mutableState.update {
+      it.copy(editor = null, explanation = null, loading = true, saving = false, error = null)
+    }
     load =
         viewModelScope.launch {
           try {
@@ -134,6 +137,18 @@ constructor(
             if (token != generation || !repository.isCurrent(editor.session)) return@launch
             bound = editor.session
             mutableState.update { it.copy(editor = editor, loading = false) }
+            if (editor.proposal.source == ProposalSource.AI) {
+              val explanation =
+                  try {
+                    repository.explanation(editor)
+                  } catch (cancelled: CancellationException) {
+                    throw cancelled
+                  } catch (_: Exception) {
+                    null // Optional resource, including older servers and offline viewing.
+                  }
+              if (token == generation && repository.isCurrent(editor.session))
+                  mutableState.update { it.copy(explanation = explanation) }
+            }
           } catch (error: CancellationException) {
             throw error
           } catch (error: Exception) {

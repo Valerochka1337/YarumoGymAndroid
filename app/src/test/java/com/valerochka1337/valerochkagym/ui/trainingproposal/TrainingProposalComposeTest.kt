@@ -46,6 +46,65 @@ class TrainingProposalComposeTest {
   @get:Rule val compose = createComposeRule()
 
   @Test
+  @Config(qualifiers = "w360dp-h900dp-xhdpi")
+  fun `ai explanation stays readable at large font and disappears after editing the plan`() {
+    val ai =
+        proposal()
+            .copy(source = ProposalSource.AI, author = ProposalAuthor(ProposalSource.AI, null))
+    val explanation =
+        com.valerochka1337.valerochkagym.data.trainingproposal.PlannerExplanation(
+            ai.proposalId,
+            ai.currentVersion,
+            "planner-duration-v1",
+            60,
+            45,
+            2880,
+            listOf("UPPER_CHEST"),
+            listOf("bench"),
+            100,
+            1,
+            "GOAL_BALANCE",
+            "CONTINUITY",
+            "VOLUME_LIMIT",
+        )
+    var current by mutableStateOf(draft())
+    compose.setContent {
+      CompositionLocalProvider(LocalDensity provides Density(2f, 2f)) {
+        GymTheme {
+          TrainingProposalDetailContent(
+              ai,
+              current,
+              false,
+              false,
+              null,
+              listOf("bench" to "Жим лёжа"),
+              emptyList(),
+              {},
+              {},
+              {},
+              {},
+              {},
+              explanation = explanation,
+          )
+        }
+      }
+    }
+    compose.onNodeWithText("Почему такой план").performScrollTo().assertIsDisplayed()
+    compose
+        .onNodeWithText("Повтор из последней тренировки: Жим лёжа")
+        .performScrollTo()
+        .assertIsDisplayed()
+    compose.runOnIdle { current = current.copy(name = "Изменённый план") }
+    compose
+        .onNodeWithText(
+            "Вы изменили план. Обоснование ИИ относится к исходному варианту; оценка времени выше пересчитана."
+        )
+        .performScrollTo()
+        .assertIsDisplayed()
+    compose.onNodeWithText("Повтор из последней тренировки: Жим лёжа").assertDoesNotExist()
+  }
+
+  @Test
   fun `program button reflects opening and closing its form`() {
     compose.setContent {
       var manual by remember { mutableStateOf(false) }

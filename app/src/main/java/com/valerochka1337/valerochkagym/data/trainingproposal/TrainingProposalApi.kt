@@ -43,6 +43,18 @@ constructor(
     return result
   }
 
+  suspend fun explanation(
+      session: BackendSessionSnapshot,
+      proposal: TrainingProposal,
+  ): PlannerExplanation {
+    val result =
+        ProposalWire.decode<PlannerExplanation>(
+            request(session, "GET", path(proposal.proposalId) + "/planner-explanation")
+        )
+    require(result.validFor(proposal))
+    return result
+  }
+
   /** Only accepts caller's already journalled bytes. No encode/rebuild happens in this path. */
   suspend fun approve(
       session: BackendSessionSnapshot,

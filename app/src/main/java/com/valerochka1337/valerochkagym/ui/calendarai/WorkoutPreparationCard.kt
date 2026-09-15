@@ -126,7 +126,7 @@ internal fun WorkoutPreparationCardContent(
         "PAUSED_WAITING",
         "PAUSED_STATUS" -> "Не удалось завершить обмен с сервером. Повторите попытку"
         "READY" ->
-            "На $date · ${proposal?.snapshot?.draft?.exercises?.size ?: 0} упр. · ${intent?.availableDurationMinutes} мин"
+            "На $date · ${proposal?.snapshot?.draft?.exercises?.size ?: 0} упр. · желаемое время ${intent?.availableDurationMinutes} мин"
         "STALE" ->
             "Данные тренировок изменились. Повторите расчёт с актуальными данными — выбранные условия сохранятся."
         "SUPERSEDED" ->
