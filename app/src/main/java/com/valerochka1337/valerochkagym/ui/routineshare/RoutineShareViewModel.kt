@@ -8,9 +8,9 @@ import com.valerochka1337.valerochkagym.data.backend.BackendSessionStore
 import com.valerochka1337.valerochkagym.data.db.PlannedSet
 import com.valerochka1337.valerochkagym.data.db.dao.RoutineDao
 import com.valerochka1337.valerochkagym.data.db.entity.ExerciseType
+import com.valerochka1337.valerochkagym.data.routineshare.RoutineShareDataSource
 import com.valerochka1337.valerochkagym.data.routineshare.RoutineShareLink
 import com.valerochka1337.valerochkagym.data.routineshare.RoutineSharePreview
-import com.valerochka1337.valerochkagym.data.routineshare.RoutineShareDataSource
 import com.valerochka1337.valerochkagym.ui.navigation.GymRoutes
 import com.valerochka1337.valerochkagym.ui.routine.RoutineDetailExercise
 import com.valerochka1337.valerochkagym.ui.routine.RoutineDetailRoutine
@@ -65,7 +65,10 @@ constructor(
   private val _previewState = MutableStateFlow(RoutineSharePreviewUiState())
   val previewState: StateFlow<RoutineSharePreviewUiState> = _previewState.asStateFlow()
 
-  private val _effects = kotlinx.coroutines.channels.Channel<RoutineShareEffect>(kotlinx.coroutines.channels.Channel.BUFFERED)
+  private val _effects =
+      kotlinx.coroutines.channels.Channel<RoutineShareEffect>(
+          kotlinx.coroutines.channels.Channel.BUFFERED
+      )
   val effects = _effects.receiveAsFlow()
 
   init {
@@ -74,24 +77,33 @@ constructor(
   }
 
   fun loadOwner() {
-    val id = routineId ?: run {
-      _ownerState.value = RoutineShareOwnerUiState(loading = false, error = "Программа не найдена")
-      return
-    }
+    val id =
+        routineId
+            ?: run {
+              _ownerState.value =
+                  RoutineShareOwnerUiState(loading = false, error = "Программа не найдена")
+              return
+            }
     viewModelScope.launch {
       _ownerState.value = _ownerState.value.copy(loading = true, error = null)
       try {
         val routine = routineDao.getRoutineWithExercises(id)?.toDetailRoutine()
         if (routine == null || routine.origin == "STANDARD") {
-          _ownerState.value = RoutineShareOwnerUiState(loading = false, error = "Этой программой нельзя поделиться")
+          _ownerState.value =
+              RoutineShareOwnerUiState(loading = false, error = "Этой программой нельзя поделиться")
           return@launch
         }
         val links = repository.list(routine.syncId)
-        _ownerState.value = RoutineShareOwnerUiState(loading = false, routine = routine, links = links)
+        _ownerState.value =
+            RoutineShareOwnerUiState(loading = false, routine = routine, links = links)
       } catch (error: CancellationException) {
         throw error
       } catch (error: Exception) {
-        _ownerState.value = _ownerState.value.copy(loading = false, error = error.message ?: "Не удалось загрузить ссылки")
+        _ownerState.value =
+            _ownerState.value.copy(
+                loading = false,
+                error = error.message ?: "Не удалось загрузить ссылки",
+            )
       }
     }
   }
@@ -114,7 +126,8 @@ constructor(
                 },
             )
         clearCreateOperation()
-        _ownerState.value = _ownerState.value.copy(busy = false, links = repository.list(routine.syncId))
+        _ownerState.value =
+            _ownerState.value.copy(busy = false, links = repository.list(routine.syncId))
         _effects.send(RoutineShareEffect.OpenSystemShare(created.url))
       } catch (error: CancellationException) {
         throw error
@@ -124,7 +137,12 @@ constructor(
         // in the recovery list: replaying their exact idempotency tuple avoids a duplicate.
         if (error.invalidatesCreateContext()) clearCreateOperation()
         val recovered = runCatching { repository.list(routine.syncId) }.getOrNull()
-        _ownerState.value = _ownerState.value.copy(busy = false, links = recovered ?: _ownerState.value.links, error = error.message ?: "Не удалось создать ссылку")
+        _ownerState.value =
+            _ownerState.value.copy(
+                busy = false,
+                links = recovered ?: _ownerState.value.links,
+                error = error.message ?: "Не удалось создать ссылку",
+            )
       }
     }
   }
@@ -145,11 +163,16 @@ constructor(
       try {
         repository.revoke(shareId, operation("revoke_$shareId"))
         savedState["revoke_$shareId"] = UUID.randomUUID().toString()
-        _ownerState.value = _ownerState.value.copy(busy = false, links = repository.list(routine.syncId))
+        _ownerState.value =
+            _ownerState.value.copy(busy = false, links = repository.list(routine.syncId))
       } catch (error: CancellationException) {
         throw error
       } catch (error: Exception) {
-        _ownerState.value = _ownerState.value.copy(busy = false, error = error.message ?: "Не удалось отозвать ссылку")
+        _ownerState.value =
+            _ownerState.value.copy(
+                busy = false,
+                error = error.message ?: "Не удалось отозвать ссылку",
+            )
       }
     }
   }
@@ -162,13 +185,12 @@ constructor(
       _previewState.value = _previewState.value.copy(loading = true, error = null)
       try {
         val preview = repository.preview(token)
-        _previewState.update { current ->
-          current.copy(loading = false, preview = preview)
-        }
+        _previewState.update { current -> current.copy(loading = false, preview = preview) }
       } catch (error: CancellationException) {
         throw error
       } catch (error: Exception) {
-        _previewState.value = RoutineSharePreviewUiState(loading = false, error = "Ссылка недоступна или отозвана")
+        _previewState.value =
+            RoutineSharePreviewUiState(loading = false, error = "Ссылка недоступна или отозвана")
       }
     }
   }
@@ -181,22 +203,31 @@ constructor(
       return
     }
     viewModelScope.launch {
-      _previewState.value = _previewState.value.copy(importing = true, error = null, signInRequested = false)
+      _previewState.value =
+          _previewState.value.copy(importing = true, error = null, signInRequested = false)
       try {
         val imported = repository.import(token, operation("import_operation"))
-        val local = routineDao.getRoutineBySyncId(imported.routineId)
-            ?: throw IllegalStateException("Импорт ещё не появился в приложении")
+        val local =
+            routineDao.getRoutineBySyncId(imported.routineId)
+                ?: throw IllegalStateException("Импорт ещё не появился в приложении")
         savedState["import_operation"] = UUID.randomUUID().toString()
-        _previewState.value = _previewState.value.copy(importing = false, importedRoutineId = local.id)
+        _previewState.value =
+            _previewState.value.copy(importing = false, importedRoutineId = local.id)
       } catch (error: CancellationException) {
         throw error
       } catch (error: Exception) {
-        _previewState.value = _previewState.value.copy(importing = false, error = error.message ?: "Не удалось сохранить программу")
+        _previewState.value =
+            _previewState.value.copy(
+                importing = false,
+                error = error.message ?: "Не удалось сохранить программу",
+            )
       }
     }
   }
 
-  /** AccountGate calls this after login; the saved token and import operation survive recreation. */
+  /**
+   * AccountGate calls this after login; the saved token and import operation survive recreation.
+   */
   fun resumeAfterSignIn() {
     if (_previewState.value.signInRequested && sessions.snapshot() != null) import()
   }
@@ -230,9 +261,16 @@ internal fun RoutineSharePreview.toDetailRoutine(): RoutineDetailRoutine =
                   name = exercise.name,
                   type = ExerciseType.entries.first { it.name == exercise.type },
                   restSeconds = exercise.restSeconds,
-                  plannedSets = exercise.sets.map { set ->
-                    PlannedSet(set.weightKg, set.reps, set.durationSec, set.speedKmh, set.inclinePct)
-                  },
+                  plannedSets =
+                      exercise.sets.map { set ->
+                        PlannedSet(
+                            set.weightKg,
+                            set.reps,
+                            set.durationSec,
+                            set.speedKmh,
+                            set.inclinePct,
+                        )
+                      },
               )
             },
     )

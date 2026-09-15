@@ -1,7 +1,7 @@
 package com.valerochka1337.valerochkagym.ui.routineshare
 
-import android.net.Uri
 import android.app.Application
+import android.net.Uri
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test

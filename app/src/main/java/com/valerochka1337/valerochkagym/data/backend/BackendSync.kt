@@ -904,7 +904,11 @@ constructor(
               )
           val remote = api.json.decodeFromJsonElement<CloudSnapshot>(response.body)
           if (remote.revision < importedRevision)
-              throw BackendException(409, "routine_share_pending", "Импорт ещё не появился в синхронизации")
+              throw BackendException(
+                  409,
+                  "routine_share_pending",
+                  "Импорт ещё не появился в синхронизации",
+              )
           require(remote.records.any { it.kind == "routine" && it.id == routineId && !it.deleted })
           rejectProfileTombstone(remote)
           rejectInvalidProfile(remote, expected.tokens.userId)

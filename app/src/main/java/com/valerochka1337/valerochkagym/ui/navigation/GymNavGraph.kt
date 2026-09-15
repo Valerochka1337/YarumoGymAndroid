@@ -9,10 +9,10 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.runtime.key
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.ui.Modifier
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -324,7 +324,8 @@ fun GymNavGraph(
 
     composable(
         route = GymRoutes.ROUTINE_SHARE,
-        arguments = listOf(navArgument(GymRoutes.ROUTINE_SHARE_TOKEN) { type = NavType.StringType }),
+        arguments =
+            listOf(navArgument(GymRoutes.ROUTINE_SHARE_TOKEN) { type = NavType.StringType }),
     ) {
       RoutineSharePreviewScreen(
           onBack = { navController.popBackStack() },
@@ -575,7 +576,8 @@ fun GuestRoutineShareNavHost(
       ) {
         composable(
             route = GymRoutes.ROUTINE_SHARE,
-            arguments = listOf(navArgument(GymRoutes.ROUTINE_SHARE_TOKEN) { type = NavType.StringType }),
+            arguments =
+                listOf(navArgument(GymRoutes.ROUTINE_SHARE_TOKEN) { type = NavType.StringType }),
         ) {
           RoutineSharePreviewScreen(
               onBack = onExit,

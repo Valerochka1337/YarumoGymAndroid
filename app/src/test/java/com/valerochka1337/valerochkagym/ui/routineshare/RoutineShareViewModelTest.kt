@@ -16,13 +16,13 @@ import com.valerochka1337.valerochkagym.data.routineshare.RoutineShareLink
 import com.valerochka1337.valerochkagym.data.routineshare.RoutineSharePreview
 import com.valerochka1337.valerochkagym.ui.navigation.GymRoutes
 import com.valerochka1337.valerochkagym.util.MainDispatcherRule
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -51,7 +51,8 @@ class RoutineShareViewModelTest {
                     "import_operation" to operation,
                 )
             )
-        val viewModel = RoutineShareViewModel(handle, FakeRoutineDao(routineSyncId), source, sessions)
+        val viewModel =
+            RoutineShareViewModel(handle, FakeRoutineDao(routineSyncId), source, sessions)
         runCurrent()
 
         viewModel.import()
@@ -114,7 +115,13 @@ class RoutineShareViewModelTest {
                     "create_catalog_revision" to 23L,
                 )
             )
-        val viewModel = RoutineShareViewModel(handle, FakeRoutineDao(routineSyncId, ownerId = 9L), source, FakeSessions())
+        val viewModel =
+            RoutineShareViewModel(
+                handle,
+                FakeRoutineDao(routineSyncId, ownerId = 9L),
+                source,
+                FakeSessions(),
+            )
         advanceUntilIdle()
 
         viewModel.create()
@@ -135,7 +142,8 @@ class RoutineShareViewModelTest {
             RoutineShareLink(
                 shareId = "00000000-0000-0000-0000-000000000013",
                 routineId = routineSyncId,
-                url = "https://api.valerochkagym.tech/r/AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-ABCDE",
+                url =
+                    "https://api.valerochkagym.tech/r/AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-ABCDE",
                 createdAt = 1L,
                 active = true,
             )
@@ -154,7 +162,13 @@ class RoutineShareViewModelTest {
                     "create_catalog_revision" to 23L,
                 )
             )
-        val viewModel = RoutineShareViewModel(handle, FakeRoutineDao(routineSyncId, ownerId = 9L), source, FakeSessions())
+        val viewModel =
+            RoutineShareViewModel(
+                handle,
+                FakeRoutineDao(routineSyncId, ownerId = 9L),
+                source,
+                FakeSessions(),
+            )
         advanceUntilIdle()
 
         viewModel.create()
@@ -170,7 +184,8 @@ class RoutineShareViewModelTest {
   private class FakeSessions : BackendSessionStore {
     override val session = MutableStateFlow<BackendTokens?>(null)
     private var epoch = 0L
-    override val sessionEpoch: Long get() = epoch
+    override val sessionEpoch: Long
+      get() = epoch
 
     override fun save(tokens: BackendTokens?) {
       epoch++
@@ -232,23 +247,29 @@ class RoutineShareViewModelTest {
     override fun observeRoutinesFull(): Flow<List<RoutineWithExercises>> = flowOf(emptyList())
 
     override suspend fun getRoutineWithExercises(id: Long): RoutineWithExercises? =
-        ownerId?.takeIf { it == id }?.let {
-          RoutineWithExercises(
-              routine = RoutineEntity(id = it, syncId = importedSyncId, name = "Моя программа"),
-              exercises = emptyList(),
-          )
-        }
+        ownerId
+            ?.takeIf { it == id }
+            ?.let {
+              RoutineWithExercises(
+                  routine = RoutineEntity(id = it, syncId = importedSyncId, name = "Моя программа"),
+                  exercises = emptyList(),
+              )
+            }
 
     override suspend fun getRoutineName(id: Long): String? = null
 
     override suspend fun getRoutineBySyncId(syncId: String): RoutineEntity? =
-        RoutineEntity(id = 5, syncId = importedSyncId, name = "Моя копия").takeIf { syncId == importedSyncId }
+        RoutineEntity(id = 5, syncId = importedSyncId, name = "Моя копия").takeIf {
+          syncId == importedSyncId
+        }
 
     override suspend fun upsertRoutine(routine: RoutineEntity): Long = routine.id
 
     override suspend fun deleteRoutine(id: Long) = Unit
 
-    override suspend fun insertRoutineExercises(routineExercises: List<RoutineExerciseEntity>): List<Long> = emptyList()
+    override suspend fun insertRoutineExercises(
+        routineExercises: List<RoutineExerciseEntity>
+    ): List<Long> = emptyList()
 
     override suspend fun deleteRoutineExercises(routineId: Long) = Unit
   }
