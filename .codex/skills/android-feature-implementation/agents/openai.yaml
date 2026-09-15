@@ -1,7 +1,7 @@
 interface:
   display_name: "Android Feature Implementation"
-  short_description: "Fast Android delivery with risk-based quality gates"
-  default_prompt: "Use $android-feature-implementation to implement this Android feature through the fastest safe research, planning, implementation, testing, and review path."
+  short_description: "Focused Android delivery with proportional verification"
+  default_prompt: "Use $android-feature-implementation to deliver this feature with a minimal workflow and verification of its concrete risks."
 
 policy:
   allow_implicit_invocation: true
