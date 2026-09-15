@@ -173,6 +173,33 @@ class WorkoutsScreenTest {
     assertEquals(listOf(1L, 2L), cloned)
   }
 
+  @Test
+  fun `only a personal routine exposes share in its menu`() {
+    val shared = mutableListOf<Long>()
+    compose.setContent {
+      GymTheme {
+        WorkoutRoutinesList(
+            routines = routines(),
+            selectedRoutineId = null,
+            templatesExpanded = true,
+            onTemplatesExpandedChange = {},
+            onRoutineSelected = {},
+            onOpenRoutine = {},
+            onShareRoutine = { shared += it },
+            onDuplicateRoutine = {},
+            onDeleteRoutine = {},
+        )
+      }
+    }
+
+    compose.onAllNodesWithContentDescription("Меню программы")[0].performClick()
+    compose.onNodeWithText("Поделиться").assertDoesNotExist()
+    compose.onAllNodesWithContentDescription("Меню программы")[1].performClick()
+    compose.onNodeWithText("Поделиться").performClick()
+
+    assertEquals(listOf(2L), shared)
+  }
+
   private fun routines() =
       listOf(
           RoutineCardUi(

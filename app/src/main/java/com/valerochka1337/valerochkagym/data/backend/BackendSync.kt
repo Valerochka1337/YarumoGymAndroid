@@ -860,6 +860,68 @@ constructor(
         }
       }
 
+  /**
+   * Receive-only projection for a server-created routine share import. The server owns the import
+   * transaction and receipt; Android only reconciles the returned cloud record into Room.
+   */
+  suspend fun applyImportedRoutine(
+      expected: BackendSessionSnapshot,
+      routineId: String,
+      importedRevision: Long,
+  ) =
+      withContext(Dispatchers.IO) {
+        mutex.withLock {
+          fun guard() {
+            assertOwner(expected.tokens.userId)
+            if (tokens.snapshot()?.epoch != expected.epoch || active())
+                throw BackendException(
+                    409,
+                    "routine_share_context_changed",
+                    "Аккаунт или активная тренировка изменились",
+                )
+          }
+          guard()
+          val response =
+              api.authorizedRawResponse(
+                  "GET",
+                  "/sync",
+                  ByteArray(0),
+                  headers =
+                      mapOf(
+                          "X-Gym-Capabilities" to
+                              "calendar-plans,exercise-hint,annotated-workout-writes,profile,health-ledger-v1"
+                      ),
+                  expectedOwner = expected.tokens.userId,
+                  expectedSessionEpoch = expected.epoch,
+                  retryOnUnauthorized = false,
+              )
+          guard()
+          if (response.owner != expected.tokens.userId || response.sessionEpoch != expected.epoch)
+              throw BackendException(
+                  409,
+                  "routine_share_context_changed",
+                  "Не удалось подтвердить импорт программы",
+              )
+          val remote = api.json.decodeFromJsonElement<CloudSnapshot>(response.body)
+          if (remote.revision < importedRevision)
+              throw BackendException(409, "routine_share_pending", "Импорт ещё не появился в синхронизации")
+          require(remote.records.any { it.kind == "routine" && it.id == routineId && !it.deleted })
+          rejectProfileTombstone(remote)
+          rejectInvalidProfile(remote, expected.tokens.userId)
+          lastAcceptedCapabilities = response.acceptedCapabilities
+          cacheAcceptedCapabilities(expected.tokens.userId)
+          applyRemoteSnapshot(expected.tokens.userId, remote) {
+            guard()
+            val imported =
+                db.query("SELECT 1 FROM routines WHERE syncId=?", arrayOf(routineId)).use {
+                  it.moveToFirst()
+                }
+            check(imported)
+          }
+          guard()
+        }
+      }
+
   private suspend fun applyRemoteSnapshot(
       user: String,
       remoteSnapshot: CloudSnapshot,

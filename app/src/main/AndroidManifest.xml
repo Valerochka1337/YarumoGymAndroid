@@ -45,6 +45,21 @@
             android:exported="false"
             android:theme="@style/Theme.ValerochkaGym" />
 
+        <activity
+            android:name=".ui.routineshare.RoutineShareLinkActivity"
+            android:exported="true"
+            android:theme="@style/Theme.ValerochkaGym">
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="api.valerochkagym.tech"
+                    android:pathPrefix="/r/" />
+            </intent-filter>
+        </activity>
+
         <!-- Temporary URI for TakePicture. The InBody image stays in cache only while it is read. -->
         <provider
             android:name="androidx.core.content.FileProvider"

@@ -70,6 +70,92 @@ class BackendSyncTest : RoomDaoTest() {
     override suspend fun ensureReady(): Boolean = false
   }
 
+  private fun Server.addSharedRoutine(): String {
+    val id = "00000000-0000-0000-0000-000000000777"
+    revision++
+    val record = CloudRecord(
+        "routine", id, revision, false,
+        buildJsonObject {
+          put("name", "Полученная программа")
+          put("note", "")
+          put("updatedAt", 1)
+          put("gymIds", JsonArray(emptyList()))
+          put("exercises", JsonArray(emptyList()))
+        },
+    )
+    records[record.key] = record
+    return id
+  }
+
+  @Test
+  fun `share projection replays without duplication or uploading pending local changes`() = runTest {
+    SyncSchema.install(raw)
+    val server = Server()
+    val store = Store()
+    val sync = BackendSync(db, server, store)
+    sync.claim("user-a")
+    sync.run()
+    val expected = requireNotNull(store.snapshot())
+    val local = db.routineDao().upsertRoutine(RoutineEntity(name = "Несохранённая в облаке"))
+    val importedId = server.addSharedRoutine()
+    val posts = server.postAttempts
+
+    sync.applyImportedRoutine(expected, importedId, server.revision)
+    val first = requireNotNull(db.routineDao().getRoutineBySyncId(importedId))
+    sync.applyImportedRoutine(expected, importedId, server.revision)
+
+    assertEquals(first.id, db.routineDao().getRoutineBySyncId(importedId)?.id)
+    assertEquals(2, tableCount("routines"))
+    assertEquals(0, tableCount("routine_gyms"))
+    assertEquals(posts, server.postAttempts)
+    assertEquals("PERSONAL", first.origin)
+    assertEquals("", first.note)
+    raw.query("SELECT name FROM routines WHERE id=?", arrayOf(local)).use {
+      assertTrue(it.moveToFirst())
+      assertEquals("Несохранённая в облаке", it.getString(0))
+    }
+  }
+
+  @Test
+  fun `share projection rejects a session revoked while the snapshot loads`() = runTest {
+    SyncSchema.install(raw)
+    val server = Server()
+    val store = Store()
+    val sync = BackendSync(db, server, store)
+    sync.claim("user-a")
+    sync.run()
+    val expected = requireNotNull(store.snapshot())
+    val importedId = server.addSharedRoutine()
+    server.beforeGet = { store.save(null) }
+
+    try {
+      sync.applyImportedRoutine(expected, importedId, server.revision)
+      fail("A revoked session must not apply the returned routine")
+    } catch (_: BackendException) {}
+
+    assertNull(db.routineDao().getRoutineBySyncId(importedId))
+  }
+
+  @Test
+  fun `share projection waits for the acknowledged server revision`() = runTest {
+    SyncSchema.install(raw)
+    val server = Server()
+    val store = Store()
+    val sync = BackendSync(db, server, store)
+    sync.claim("user-a")
+    sync.run()
+    val importedId = server.addSharedRoutine()
+
+    try {
+      sync.applyImportedRoutine(requireNotNull(store.snapshot()), importedId, server.revision + 1)
+      fail("An older snapshot must not confirm the import")
+    } catch (error: BackendException) {
+      assertEquals("routine_share_pending", error.code)
+    }
+
+    assertNull(db.routineDao().getRoutineBySyncId(importedId))
+  }
+
   private class Server : BackendTransport {
     override val json = Json { encodeDefaults = true }
     var accepted: Set<String> = emptySet()

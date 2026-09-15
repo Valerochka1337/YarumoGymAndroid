@@ -34,10 +34,11 @@ import com.valerochka1337.valerochkagym.ui.components.GymCard
 @Composable
 fun AccountGate(
     vm: AccountViewModel = hiltViewModel(),
+    allowGuest: Boolean = false,
     content: @Composable () -> Unit,
 ) {
   val session by vm.session.collectAsStateWithLifecycle()
-  if (session != null) key(session!!.userId) { content() }
+  if (session != null || allowGuest) key(if (allowGuest) "guest" else session!!.userId) { content() }
   else
       Surface(Modifier.fillMaxSize()) {
         Column(

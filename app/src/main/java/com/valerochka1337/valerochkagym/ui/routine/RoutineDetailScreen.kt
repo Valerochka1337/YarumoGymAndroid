@@ -223,6 +223,8 @@ internal fun RoutineDetailContent(
     windowWidthClass: GymWindowWidthClass,
     modifier: Modifier = Modifier,
     originContent: (@Composable () -> Unit)? = null,
+    showGyms: Boolean = true,
+    actionContent: (@Composable () -> Unit)? = null,
 ) {
   val horizontalPadding = if (windowWidthClass == GymWindowWidthClass.Compact) 16.dp else 24.dp
   LazyColumn(
@@ -231,17 +233,19 @@ internal fun RoutineDetailContent(
       verticalArrangement = Arrangement.spacedBy(12.dp),
   ) {
     item { if (originContent != null) originContent() else RoutineOriginLabel(routine.origin) }
-    item {
-      GymCard(modifier = Modifier.fillMaxWidth()) {
-        Text("Залы", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(4.dp))
-        Text(
-            text =
-                routine.gymNames.takeIf { it.isNotEmpty() }?.joinToString()
-                    ?: "Без ограничений по залу",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+    if (showGyms) {
+      item {
+        GymCard(modifier = Modifier.fillMaxWidth()) {
+          Text("Залы", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+          Spacer(Modifier.height(4.dp))
+          Text(
+              text =
+                  routine.gymNames.takeIf { it.isNotEmpty() }?.joinToString()
+                      ?: "Без ограничений по залу",
+              style = MaterialTheme.typography.bodyMedium,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+          )
+        }
       }
     }
     item {
@@ -268,6 +272,7 @@ internal fun RoutineDetailContent(
         RoutineDetailExerciseCard(exercise = exercise, onClick = onExerciseClick)
       }
     }
+    if (actionContent != null) item { actionContent() }
   }
 }
 

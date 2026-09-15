@@ -104,6 +104,24 @@ class RoutineDetailScreenTest {
     compose.onNodeWithContentDescription("Редактировать программу").assertDoesNotExist()
   }
 
+  @Test
+  fun `shared viewer hides gyms and does not expose local exercise navigation`() {
+    compose.setContent {
+      GymTheme {
+        RoutineDetailContent(
+            routine = routine("SHARED"),
+            onExerciseClick = null,
+            windowWidthClass = GymWindowWidthClass.Expanded,
+            showGyms = false,
+        )
+      }
+    }
+
+    compose.onNodeWithText("Залы").assertDoesNotExist()
+    compose.onNodeWithContentDescription("Открыть карточку упражнения").assertDoesNotExist()
+    compose.onNodeWithText("Приседания").assertExists()
+  }
+
   private fun routine(origin: String) =
       RoutineDetailRoutine(
           id = 7,
