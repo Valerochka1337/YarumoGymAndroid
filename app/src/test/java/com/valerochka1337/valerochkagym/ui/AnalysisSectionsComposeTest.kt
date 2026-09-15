@@ -2,6 +2,7 @@ package com.valerochka1337.valerochkagym.ui
 
 import android.app.Application
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.CompositionLocalProvider
@@ -137,8 +138,47 @@ class AnalysisSectionsComposeTest {
     }
     compose.onNodeWithText("Как считаем").assertDoesNotExist()
     compose.onNodeWithText("Жим гантелей на наклонной скамье").assertDoesNotExist()
-    compose.onNodeWithText("Основной вклад").performScrollTo().performClick()
-    compose.onNodeWithText("Жим гантелей на наклонной скамье").performScrollTo().assertIsDisplayed()
+    compose.onNodeWithText("Основной вклад").assertDoesNotExist()
+  }
+
+  @Test
+  @Config(qualifiers = "w600dp-h900dp-xhdpi")
+  fun `body takes additional width without squeezing the summary`() {
+    val load =
+        MuscleLoadSummary(
+            muscle = Muscle.UPPER_CHEST,
+            weeklySets = 12.0,
+            totalSets = 24.0,
+            tonnageKg = 2400.0,
+            zone = VolumeZone.GROWTH_GUIDE,
+            sessionsPerWeek = 2.0,
+            daysSinceLast = 3,
+            topExercises = emptyList(),
+        )
+    val initial = AnalysisUiState(loading = false)
+    val state =
+        initial.copy(
+            report = initial.report.copy(muscleLoads = listOf(load)),
+            selectedMuscle = load.muscle,
+        )
+    compose.setContent {
+      GymTheme {
+        Column(Modifier.verticalScroll(rememberScrollState())) {
+          MuscleHeatmapCard(state, {}, Modifier.width(320.dp))
+          MuscleHeatmapCard(state, {}, Modifier.width(560.dp))
+        }
+      }
+    }
+    val figures = compose.onAllNodesWithContentDescription("Карта тела, спереди")
+    val narrow = figures[0].getUnclippedBoundsInRoot()
+    val wide = figures[1].getUnclippedBoundsInRoot()
+    assertEquals(240f, ((wide.right - wide.left) - (narrow.right - narrow.left)).value, 1f)
+    val summaries = compose.onAllNodesWithText("Эталонный")
+    val first = summaries[0].getUnclippedBoundsInRoot()
+    val second = summaries[1].getUnclippedBoundsInRoot()
+    assertEquals((first.right - first.left).value, (second.right - second.left).value, 1f)
+    assertTrue(first.left >= narrow.right)
+    assertTrue(second.left >= wide.right)
   }
 
   @Test

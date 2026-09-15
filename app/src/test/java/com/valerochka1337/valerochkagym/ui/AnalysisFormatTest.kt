@@ -58,9 +58,10 @@ class AnalysisFormatTest {
 
   @Test
   fun `last session caption refers to the end of the selected period`() {
-    assertEquals("последняя — в последний день периода", formatLastSessionCaption(0))
-    assertEquals("последняя — за день до конца периода", formatLastSessionCaption(1))
-    assertEquals("последняя — за 2 дн. до конца периода", formatLastSessionCaption(2))
+    val end = LocalDate.of(2026, 1, 2)
+    assertEquals("последняя 02.01.2026", formatLastSessionCaption(0, end))
+    assertEquals("последняя 01.01.2026", formatLastSessionCaption(1, end))
+    assertEquals("последняя 31.12.2025", formatLastSessionCaption(2, end))
   }
 
   @Test

@@ -6,6 +6,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -19,29 +20,19 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Accessibility
 import androidx.compose.material.icons.rounded.BarChart
-import androidx.compose.material.icons.rounded.ExpandLess
-import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Schedule
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.valerochka1337.valerochkagym.data.db.entity.Muscle
@@ -75,39 +66,85 @@ internal fun MuscleHeatmapCard(
 ) {
   // Производные от отчёта, а не от выбора: пересобирать их на каждый тап по карте незачем.
   val loads = remember(state.report) { state.report.muscleLoads.associateBy { it.muscle } }
-  val summaryWeight = if (LocalDensity.current.fontScale >= 1.5f) 1.6f else 1f
+  val summaryWidth = muscleSummaryWidth(state.selectedMuscleLoad)
 
   AnalysisCard(
       title = "Карта нагрузки",
       icon = Icons.Rounded.Accessibility,
       modifier = modifier,
   ) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.Top,
-    ) {
-      BodyMapFlip(
-          fillFor = heatmapSectorFillFor(loads),
-          selectedMuscle = state.selectedMuscle,
-          onMuscleClick = onMuscleClicked,
-          modifier = Modifier.weight(1.3f),
-          figureWidthFraction = 1f,
-          showViewLabel = false,
-      )
-      SelectedMuscleDetails(
-          state.selectedMuscleLoad,
-          modifier = Modifier.weight(summaryWeight).animateContentSize(GymMotion.spatialDefault()),
-      )
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+      // Сначала резервируем место под данные; фигура получает всю оставшуюся ширину.
+      // При экстремально узком окне перенос сохраняет читаемость и размер кнопки поворота.
+      if (maxWidth < summaryWidth + 60.dp) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+          BodyMapFlip(
+              fillFor = heatmapSectorFillFor(loads),
+              selectedMuscle = state.selectedMuscle,
+              onMuscleClick = onMuscleClicked,
+              figureWidthFraction = 1f,
+              showViewLabel = false,
+          )
+          SelectedMuscleDetails(state.selectedMuscleLoad, Modifier.fillMaxWidth())
+        }
+      } else {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+          BodyMapFlip(
+              fillFor = heatmapSectorFillFor(loads),
+              selectedMuscle = state.selectedMuscle,
+              onMuscleClick = onMuscleClicked,
+              modifier = Modifier.weight(1f),
+              figureWidthFraction = 1f,
+              showViewLabel = false,
+          )
+          SelectedMuscleDetails(
+              state.selectedMuscleLoad,
+              modifier =
+                  Modifier.width(summaryWidth).animateContentSize(GymMotion.spatialDefault()),
+          )
+        }
+      }
     }
 
     MuscleSelector(
         selected = state.selectedMuscle,
         onSelected = onSelectorSelected,
     )
+  }
+}
 
-    Spacer(Modifier.height(14.dp))
-    TopMuscleExercises(state.selectedMuscleLoad)
+/** Ширина чисел и подписей с учётом системного шрифта, независимая от ширины фигуры. */
+@Composable
+private fun muscleSummaryWidth(load: MuscleLoadSummary?): androidx.compose.ui.unit.Dp {
+  val measurer = rememberTextMeasurer()
+  val typography = MaterialTheme.typography
+  val density = LocalDensity.current
+  val labelsWidth =
+      listOf("Объём", "Подходы", "Эфф. подходы", "Пауза").maxOf {
+        measurer.measure(it, typography.labelMedium, softWrap = false).size.width
+      }
+  val valuesWidth =
+      listOf(
+              formatDecimal(load?.totalSets ?: 0.0),
+              "${formatDecimal(load?.weeklySets ?: 0.0)} / нед.",
+              load?.daysSinceLast?.let { "$it дн." } ?: "—",
+          )
+          .maxOf { measurer.measure(it, typography.titleMedium, softWrap = false).size.width }
+  val categoryWidth =
+      measurer
+          .measure(
+              "Эталонный",
+              typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+              softWrap = false,
+          )
+          .size
+          .width
+  return with(density) {
+    maxOf(112.dp, labelsWidth.toDp(), valuesWidth.toDp(), categoryWidth.toDp() + 16.dp) + 2.dp
   }
 }
 
@@ -185,60 +222,6 @@ private fun MuscleSummaryMetric(label: String, value: String) {
         style = MaterialTheme.typography.titleMedium,
         color = MaterialTheme.colorScheme.primary,
     )
-  }
-}
-
-@Composable
-private fun TopMuscleExercises(load: MuscleLoadSummary?) {
-  if (load == null || load.topExercises.isEmpty()) return
-  var expanded by rememberSaveable(load.muscle) { mutableStateOf(false) }
-  val haptics = gymHaptics()
-  Column(
-      modifier = Modifier.animateContentSize(GymMotion.spatialDefault()),
-      verticalArrangement = Arrangement.spacedBy(6.dp),
-  ) {
-    TextButton(
-        onClick = {
-          haptics.tap()
-          expanded = !expanded
-        },
-        modifier =
-            Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics {
-              stateDescription = if (expanded) "Развернуто" else "Свернуто"
-            },
-    ) {
-      Text(
-          "Основной вклад",
-          modifier = Modifier.weight(1f),
-          style = MaterialTheme.typography.labelLarge,
-          fontWeight = FontWeight.SemiBold,
-      )
-      Icon(if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore, null)
-    }
-    if (expanded) {
-      load.topExercises.forEachIndexed { index, exercise ->
-        Surface(
-            shape = MaterialTheme.shapes.small,
-            color = MaterialTheme.colorScheme.surfaceContainerHighest,
-        ) {
-          Row(
-              modifier = Modifier.fillMaxWidth().padding(12.dp),
-              horizontalArrangement = Arrangement.spacedBy(10.dp),
-          ) {
-            Text(
-                "${index + 1}",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.primary,
-            )
-            Text(
-                exercise,
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.weight(1f),
-            )
-          }
-        }
-      }
-    }
   }
 }
 
