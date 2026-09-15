@@ -4,13 +4,17 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.valerochka1337.valerochkagym.data.db.LocalEquipmentCatalog
+import com.valerochka1337.valerochkagym.data.db.entity.KeyExercisePriority
 import com.valerochka1337.valerochkagym.data.profile.AiProfilePromptGate
 import com.valerochka1337.valerochkagym.domain.BasicProfile
 import com.valerochka1337.valerochkagym.domain.ExperienceLevel
+import com.valerochka1337.valerochkagym.domain.KeyExerciseChoice
 import com.valerochka1337.valerochkagym.domain.ProfileEditTarget
 import com.valerochka1337.valerochkagym.domain.ProfileRepository
 import com.valerochka1337.valerochkagym.domain.ProfileSaveResult
 import com.valerochka1337.valerochkagym.domain.ProfileSex
+import com.valerochka1337.valerochkagym.domain.StrengthExerciseCandidate
+import com.valerochka1337.valerochkagym.domain.StrengthPlannerRepository
 import com.valerochka1337.valerochkagym.domain.TrainingGoal
 import com.valerochka1337.valerochkagym.service.WallClock
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -22,6 +26,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 
 data class ProfileEditorUiState(
@@ -38,6 +44,9 @@ data class ProfileEditorUiState(
     val isSaving: Boolean = false,
     val error: String? = null,
     val promptDisabled: Boolean = false,
+    val keyExercises: List<KeyExerciseChoice> = emptyList(),
+    val strengthExercises: List<StrengthExerciseCandidate> = emptyList(),
+    val showKeyExercises: Boolean = false,
 )
 
 @HiltViewModel
@@ -48,6 +57,7 @@ constructor(
     private val promptGate: AiProfilePromptGate,
     private val savedStateHandle: SavedStateHandle,
     private val clock: WallClock = WallClock { System.currentTimeMillis() },
+    private val strengthPlannerRepository: StrengthPlannerRepository? = null,
 ) : ViewModel() {
   private val _uiState = MutableStateFlow(ProfileEditorUiState())
   val uiState: StateFlow<ProfileEditorUiState> = _uiState.asStateFlow()
@@ -61,14 +71,30 @@ constructor(
         return@launch
       }
       val promptDisabled = promptGate.isDisabledForCurrentScope()
-      profileRepository.observe(snapshot.target).collectLatest { profile ->
-        if (profile == null) {
-          _uiState.value =
+      combine(
+              profileRepository.observe(snapshot.target),
+              strengthPlannerRepository?.observe(snapshot.target) ?: flowOf(emptyList()),
+              strengthPlannerRepository?.observeLiveStrengthExercises() ?: flowOf(emptyList()),
+          ) { profile, choices, candidates ->
+            if (profile == null || choices == null) {
               ProfileEditorUiState(isLoading = false, error = "Профиль больше недоступен")
-        } else if (!_uiState.value.isSaving) {
-          _uiState.value = profile.toUi(snapshot.target, savedStateHandle, promptDisabled)
-        }
-      }
+            } else {
+              val draft = profileDraftFrom(savedStateHandle, snapshot.target)
+              val ids = candidates.associateBy { it.syncId }
+              profile
+                  .toUi(snapshot.target, savedStateHandle, promptDisabled)
+                  .copy(
+                      keyExercises =
+                          (draft?.keyExercises ?: choices).map {
+                            it.copy(exerciseId = ids[it.exerciseSyncId]?.id)
+                          },
+                      strengthExercises = candidates,
+                  )
+            }
+          }
+          .collectLatest { next ->
+            if (!_uiState.value.isSaving || next.target == null) _uiState.value = next
+          }
     }
   }
 
@@ -107,6 +133,35 @@ constructor(
     }
   }
 
+  fun toggleKeyExercise(exerciseId: Long) = update {
+    val current = keyExercises.associateBy { it.exerciseId }.toMutableMap()
+    if (current.remove(exerciseId) == null && current.size < 5)
+        current[exerciseId] =
+            KeyExerciseChoice(
+                exerciseId = exerciseId,
+                exerciseSyncId =
+                    strengthExercises.firstOrNull { it.id == exerciseId }?.syncId
+                        ?: return@update this,
+                priority = KeyExercisePriority.NORMAL,
+            )
+    copy(keyExercises = current.values.sortedWith(keyExerciseComparator), error = null)
+  }
+
+  fun setKeyExercisePriority(exerciseId: Long, priority: KeyExercisePriority) = update {
+    copy(
+        keyExercises =
+            keyExercises
+                .map { if (it.exerciseId == exerciseId) it.copy(priority = priority) else it }
+                .sortedWith(keyExerciseComparator),
+    )
+  }
+
+  fun removeKeyExercise(exerciseSyncId: String) = update {
+    copy(keyExercises = keyExercises.filterNot { it.exerciseSyncId == exerciseSyncId })
+  }
+
+  fun setKeyExerciseSheet(visible: Boolean) = update { copy(showKeyExercises = visible) }
+
   fun save() {
     val state = _uiState.value
     val target = state.target ?: return
@@ -117,8 +172,14 @@ constructor(
     }
     _uiState.value = state.copy(isSaving = true, error = null)
     viewModelScope.launch {
-      when (profileRepository.save(target, profile)) {
-        ProfileSaveResult.Saved -> _uiState.value = _uiState.value.copy(isSaving = false)
+      val saveResult =
+          if (profile.trainingGoal == TrainingGoal.STRENGTH)
+              profileRepository.saveWithStrength(target, profile, state.keyExercises)
+          else profileRepository.save(target, profile)
+      when (saveResult) {
+        ProfileSaveResult.Saved -> {
+          _uiState.value = _uiState.value.copy(isSaving = false)
+        }
         ProfileSaveResult.Invalid ->
             _uiState.value =
                 _uiState.value.copy(isSaving = false, error = "Проверьте данные профиля")
@@ -130,6 +191,7 @@ constructor(
   }
 
   private fun update(block: ProfileEditorUiState.() -> ProfileEditorUiState) {
+    if (_uiState.value.isLoading || _uiState.value.isSaving) return
     val next = _uiState.value.block()
     next.saveDraft(savedStateHandle)
     _uiState.value = next
@@ -181,6 +243,21 @@ private fun profileDraftFrom(
       preferredSessionDurationMinutes = handle.get<String>("profile_draft_duration").orEmpty(),
       equipmentIds = handle.get<ArrayList<String>>("profile_draft_equipment").orEmpty().toSet(),
       manualConstraints = handle.get<String>("profile_draft_constraints").orEmpty(),
+      keyExercises =
+          handle.get<ArrayList<String>>("profile_draft_key_sync").orEmpty().mapIndexed {
+              index,
+              syncId ->
+            KeyExerciseChoice(
+                exerciseId = null,
+                exerciseSyncId = syncId,
+                priority =
+                    handle
+                        .get<ArrayList<String>>("profile_draft_key_priority")
+                        ?.getOrNull(index)
+                        ?.let(KeyExercisePriority::valueOf) ?: KeyExercisePriority.NORMAL,
+            )
+          },
+      showKeyExercises = handle.get<Boolean>("profile_draft_key_sheet") ?: false,
   )
 }
 
@@ -197,6 +274,9 @@ private fun ProfileEditorUiState.saveDraft(handle: SavedStateHandle) {
   handle["profile_draft_duration"] = preferredSessionDurationMinutes
   handle["profile_draft_equipment"] = ArrayList(equipmentIds.sorted())
   handle["profile_draft_constraints"] = manualConstraints
+  handle["profile_draft_key_sync"] = ArrayList(keyExercises.map { it.exerciseSyncId })
+  handle["profile_draft_key_priority"] = ArrayList(keyExercises.map { it.priority.name })
+  handle["profile_draft_key_sheet"] = showKeyExercises
 }
 
 private fun ProfileEditorUiState.toProfileOrNull(nowMillis: Long): BasicProfile? {
@@ -226,3 +306,9 @@ private fun ProfileEditorUiState.toProfileOrNull(nowMillis: Long): BasicProfile?
       constraints,
   )
 }
+
+private val keyExerciseComparator =
+    compareBy<KeyExerciseChoice>(
+        { if (it.priority == KeyExercisePriority.HIGH) 0 else 1 },
+        { it.exerciseId },
+    )

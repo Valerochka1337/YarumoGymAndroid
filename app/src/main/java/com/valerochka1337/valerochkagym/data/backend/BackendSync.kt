@@ -90,6 +90,9 @@ constructor(
 
   private fun supportsProfile(): Boolean = supports("profile")
 
+  private fun supportsStrengthPlannerPersonalization(): Boolean =
+      supports("strength-planner-personalization")
+
   /** Owner-bound negotiated feature capability; optional transports must not probe when absent. */
   fun supportsHealthLedger(): Boolean = supports("health-ledger-v1")
 
@@ -115,6 +118,12 @@ constructor(
         else records.filterKeys { !it.substringBefore(':').startsWith("calendar_") }
     if (!supportsExerciseHints()) result = result.filterKeys { !it.startsWith("exercise_hint:") }
     if (!supportsProfile()) result = result.filterKeys { !it.startsWith("profile:") }
+    if (!supportsStrengthPlannerPersonalization()) {
+      result =
+          result.filterKeys {
+            !it.startsWith("strength_planner_profile:") && !it.startsWith("workout_effort:")
+          }
+    }
     if (!supportsAnnotatedWorkoutWrites()) {
       result =
           result
@@ -140,6 +149,10 @@ constructor(
           .filter { supportsCalendarPlans() || !it.kind.startsWith("calendar_") }
           .filter { supportsExerciseHints() || it.kind != "exercise_hint" }
           .filter { supportsProfile() || it.kind != "profile" }
+          .filter {
+            supportsStrengthPlannerPersonalization() ||
+                it.kind !in setOf("strength_planner_profile", "workout_effort")
+          }
           .mapNotNull { record ->
             if (supportsAnnotatedWorkoutWrites() || record.kind != "workout") record
             else {
@@ -165,6 +178,12 @@ constructor(
         else records.filterKeys { !it.substringBefore(':').startsWith("calendar_") }
     if (!supportsExerciseHints()) result = result.filterKeys { !it.startsWith("exercise_hint:") }
     if (!supportsProfile()) result = result.filterKeys { !it.startsWith("profile:") }
+    if (!supportsStrengthPlannerPersonalization()) {
+      result =
+          result.filterKeys {
+            !it.startsWith("strength_planner_profile:") && !it.startsWith("workout_effort:")
+          }
+    }
     if (!supportsAnnotatedWorkoutWrites()) {
       result =
           result
@@ -218,6 +237,8 @@ constructor(
       (change.kind.startsWith("calendar_") && !supportsCalendarPlans()) ||
           (change.kind == "exercise_hint" && !supportsExerciseHints()) ||
           (change.kind == "profile" && !supportsProfile()) ||
+          (change.kind in setOf("strength_planner_profile", "workout_effort") &&
+              !supportsStrengthPlannerPersonalization()) ||
           (change.kind == "workout" &&
               !supportsAnnotatedWorkoutWrites() &&
               (change.payload?.let(::hasSetNote) == true ||
@@ -353,6 +374,10 @@ constructor(
         }
     LegacyCoachArchiveRegistry.purge(db)
     profileScope?.let { db.execSQL("DELETE FROM profiles WHERE scope=?", arrayOf(it)) }
+    profileScope?.let {
+      db.execSQL("DELETE FROM strength_planner_profiles WHERE scope=?", arrayOf(it))
+    }
+    profileScope?.let { db.execSQL("DELETE FROM workout_efforts WHERE scope=?", arrayOf(it)) }
     profileScope?.let { owner ->
       db.execSQL("DELETE FROM workout_preparations WHERE owner=?", arrayOf(owner))
       db.execSQL("DELETE FROM training_proposal_projections WHERE owner=?", arrayOf(owner))
@@ -375,17 +400,52 @@ constructor(
   private fun moveGuestProfileToOwner(owner: String) {
     val guestExists =
         db.query("SELECT 1 FROM profiles WHERE scope='GUEST'").use { it.moveToFirst() }
-    if (!guestExists) return
     val ownerExists =
         db.query("SELECT 1 FROM profiles WHERE scope=?", arrayOf(owner)).use { it.moveToFirst() }
-    if (ownerExists) {
+    if (guestExists && ownerExists) {
       // This account's cached/server-authoritative singleton wins over an unrelated guest draft.
       db.execSQL("DELETE FROM profiles WHERE scope='GUEST'")
-      return
+    } else if (guestExists) {
+      val syncId =
+          UUID.nameUUIDFromBytes("ValerochkaGym.profile.v1:$owner".toByteArray(UTF_8)).toString()
+      db.execSQL("UPDATE profiles SET scope=?,syncId=? WHERE scope='GUEST'", arrayOf(owner, syncId))
     }
-    val syncId =
-        UUID.nameUUIDFromBytes("ValerochkaGym.profile.v1:$owner".toByteArray(UTF_8)).toString()
-    db.execSQL("UPDATE profiles SET scope=?,syncId=? WHERE scope='GUEST'", arrayOf(owner, syncId))
+    val guestStrength =
+        db.query("SELECT 1 FROM strength_planner_profiles WHERE scope='GUEST'").use {
+          it.moveToFirst()
+        }
+    val ownerStrength =
+        db.query("SELECT 1 FROM strength_planner_profiles WHERE scope=?", arrayOf(owner)).use {
+          it.moveToFirst()
+        }
+    if (guestStrength && ownerStrength)
+        db.execSQL("DELETE FROM strength_planner_profiles WHERE scope='GUEST'")
+    else if (guestStrength) {
+      val strengthSyncId =
+          UUID.nameUUIDFromBytes(
+                  "ValerochkaGym.strength-planner-profile.v1:$owner".toByteArray(UTF_8),
+              )
+              .toString()
+      db.execSQL(
+          "UPDATE strength_planner_profiles SET scope=?,syncId=? WHERE scope='GUEST'",
+          arrayOf(owner, strengthSyncId),
+      )
+    }
+    db.query("SELECT workoutId FROM workout_efforts WHERE scope='GUEST'").use { cursor ->
+      val workoutIdColumn = cursor.getColumnIndexOrThrow("workoutId")
+      while (cursor.moveToNext()) {
+        val workoutId = cursor.getString(workoutIdColumn)
+        val effortSyncId =
+            UUID.nameUUIDFromBytes(
+                    "ValerochkaGym.workout-effort.v1:$owner:$workoutId".toByteArray(UTF_8),
+                )
+                .toString()
+        db.execSQL(
+            "UPDATE workout_efforts SET scope=?,syncId=? WHERE workoutId=? AND scope='GUEST'",
+            arrayOf(owner, effortSyncId, workoutId),
+        )
+      }
+    }
   }
 
   /** Binds the complete guest health aggregate before the claimed owner's token is installed. */
@@ -813,7 +873,7 @@ constructor(
                   headers =
                       mapOf(
                           "X-Gym-Capabilities" to
-                              "calendar-plans,exercise-hint,annotated-workout-writes,profile,health-ledger-v1"
+                              "calendar-plans,exercise-hint,annotated-workout-writes,profile,health-ledger-v1,strength-planner-personalization"
                       ),
                   expectedOwner = expected.tokens.userId,
                   expectedSessionEpoch = expected.epoch,
@@ -855,6 +915,72 @@ constructor(
                     .use { it.moveToFirst() }
             check(linked)
             markApplied(remote.revision)
+          }
+          guard()
+        }
+      }
+
+  /**
+   * Receive-only projection for a server-created routine share import. The server owns the import
+   * transaction and receipt; Android only reconciles the returned cloud record into Room.
+   */
+  suspend fun applyImportedRoutine(
+      expected: BackendSessionSnapshot,
+      routineId: String,
+      importedRevision: Long,
+  ) =
+      withContext(Dispatchers.IO) {
+        mutex.withLock {
+          fun guard() {
+            assertOwner(expected.tokens.userId)
+            if (tokens.snapshot()?.epoch != expected.epoch || active())
+                throw BackendException(
+                    409,
+                    "routine_share_context_changed",
+                    "Аккаунт или активная тренировка изменились",
+                )
+          }
+          guard()
+          val response =
+              api.authorizedRawResponse(
+                  "GET",
+                  "/sync",
+                  ByteArray(0),
+                  headers =
+                      mapOf(
+                          "X-Gym-Capabilities" to
+                              "calendar-plans,exercise-hint,annotated-workout-writes,profile,health-ledger-v1,strength-planner-personalization"
+                      ),
+                  expectedOwner = expected.tokens.userId,
+                  expectedSessionEpoch = expected.epoch,
+                  retryOnUnauthorized = false,
+              )
+          guard()
+          if (response.owner != expected.tokens.userId || response.sessionEpoch != expected.epoch)
+              throw BackendException(
+                  409,
+                  "routine_share_context_changed",
+                  "Не удалось подтвердить импорт программы",
+              )
+          val remote = api.json.decodeFromJsonElement<CloudSnapshot>(response.body)
+          if (remote.revision < importedRevision)
+              throw BackendException(
+                  409,
+                  "routine_share_pending",
+                  "Импорт ещё не появился в синхронизации",
+              )
+          require(remote.records.any { it.kind == "routine" && it.id == routineId && !it.deleted })
+          rejectProfileTombstone(remote)
+          rejectInvalidProfile(remote, expected.tokens.userId)
+          lastAcceptedCapabilities = response.acceptedCapabilities
+          cacheAcceptedCapabilities(expected.tokens.userId)
+          applyRemoteSnapshot(expected.tokens.userId, remote) {
+            guard()
+            val imported =
+                db.query("SELECT 1 FROM routines WHERE syncId=?", arrayOf(routineId)).use {
+                  it.moveToFirst()
+                }
+            check(imported)
           }
           guard()
         }

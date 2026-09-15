@@ -4,6 +4,8 @@ import com.valerochka1337.valerochkagym.data.ai.BackendCoachModelGateway
 import com.valerochka1337.valerochkagym.data.ai.CoachModelCatalogSource
 import com.valerochka1337.valerochkagym.data.ai.CoachModelGateway
 import com.valerochka1337.valerochkagym.data.backend.*
+import com.valerochka1337.valerochkagym.data.routineshare.RoutineShareDataSource
+import com.valerochka1337.valerochkagym.data.routineshare.RoutineShareRepository
 import dagger.Binds
 import dagger.Module
 import dagger.hilt.InstallIn
@@ -23,4 +25,6 @@ abstract class BackendModule {
   @Binds abstract fun calendarCloudStatus(impl: BackendSync): CalendarCloudStatus
 
   @Binds abstract fun syncReadySource(impl: SyncReadyAdapter): SyncReadySource
+
+  @Binds abstract fun routineShareDataSource(impl: RoutineShareRepository): RoutineShareDataSource
 }

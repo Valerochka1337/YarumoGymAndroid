@@ -70,9 +70,101 @@ class BackendSyncTest : RoomDaoTest() {
     override suspend fun ensureReady(): Boolean = false
   }
 
+  private fun Server.addSharedRoutine(): String {
+    val id = "00000000-0000-0000-0000-000000000777"
+    revision++
+    val record =
+        CloudRecord(
+            "routine",
+            id,
+            revision,
+            false,
+            buildJsonObject {
+              put("name", "Полученная программа")
+              put("note", "")
+              put("updatedAt", 1)
+              put("gymIds", JsonArray(emptyList()))
+              put("exercises", JsonArray(emptyList()))
+            },
+        )
+    records[record.key] = record
+    return id
+  }
+
+  @Test
+  fun `share projection replays without duplication or uploading pending local changes`() =
+      runTest {
+        SyncSchema.install(raw)
+        val server = Server()
+        val store = Store()
+        val sync = BackendSync(db, server, store)
+        sync.claim("user-a")
+        sync.run()
+        val expected = requireNotNull(store.snapshot())
+        val local = db.routineDao().upsertRoutine(RoutineEntity(name = "Несохранённая в облаке"))
+        val importedId = server.addSharedRoutine()
+        val posts = server.postAttempts
+
+        sync.applyImportedRoutine(expected, importedId, server.revision)
+        val first = requireNotNull(db.routineDao().getRoutineBySyncId(importedId))
+        sync.applyImportedRoutine(expected, importedId, server.revision)
+
+        assertEquals(first.id, db.routineDao().getRoutineBySyncId(importedId)?.id)
+        assertEquals(2, tableCount("routines"))
+        assertEquals(0, tableCount("routine_gyms"))
+        assertEquals(posts, server.postAttempts)
+        assertEquals("PERSONAL", first.origin)
+        assertEquals("", first.note)
+        raw.query("SELECT name FROM routines WHERE id=?", arrayOf(local)).use {
+          assertTrue(it.moveToFirst())
+          assertEquals("Несохранённая в облаке", it.getString(0))
+        }
+      }
+
+  @Test
+  fun `share projection rejects a session revoked while the snapshot loads`() = runTest {
+    SyncSchema.install(raw)
+    val server = Server()
+    val store = Store()
+    val sync = BackendSync(db, server, store)
+    sync.claim("user-a")
+    sync.run()
+    val expected = requireNotNull(store.snapshot())
+    val importedId = server.addSharedRoutine()
+    server.beforeGet = { store.save(null) }
+
+    try {
+      sync.applyImportedRoutine(expected, importedId, server.revision)
+      fail("A revoked session must not apply the returned routine")
+    } catch (_: BackendException) {}
+
+    assertNull(db.routineDao().getRoutineBySyncId(importedId))
+  }
+
+  @Test
+  fun `share projection waits for the acknowledged server revision`() = runTest {
+    SyncSchema.install(raw)
+    val server = Server()
+    val store = Store()
+    val sync = BackendSync(db, server, store)
+    sync.claim("user-a")
+    sync.run()
+    val importedId = server.addSharedRoutine()
+
+    try {
+      sync.applyImportedRoutine(requireNotNull(store.snapshot()), importedId, server.revision + 1)
+      fail("An older snapshot must not confirm the import")
+    } catch (error: BackendException) {
+      assertEquals("routine_share_pending", error.code)
+    }
+
+    assertNull(db.routineDao().getRoutineBySyncId(importedId))
+  }
+
   private class Server : BackendTransport {
     override val json = Json { encodeDefaults = true }
     var accepted: Set<String> = emptySet()
+    var lastRawHeaders: Map<String, String> = emptyMap()
     override val acceptedCapabilities: Set<String>
       get() = accepted
 
@@ -164,6 +256,7 @@ class BackendSyncTest : RoomDaoTest() {
         retryOnUnauthorized: Boolean,
         maxResponseBytes: Int?,
     ): BackendResponse {
+      lastRawHeaders = headers
       if (method == "POST") rawPosts += rawBody
       return BackendResponse(
           body =
@@ -481,6 +574,148 @@ class BackendSyncTest : RoomDaoTest() {
     assertTrue(server.rawPosts.first().contentEquals(exact.encodeToByteArray()))
     assertTrue(server.operations.values.any { (_, ack) -> ack.revision >= 1 })
     assertNotNull(server.records["measurement:queued-after-profile"])
+  }
+
+  @Test
+  fun `negotiated strength records round trip alongside their workout without changing profile wire`() =
+      runTest {
+        val server = Server().apply { accepted = setOf("strength-planner-personalization") }
+        val sync = BackendSync(db, server, Store())
+        SyncSchema.install(raw)
+        sync.claim("user-a")
+        val workoutId = "20000000-0000-4000-8000-000000000002"
+        val strengthId =
+            UUID.nameUUIDFromBytes(
+                    "ValerochkaGym.strength-planner-profile.v1:user-a".encodeToByteArray()
+                )
+                .toString()
+        val effortId =
+            UUID.nameUUIDFromBytes(
+                    "ValerochkaGym.workout-effort.v1:user-a:$workoutId".encodeToByteArray()
+                )
+                .toString()
+        insertWorkout(workoutId, finishedAt = 2000)
+        raw.execSQL(
+            "INSERT INTO strength_planner_profiles(scope,syncId,updatedAt) VALUES('user-a',?,1)",
+            arrayOf(strengthId),
+        )
+        raw.execSQL(
+            "INSERT INTO workout_efforts(workoutId,scope,syncId,updatedAt,effort) VALUES(?,'user-a',?,1,'HARD')",
+            arrayOf(workoutId, effortId),
+        )
+
+        sync.run()
+        sync.run()
+
+        assertNotNull(server.records["strength_planner_profile:$strengthId"])
+        assertNotNull(server.records["workout_effort:$effortId"])
+        assertEquals(
+            "HARD",
+            server.records
+                .getValue("workout_effort:$effortId")
+                .payload
+                ?.get("effort")
+                ?.jsonPrimitive
+                ?.content,
+        )
+        assertNotNull(db.workoutEffortDao().get(workoutId, "user-a"))
+        assertFalse(server.records.getValue("workout:$workoutId").payload!!.containsKey("effort"))
+      }
+
+  @Test
+  fun `share import preserves strength capability local effort and exact queued bytes`() = runTest {
+    val server = Server().apply { accepted = setOf("strength-planner-personalization") }
+    val store = Store()
+    val sync = BackendSync(db, server, store)
+    SyncSchema.install(raw)
+    sync.claim("user-a")
+    val workoutId = "20000000-0000-4000-8000-000000000002"
+    val effortId =
+        UUID.nameUUIDFromBytes(
+                "ValerochkaGym.workout-effort.v1:user-a:$workoutId".encodeToByteArray()
+            )
+            .toString()
+    insertWorkout(workoutId, finishedAt = 2000)
+    raw.execSQL(
+        "INSERT INTO workout_efforts(workoutId,scope,syncId,updatedAt,effort) VALUES(?,'user-a',?,1,'HARD')",
+        arrayOf(workoutId, effortId),
+    )
+    sync.run()
+    raw.execSQL(
+        "UPDATE workout_efforts SET effort='EASY',updatedAt=2 WHERE workoutId=?",
+        arrayOf(workoutId),
+    )
+    val payload = PortableData(raw).snapshot().getValue("workout_effort:$effortId")
+    val change =
+        CloudChange(
+            "workout_effort",
+            effortId,
+            server.records.getValue("workout_effort:$effortId").revision,
+            false,
+            payload,
+        )
+    val exact =
+        "{ \"operationId\": \"retained-strength-effort\", \"changes\": [ ${Json.encodeToString(change)} ], \"catalogRevision\": null }"
+    raw.execSQL(
+        "INSERT INTO backend_outbox(id,owner,requestJson) VALUES(1,'user-a',?)",
+        arrayOf(exact),
+    )
+    val imported = server.addSharedRoutine()
+    val posts = server.postAttempts
+    sync.applyImportedRoutine(requireNotNull(store.snapshot()), imported, server.revision)
+    assertTrue(
+        server.lastRawHeaders
+            .getValue("X-Gym-Capabilities")
+            .split(',')
+            .contains("strength-planner-personalization")
+    )
+    assertNotNull(db.routineDao().getRoutineBySyncId(imported))
+    assertEquals(
+        "EASY",
+        PortableData(raw)
+            .snapshot()
+            .getValue("workout_effort:$effortId")["effort"]
+            ?.jsonPrimitive
+            ?.content,
+    )
+    assertEquals(posts, server.postAttempts)
+    raw.query("SELECT requestJson FROM backend_outbox WHERE id=1").use {
+      assertTrue(it.moveToFirst())
+      assertEquals(exact, it.getString(0))
+    }
+  }
+
+  @Test
+  fun `strength planner outbox bytes remain immutable while capability is unavailable`() = runTest {
+    val server = Server().apply { accepted = emptySet() }
+    val sync = BackendSync(db, server, Store())
+    SyncSchema.install(raw)
+    raw.execSQL(
+        "UPDATE backend_state SET owner='user-a',phase='OWNED',capabilityOwner='user-a',acceptedCapabilities='strength-planner-personalization' WHERE id=1",
+    )
+    val payload = buildJsonObject {
+      put("schemaVersion", 1)
+      put("syncId", "c3439134-6252-3a3d-b458-94b983f5e298")
+      put("updatedAt", 1)
+      put("keyExercises", JsonArray(emptyList()))
+    }
+    val exact =
+        "{ \"operationId\" : \"strength-whitespace\", \"changes\" : [ ${Json.encodeToString(CloudChange("strength_planner_profile", "c3439134-6252-3a3d-b458-94b983f5e298", 1, false, payload))} ], \"catalogRevision\" : null }"
+    raw.execSQL(
+        "INSERT INTO backend_outbox(id,owner,requestJson) VALUES(1,'user-a',?)",
+        arrayOf(exact),
+    )
+
+    sync.run()
+
+    assertTrue(server.rawPosts.isEmpty())
+    assertEquals(
+        exact,
+        raw.query("SELECT requestJson FROM backend_outbox WHERE id=1").use {
+          assertTrue(it.moveToFirst())
+          it.getString(0)
+        },
+    )
   }
 
   @Test

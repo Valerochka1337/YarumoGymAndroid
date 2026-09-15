@@ -77,6 +77,7 @@ private const val NOTIFICATION_PENDING_KIND = "notification"
 fun WorkoutsScreen(
     onCreateRoutine: () -> Unit,
     onOpenRoutine: (Long) -> Unit,
+    onShareRoutine: (Long) -> Unit = {},
     onStartWorkout: () -> Unit,
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
@@ -156,6 +157,7 @@ fun WorkoutsScreen(
                     onTemplatesExpandedChange = { templatesExpanded = it },
                     onRoutineSelected = viewModel::onRoutineSelected,
                     onOpenRoutine = onOpenRoutine,
+                    onShareRoutine = onShareRoutine,
                     onDuplicateRoutine = { id ->
                       state.routines
                           ?.firstOrNull { it.id == id }
@@ -233,6 +235,7 @@ internal fun WorkoutRoutinesList(
     onTemplatesExpandedChange: (Boolean) -> Unit,
     onRoutineSelected: (Long) -> Unit,
     onOpenRoutine: (Long) -> Unit,
+    onShareRoutine: (Long) -> Unit = {},
     onDuplicateRoutine: (Long) -> Unit,
     onDeleteRoutine: (Long) -> Unit,
     modifier: Modifier = Modifier,
@@ -272,6 +275,7 @@ internal fun WorkoutRoutinesList(
                 onRoutineSelected(routine.id)
               },
               onOpen = { onOpenRoutine(routine.id) },
+              onShare = { onShareRoutine(routine.id) },
               onDuplicate = { onDuplicateRoutine(routine.id) },
               onDelete = { onDeleteRoutine(routine.id) },
               modifier = Modifier.animateItem(),
@@ -288,6 +292,7 @@ internal fun WorkoutRoutinesList(
             onRoutineSelected(routine.id)
           },
           onOpen = { onOpenRoutine(routine.id) },
+          onShare = { onShareRoutine(routine.id) },
           onDuplicate = { onDuplicateRoutine(routine.id) },
           onDelete = { onDeleteRoutine(routine.id) },
           modifier = Modifier.animateItem(),
@@ -302,6 +307,7 @@ private fun RoutineCard(
     selected: Boolean,
     onClick: () -> Unit,
     onOpen: () -> Unit,
+    onShare: () -> Unit,
     onDuplicate: () -> Unit,
     onDelete: () -> Unit,
     modifier: Modifier = Modifier,
@@ -351,6 +357,7 @@ private fun RoutineCard(
       RoutineCardMenu(
           standard = routine.origin == "STANDARD",
           onOpen = onOpen,
+          onShare = onShare,
           onDuplicate = onDuplicate,
           onDelete = onDelete,
       )
@@ -383,6 +390,7 @@ private fun StartBar(
 private fun RoutineCardMenu(
     standard: Boolean = false,
     onOpen: () -> Unit,
+    onShare: () -> Unit,
     onDuplicate: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -403,6 +411,14 @@ private fun RoutineCardMenu(
             onOpen()
           },
       )
+      if (!standard)
+          DropdownMenuItem(
+              text = { Text("Поделиться") },
+              onClick = {
+                expanded = false
+                onShare()
+              },
+          )
       DropdownMenuItem(
           text = { Text("Клонировать") },
           onClick = {

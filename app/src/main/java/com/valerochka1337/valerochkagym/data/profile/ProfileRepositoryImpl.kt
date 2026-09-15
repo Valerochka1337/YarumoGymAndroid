@@ -5,10 +5,14 @@ import com.valerochka1337.valerochkagym.data.backend.BackendSessionStore
 import com.valerochka1337.valerochkagym.data.backend.BackendSync
 import com.valerochka1337.valerochkagym.data.db.GymDatabase
 import com.valerochka1337.valerochkagym.data.db.dao.ProfileDao
+import com.valerochka1337.valerochkagym.data.db.entity.ExerciseType
 import com.valerochka1337.valerochkagym.data.db.entity.ProfileEntity
 import com.valerochka1337.valerochkagym.data.db.entity.ProfileEquipmentPreferenceEntity
+import com.valerochka1337.valerochkagym.data.db.entity.StrengthPlannerKeyExerciseEntity
+import com.valerochka1337.valerochkagym.data.db.entity.StrengthPlannerProfileEntity
 import com.valerochka1337.valerochkagym.domain.BasicProfile
 import com.valerochka1337.valerochkagym.domain.ExperienceLevel
+import com.valerochka1337.valerochkagym.domain.KeyExerciseChoice
 import com.valerochka1337.valerochkagym.domain.ProfileEditTarget
 import com.valerochka1337.valerochkagym.domain.ProfileEditorSnapshot
 import com.valerochka1337.valerochkagym.domain.ProfileRepository
@@ -65,36 +69,117 @@ constructor(
         if (!targetStillCurrent(target)) null else entity?.toProfile(equipmentIds) ?: BasicProfile()
       }
 
-  override suspend fun save(target: ProfileEditTarget, profile: BasicProfile): ProfileSaveResult {
+  override suspend fun save(target: ProfileEditTarget, profile: BasicProfile): ProfileSaveResult =
+      saveInternal(target, profile, null)
+
+  override suspend fun saveWithStrength(
+      target: ProfileEditTarget,
+      profile: BasicProfile,
+      keyExercises: List<KeyExerciseChoice>,
+  ): ProfileSaveResult = saveInternal(target, profile, keyExercises)
+
+  private suspend fun saveInternal(
+      target: ProfileEditTarget,
+      profile: BasicProfile,
+      keyExercises: List<KeyExerciseChoice>?,
+  ): ProfileSaveResult {
     val normalized =
         ProfileValidator.normalize(profile, clock.nowMillis()) ?: return ProfileSaveResult.Invalid
+    if (
+        keyExercises != null &&
+            (normalized.trainingGoal != TrainingGoal.STRENGTH ||
+                keyExercises.size > 5 ||
+                keyExercises.map(KeyExerciseChoice::exerciseSyncId).distinct().size !=
+                    keyExercises.size)
+    )
+        return ProfileSaveResult.Invalid
     return mutationMutex.withLock {
-      database.withTransaction {
-        if (!targetStillCurrent(target)) return@withTransaction ProfileSaveResult.StaleTarget
-        val existing = profileDao.get(target.scope)
-        val syncId =
-            target.ownerId?.let(::profileSyncId) ?: existing?.syncId ?: UUID.randomUUID().toString()
-        profileDao.upsert(
-            ProfileEntity(
-                scope = target.scope,
-                syncId = syncId,
-                trainingGoal = normalized.trainingGoal?.name,
-                sex = normalized.sex?.name,
-                birthDate = normalized.birthDate,
-                experienceLevel = normalized.experienceLevel?.name,
-                plannedSessionsPerWeek = normalized.plannedSessionsPerWeek,
-                preferredSessionDurationMinutes = normalized.preferredSessionDurationMinutes,
-                manualConstraints = normalized.manualConstraints,
-                updatedAt = clock.nowMillis().coerceAtLeast(0),
+      try {
+        database.withTransaction {
+          if (!targetStillCurrent(target)) return@withTransaction ProfileSaveResult.StaleTarget
+          val selectedExercises =
+              keyExercises?.let { choices ->
+                val catalog = database.exerciseDao().getAllOnce().associateBy { it.syncId }
+                val existingKeys =
+                    database
+                        .strengthPlannerProfileDao()
+                        .keyExercises(target.scope)
+                        .map { it.exerciseSyncId }
+                        .toSet()
+                if (
+                    choices.any { choice ->
+                      val canonical =
+                          runCatching { UUID.fromString(choice.exerciseSyncId).toString() }
+                              .getOrNull()
+                      canonical != choice.exerciseSyncId ||
+                          (choice.exerciseSyncId !in existingKeys &&
+                              catalog[choice.exerciseSyncId]?.let {
+                                it.type == ExerciseType.STRENGTH && !it.archived
+                              } != true)
+                    }
+                )
+                    return@withTransaction ProfileSaveResult.Invalid
+                choices.associate { choice -> choice.exerciseSyncId to choice.exerciseSyncId }
+              }
+          // Exercise validation is a suspend read; verify the owner epoch again before any writes.
+          if (!targetStillCurrent(target)) return@withTransaction ProfileSaveResult.StaleTarget
+          val existing = profileDao.get(target.scope)
+          val syncId =
+              target.ownerId?.let(::profileSyncId)
+                  ?: existing?.syncId
+                  ?: UUID.randomUUID().toString()
+          profileDao.upsert(
+              ProfileEntity(
+                  scope = target.scope,
+                  syncId = syncId,
+                  trainingGoal = normalized.trainingGoal?.name,
+                  sex = normalized.sex?.name,
+                  birthDate = normalized.birthDate,
+                  experienceLevel = normalized.experienceLevel?.name,
+                  plannedSessionsPerWeek = normalized.plannedSessionsPerWeek,
+                  preferredSessionDurationMinutes = normalized.preferredSessionDurationMinutes,
+                  manualConstraints = normalized.manualConstraints,
+                  updatedAt = clock.nowMillis().coerceAtLeast(0),
+              )
+          )
+          profileDao.deleteEquipment(target.scope)
+          profileDao.upsertEquipment(
+              normalized.equipmentIds.sorted().map {
+                ProfileEquipmentPreferenceEntity(target.scope, it)
+              }
+          )
+          if (keyExercises != null && selectedExercises != null) {
+            val strengthPlannerProfileDao = database.strengthPlannerProfileDao()
+            val existingStrength = strengthPlannerProfileDao.get(target.scope)
+            if (!targetStillCurrent(target)) throw StaleProfileTargetException()
+            val strengthSyncId =
+                target.ownerId?.let(::strengthProfileSyncId)
+                    ?: existingStrength?.syncId
+                    ?: UUID.randomUUID().toString()
+            strengthPlannerProfileDao.upsert(
+                StrengthPlannerProfileEntity(
+                    scope = target.scope,
+                    syncId = strengthSyncId,
+                    updatedAt =
+                        clock.nowMillis().coerceAtLeast(existingStrength?.updatedAt?.plus(1) ?: 0),
+                ),
             )
-        )
-        profileDao.deleteEquipment(target.scope)
-        profileDao.upsertEquipment(
-            normalized.equipmentIds.sorted().map {
-              ProfileEquipmentPreferenceEntity(target.scope, it)
-            }
-        )
-        ProfileSaveResult.Saved
+            strengthPlannerProfileDao.deleteKeyExercises(target.scope)
+            strengthPlannerProfileDao.upsertKeyExercises(
+                keyExercises.sortedWith(keyExerciseComparator).map { choice ->
+                  StrengthPlannerKeyExerciseEntity(
+                      scope = target.scope,
+                      exerciseSyncId = selectedExercises.getValue(choice.exerciseSyncId),
+                      priority = choice.priority,
+                  )
+                },
+            )
+          }
+          if (!targetStillCurrent(target)) throw StaleProfileTargetException()
+          ProfileSaveResult.Saved
+        }
+      } catch (_: StaleProfileTargetException) {
+        ProfileSaveResult.StaleTarget
       }
     }
   }
@@ -129,4 +214,20 @@ constructor(
 
   private fun profileSyncId(owner: String): String =
       UUID.nameUUIDFromBytes("ValerochkaGym.profile.v1:$owner".toByteArray(UTF_8)).toString()
+
+  private fun strengthProfileSyncId(owner: String): String =
+      UUID.nameUUIDFromBytes(
+              "ValerochkaGym.strength-planner-profile.v1:$owner".toByteArray(UTF_8),
+          )
+          .toString()
+
+  private companion object {
+    val keyExerciseComparator =
+        compareBy<KeyExerciseChoice>(
+            { if (it.priority.name == "HIGH") 0 else 1 },
+            { it.exerciseSyncId },
+        )
+  }
+
+  private class StaleProfileTargetException : RuntimeException()
 }

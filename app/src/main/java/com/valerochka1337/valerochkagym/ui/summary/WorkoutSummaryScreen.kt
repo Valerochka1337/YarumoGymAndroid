@@ -7,6 +7,7 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -23,6 +24,7 @@ import androidx.compose.material.icons.rounded.EmojiEvents
 import androidx.compose.material.icons.rounded.FitnessCenter
 import androidx.compose.material.icons.rounded.Timer
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarHost
@@ -40,6 +42,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.valerochka1337.valerochkagym.data.db.entity.WorkoutEffort
 import com.valerochka1337.valerochkagym.domain.PrResult
 import com.valerochka1337.valerochkagym.ui.components.ExerciseAvatar
 import com.valerochka1337.valerochkagym.ui.components.GlowBackground
@@ -169,9 +172,22 @@ fun WorkoutSummaryScreen(
               }
             }
           }
+          if (state.canEditEffort) {
+            item {
+              WorkoutEffortCard(
+                  selected = state.effortDraft,
+                  isSaving = state.isSavingEffort,
+                  error = state.effortError,
+                  onSelect = {
+                    haptics.tap()
+                    viewModel.setEffort(it)
+                  },
+              )
+            }
+          }
         }
 
-        WorkoutSummaryActions(onDone = viewModel::onDone)
+        WorkoutSummaryActions(onDone = viewModel::onDone, enabled = !state.isSavingEffort)
       }
       SnackbarHost(
           hostState = snackbarHostState,
@@ -237,14 +253,59 @@ fun WorkoutSummaryScreen(
 }
 
 @Composable
-internal fun WorkoutSummaryActions(onDone: () -> Unit) {
+internal fun WorkoutSummaryActions(onDone: () -> Unit, enabled: Boolean = true) {
   PillButton(
       text = "Готово",
       onClick = onDone,
+      enabled = enabled,
       modifier =
           Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, top = 8.dp, bottom = 16.dp),
   )
 }
+
+@Composable
+internal fun WorkoutEffortCard(
+    selected: WorkoutEffort?,
+    isSaving: Boolean,
+    error: String?,
+    onSelect: (WorkoutEffort?) -> Unit,
+) {
+  GymCard(modifier = Modifier.fillMaxWidth()) {
+    Text("Насколько тяжёлой была тренировка?", style = MaterialTheme.typography.titleMedium)
+    Spacer(Modifier.height(8.dp))
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+      WorkoutEffort.entries.forEach { effort ->
+        FilterChip(
+            selected = selected == effort,
+            onClick = { onSelect(if (selected == effort) null else effort) },
+            enabled = !isSaving,
+            label = { Text(effortLabel(effort)) },
+            modifier = Modifier.sizeIn(minHeight = 48.dp),
+        )
+      }
+    }
+    if (selected != null) {
+      TextButton(
+          onClick = { onSelect(null) },
+          enabled = !isSaving,
+          modifier = Modifier.sizeIn(minHeight = 48.dp),
+      ) {
+        Text("Очистить")
+      }
+    }
+    error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+  }
+}
+
+private fun effortLabel(effort: WorkoutEffort): String =
+    when (effort) {
+      WorkoutEffort.EASY -> "Легко"
+      WorkoutEffort.MODERATE -> "Умеренно"
+      WorkoutEffort.HARD -> "Тяжело"
+    }
 
 @Composable
 internal fun SaveRoutineChoiceDialog(

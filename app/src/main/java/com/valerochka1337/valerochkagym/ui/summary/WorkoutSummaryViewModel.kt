@@ -4,6 +4,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.valerochka1337.valerochkagym.data.db.dao.WorkoutDao
+import com.valerochka1337.valerochkagym.data.db.entity.WorkoutEffort
 import com.valerochka1337.valerochkagym.data.db.relation.WorkoutFull
 import com.valerochka1337.valerochkagym.data.sortedWorkoutFull
 import com.valerochka1337.valerochkagym.domain.PrResult
@@ -13,11 +14,15 @@ import com.valerochka1337.valerochkagym.domain.RoutineUpdateResult
 import com.valerochka1337.valerochkagym.domain.RoutineUpdateUseCase
 import com.valerochka1337.valerochkagym.domain.SaveCompletedWorkoutAsRoutineResult
 import com.valerochka1337.valerochkagym.domain.SaveCompletedWorkoutAsRoutineUseCase
+import com.valerochka1337.valerochkagym.domain.WorkoutEffortEditTarget
+import com.valerochka1337.valerochkagym.domain.WorkoutEffortRepository
+import com.valerochka1337.valerochkagym.domain.WorkoutEffortSaveResult
 import com.valerochka1337.valerochkagym.domain.WorkoutStatsUseCase
 import com.valerochka1337.valerochkagym.ui.navigation.GymRoutes
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.util.UUID
 import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -57,6 +62,12 @@ data class WorkoutSummaryUiState(
     val saveAsProgramName: String = "",
     val isSavingAsProgram: Boolean = false,
     val saveAsProgramError: String? = null,
+    val canEditEffort: Boolean = false,
+    val effort: WorkoutEffort? = null,
+    val effortDraft: WorkoutEffort? = null,
+    val effortDraftPresent: Boolean = false,
+    val isSavingEffort: Boolean = false,
+    val effortError: String? = null,
 )
 
 /**
@@ -73,9 +84,22 @@ constructor(
     private val routineUpdateUseCase: RoutineUpdateUseCase,
     private val previousSetsUseCase: PreviousSetsUseCase,
     private val saveCompletedWorkoutAsRoutineUseCase: SaveCompletedWorkoutAsRoutineUseCase,
+    private val workoutEffortRepository: WorkoutEffortRepository? = null,
 ) : ViewModel() {
 
   private val workoutId: String? = savedStateHandle[GymRoutes.WORKOUT_ID_ARG]
+
+  private val effortTarget: WorkoutEffortEditTarget? =
+      workoutId?.let { id ->
+        val scope = savedStateHandle.get<String>(EFFORT_TARGET_SCOPE)
+        val epoch = savedStateHandle.get<Long>(EFFORT_TARGET_EPOCH)
+        if (scope != null && epoch != null) WorkoutEffortEditTarget(id, scope, epoch)
+        else
+            workoutEffortRepository?.captureTarget(id)?.also {
+              savedStateHandle[EFFORT_TARGET_SCOPE] = it.scope
+              savedStateHandle[EFFORT_TARGET_EPOCH] = it.sessionEpoch
+            }
+      }
 
   private val _uiState =
       MutableStateFlow(
@@ -87,6 +111,9 @@ constructor(
               // An in-flight coroutine cannot survive recreation; restore a retryable draft.
               isSavingAsProgram = false,
               saveAsProgramError = savedStateHandle[SAVE_ERROR],
+              effortDraft = savedStateHandle.get<String>(EFFORT_DRAFT)?.let(WorkoutEffort::valueOf),
+              effortDraftPresent = savedStateHandle[EFFORT_DRAFT_PRESENT] ?: false,
+              effortError = savedStateHandle[EFFORT_ERROR],
           ),
       )
   val uiState: StateFlow<WorkoutSummaryUiState> = _uiState.asStateFlow()
@@ -161,6 +188,7 @@ constructor(
               canSaveAsProgram =
                   full.workout.finishedAt != null &&
                       full.exercises.any { section -> section.sets.any { it.isCompleted } },
+              canEditEffort = full.workout.finishedAt != null,
               canReplaceRoutine = canReplace,
               showSaveChoice = _uiState.value.showSaveChoice,
               showReplaceRoutineDialog = _uiState.value.showReplaceRoutineDialog,
@@ -168,12 +196,98 @@ constructor(
               saveAsProgramName = _uiState.value.saveAsProgramName,
               isSavingAsProgram = _uiState.value.isSavingAsProgram,
               saveAsProgramError = _uiState.value.saveAsProgramError,
+              effort = _uiState.value.effort,
+              effortDraft = _uiState.value.effortDraft,
+              effortDraftPresent = _uiState.value.effortDraftPresent,
+              isSavingEffort = false,
+              effortError = _uiState.value.effortError,
           )
+      workoutEffortRepository?.let { repository ->
+        viewModelScope.launch {
+          val target = effortTarget ?: return@launch
+          repository.observe(target).collect { effort ->
+            _uiState.update { state ->
+              state.copy(
+                  effort = effort,
+                  effortDraft =
+                      if (state.isSavingEffort || state.effortDraftPresent) state.effortDraft
+                      else effort,
+              )
+            }
+          }
+        }
+      }
       if (!_uiState.value.canSaveAsProgram) dismissSaveAsProgram()
     }
   }
 
+  fun setEffort(effort: WorkoutEffort?) {
+    val state = _uiState.value
+    if (state.loading || workout?.workout?.finishedAt == null || state.isSavingEffort) return
+    savedStateHandle[EFFORT_DRAFT] = effort?.name
+    savedStateHandle[EFFORT_DRAFT_PRESENT] = true
+    _uiState.update { it.copy(effortDraft = effort, effortDraftPresent = true, effortError = null) }
+  }
+
   fun onDone() {
+    val state = _uiState.value
+    val repository = workoutEffortRepository
+    val id = workoutId
+    if (
+        repository != null &&
+            id != null &&
+            state.effortDraftPresent &&
+            state.effortDraft != state.effort &&
+            !state.isSavingEffort
+    ) {
+      _uiState.update { it.copy(isSavingEffort = true, effortError = null) }
+      viewModelScope.launch {
+        val result =
+            try {
+              effortTarget?.let { repository.save(it, state.effortDraft) }
+                  ?: WorkoutEffortSaveResult.StaleOwner
+            } catch (cancelled: CancellationException) {
+              throw cancelled
+            } catch (_: Exception) {
+              _uiState.update {
+                it.copy(
+                    isSavingEffort = false,
+                    effortError = "Не удалось сохранить оценку. Попробуйте ещё раз.",
+                )
+              }
+              return@launch
+            }
+        when (result) {
+          WorkoutEffortSaveResult.Saved -> {
+            savedStateHandle.remove<String>(EFFORT_DRAFT)
+            savedStateHandle.remove<Boolean>(EFFORT_DRAFT_PRESENT)
+            _uiState.update {
+              it.copy(effort = it.effortDraft, effortDraftPresent = false, isSavingEffort = false)
+            }
+            continueDone()
+          }
+          WorkoutEffortSaveResult.Invalid ->
+              _uiState.update {
+                it.copy(
+                    isSavingEffort = false,
+                    effortError = "Оценку можно сохранить только для завершённой тренировки",
+                )
+              }
+          WorkoutEffortSaveResult.StaleOwner ->
+              _uiState.update {
+                it.copy(
+                    isSavingEffort = false,
+                    effortError = "Аккаунт изменился. Откройте итоги снова.",
+                )
+              }
+        }
+      }
+      return
+    }
+    if (!state.isSavingEffort) continueDone()
+  }
+
+  private fun continueDone() {
     if (_uiState.value.canSaveAsProgram) {
       finishAfterSaving = true
       updateSaveState { it.copy(showSaveChoice = true, saveAsProgramError = null) }
@@ -502,5 +616,10 @@ constructor(
     const val SAVE_EXPECTED_UPDATED_AT = "save_as_program_expected_updated_at"
     const val SAVE_EXPECTED_FINGERPRINT = "save_as_program_expected_fingerprint"
     const val SAVE_PREDICTED_FINGERPRINT = "save_as_program_predicted_fingerprint"
+    const val EFFORT_TARGET_SCOPE = "workout_effort_target_scope"
+    const val EFFORT_TARGET_EPOCH = "workout_effort_target_epoch"
+    const val EFFORT_DRAFT = "workout_effort_draft"
+    const val EFFORT_DRAFT_PRESENT = "workout_effort_draft_present"
+    const val EFFORT_ERROR = "workout_effort_error"
   }
 }

@@ -28,6 +28,8 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
@@ -36,6 +38,41 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PortableDataTest : RoomDaoTest() {
+  @Test
+  fun `strength planner records use separate canonical wire without changing baseline profile`() =
+      runTest {
+        val owner = "10000000-0000-4000-8000-000000000001"
+        val profileId = "c3439134-6252-3a3d-b458-94b983f5e298"
+        val exerciseId = "30000000-0000-4000-8000-000000000003"
+        val sql = db.openHelper.writableDatabase
+        SyncSchema.install(sql)
+        sql.execSQL("UPDATE backend_state SET owner=?,phase='OWNED' WHERE id=1", arrayOf(owner))
+        sql.execSQL(
+            "INSERT INTO strength_planner_profiles(scope,syncId,updatedAt) VALUES(?,?,?)",
+            arrayOf<Any>(owner, profileId, 1800000000000L),
+        )
+        sql.execSQL(
+            "INSERT INTO strength_planner_key_exercises(scope,exerciseSyncId,priority) VALUES(?,?,?)",
+            arrayOf(owner, exerciseId, "HIGH"),
+        )
+
+        val snapshot = PortableData(sql).snapshot()
+
+        val record = requireNotNull(snapshot["strength_planner_profile:$profileId"])
+        assertEquals(profileId, record["syncId"]?.jsonPrimitive?.content)
+        assertEquals(
+            exerciseId,
+            record["keyExercises"]
+                ?.jsonArray
+                ?.single()
+                ?.jsonObject
+                ?.get("exerciseId")
+                ?.jsonPrimitive
+                ?.content,
+        )
+        assertFalse(snapshot.keys.any { it == "profile:$profileId" })
+      }
+
   @Test
   fun `profile wire atomically replaces canonical children and rejects wrong scalar types`() =
       runTest {

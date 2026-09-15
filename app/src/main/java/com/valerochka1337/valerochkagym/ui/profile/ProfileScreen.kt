@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -33,12 +34,14 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.valerochka1337.valerochkagym.data.db.LocalEquipmentCatalog
+import com.valerochka1337.valerochkagym.data.db.entity.KeyExercisePriority
 import com.valerochka1337.valerochkagym.domain.ExperienceLevel
 import com.valerochka1337.valerochkagym.domain.ProfileSex
 import com.valerochka1337.valerochkagym.domain.TrainingGoal
 import com.valerochka1337.valerochkagym.ui.components.GlowBackground
 import com.valerochka1337.valerochkagym.ui.components.GymCard
 import com.valerochka1337.valerochkagym.ui.components.PillButton
+import com.valerochka1337.valerochkagym.ui.components.PlanningChoiceSheet
 import com.valerochka1337.valerochkagym.ui.haptics.gymHaptics
 
 @Composable
@@ -61,6 +64,22 @@ fun ProfileScreen(
       onConstraints = viewModel::setConstraints,
       onEquipment = viewModel::toggleEquipment,
       onPromptDisabled = viewModel::setPromptDisabled,
+      onKeyExercise = {
+        haptics.tap()
+        viewModel.toggleKeyExercise(it)
+      },
+      onKeyPriority = { id, priority ->
+        haptics.tap()
+        viewModel.setKeyExercisePriority(id, priority)
+      },
+      onRemoveKeyExercise = {
+        haptics.tap()
+        viewModel.removeKeyExercise(it)
+      },
+      onKeySheet = {
+        haptics.tap()
+        viewModel.setKeyExerciseSheet(it)
+      },
       onSave = {
         haptics.confirm()
         viewModel.save()
@@ -82,6 +101,10 @@ internal fun ProfileScreenContent(
     onConstraints: (String) -> Unit,
     onEquipment: (String) -> Unit,
     onPromptDisabled: (Boolean) -> Unit,
+    onKeyExercise: (Long) -> Unit = {},
+    onKeyPriority: (Long, KeyExercisePriority) -> Unit = { _, _ -> },
+    onRemoveKeyExercise: (String) -> Unit = {},
+    onKeySheet: (Boolean) -> Unit = {},
     onSave: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -123,6 +146,61 @@ internal fun ProfileScreenContent(
               ::goalLabel,
               onGoal,
           )
+          if (state.trainingGoal == TrainingGoal.STRENGTH) {
+            GymCard(modifier = Modifier.fillMaxWidth()) {
+              Text(
+                  "Ключевые упражнения",
+                  style = MaterialTheme.typography.titleMedium,
+                  fontWeight = FontWeight.SemiBold,
+              )
+              Text(
+                  "Необязательно. Выберите до пяти упражнений для планирования.",
+                  style = MaterialTheme.typography.bodySmall,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
+              Spacer(Modifier.height(8.dp))
+              PillButton(
+                  text = "Выбрать упражнения (${state.keyExercises.size}/5)",
+                  onClick = { onKeySheet(true) },
+                  compact = true,
+              )
+              state.keyExercises.forEach { choice ->
+                val name =
+                    state.strengthExercises.firstOrNull { it.id == choice.exerciseId }?.name
+                        ?: "Недоступное упражнение"
+                Column(modifier = Modifier.fillMaxWidth()) {
+                  Text(name)
+                  FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (choice.exerciseId != null) {
+                      FilterChip(
+                          selected = choice.priority == KeyExercisePriority.HIGH,
+                          onClick = {
+                            onKeyPriority(
+                                choice.exerciseId,
+                                if (choice.priority == KeyExercisePriority.HIGH)
+                                    KeyExercisePriority.NORMAL
+                                else KeyExercisePriority.HIGH,
+                            )
+                          },
+                          label = {
+                            Text(
+                                if (choice.priority == KeyExercisePriority.HIGH) "Высокий"
+                                else "Обычный"
+                            )
+                          },
+                      )
+                    }
+                    androidx.compose.material3.TextButton(
+                        onClick = { onRemoveKeyExercise(choice.exerciseSyncId) },
+                        modifier = Modifier.sizeIn(minHeight = 48.dp),
+                    ) {
+                      Text("Удалить")
+                    }
+                  }
+                }
+              }
+            }
+          }
           ProfileChoiceCard(
               "Опыт",
               ExperienceLevel.entries,
@@ -226,6 +304,15 @@ internal fun ProfileScreenContent(
         }
       }
     }
+  }
+  if (state.showKeyExercises && state.trainingGoal == TrainingGoal.STRENGTH) {
+    PlanningChoiceSheet(
+        title = "Ключевые упражнения",
+        choices = state.strengthExercises.map { it.id.toString() to it.name },
+        selected = state.keyExercises.mapNotNull { it.exerciseId?.toString() }.toSet(),
+        onToggle = { id -> onKeyExercise(id.toLong()) },
+        onDismiss = { onKeySheet(false) },
+    )
   }
 }
 

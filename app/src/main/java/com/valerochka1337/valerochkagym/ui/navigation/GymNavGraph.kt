@@ -7,9 +7,12 @@ import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.ui.Modifier
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -37,6 +40,8 @@ import com.valerochka1337.valerochkagym.ui.profile.ProfileScreen
 import com.valerochka1337.valerochkagym.ui.routine.RoutineDetailScreen
 import com.valerochka1337.valerochkagym.ui.routine.RoutineEditorScreen
 import com.valerochka1337.valerochkagym.ui.routine.RoutineEditorViewModel
+import com.valerochka1337.valerochkagym.ui.routineshare.RoutineShareOwnerScreen
+import com.valerochka1337.valerochkagym.ui.routineshare.RoutineSharePreviewScreen
 import com.valerochka1337.valerochkagym.ui.settings.SettingsScreen
 import com.valerochka1337.valerochkagym.ui.summary.WorkoutSummaryScreen
 import com.valerochka1337.valerochkagym.ui.theme.GymMotion
@@ -74,6 +79,9 @@ object GymRoutes {
 
   const val ROUTINE_EDITOR = "routine_editor?$ROUTINE_ID_ARG={$ROUTINE_ID_ARG}"
   const val ROUTINE_DETAIL = "routine_detail/{$ROUTINE_ID_ARG}"
+  const val ROUTINE_SHARE_TOKEN = "token"
+  const val ROUTINE_SHARES = "routine_shares/{$ROUTINE_ID_ARG}"
+  const val ROUTINE_SHARE = "routine_share/{$ROUTINE_SHARE_TOKEN}"
   const val WORKOUT_SUMMARY = "workout_summary/{$WORKOUT_ID_ARG}"
   const val WORKOUT_DETAIL = "workout_detail/{$WORKOUT_ID_ARG}"
   const val MEASUREMENT_EDITOR = "measurement_editor?$MEASUREMENT_ID_ARG={$MEASUREMENT_ID_ARG}"
@@ -88,6 +96,10 @@ object GymRoutes {
       if (routineId != null) "routine_editor?$ROUTINE_ID_ARG=$routineId" else "routine_editor"
 
   fun routineDetail(routineId: Long) = "routine_detail/$routineId"
+
+  fun routineShares(routineId: Long) = "routine_shares/$routineId"
+
+  fun routineShare(token: String) = "routine_share/$token"
 
   fun workoutSummary(workoutId: String) = "workout_summary/$workoutId"
 
@@ -215,6 +227,7 @@ fun GymNavGraph(
       WorkoutsScreen(
           onCreateRoutine = { navController.navigate(GymRoutes.routineEditor(null)) },
           onOpenRoutine = { id -> navController.navigate(GymRoutes.routineDetail(id)) },
+          onShareRoutine = { id -> navController.navigate(GymRoutes.routineShares(id)) },
           onStartWorkout = { navController.navigate(GymRoutes.ACTIVE_WORKOUT) },
           onOpenSettings = { navController.navigate(GymRoutes.SETTINGS) },
       )
@@ -295,6 +308,28 @@ fun GymNavGraph(
           onBack = { navController.popBackStack() },
           onEditRoutine = { id -> navController.navigate(GymRoutes.routineEditor(id.toString())) },
           onExerciseClick = { id -> navController.navigate(GymRoutes.exerciseDetail(id)) },
+          windowWidthClass = windowWidthClass,
+      )
+    }
+
+    composable(
+        route = GymRoutes.ROUTINE_SHARES,
+        arguments = listOf(navArgument(GymRoutes.ROUTINE_ID_ARG) { type = NavType.LongType }),
+    ) {
+      RoutineShareOwnerScreen(
+          onBack = { navController.popBackStack() },
+          onOpenPreview = { token -> navController.navigate(GymRoutes.routineShare(token)) },
+      )
+    }
+
+    composable(
+        route = GymRoutes.ROUTINE_SHARE,
+        arguments =
+            listOf(navArgument(GymRoutes.ROUTINE_SHARE_TOKEN) { type = NavType.StringType }),
+    ) {
+      RoutineSharePreviewScreen(
+          onBack = { navController.popBackStack() },
+          onOpenImportedRoutine = { id -> navController.navigate(GymRoutes.routineDetail(id)) },
           windowWidthClass = windowWidthClass,
       )
     }
@@ -521,3 +556,38 @@ fun GymNavGraph(
     }
   }
 }
+
+/** A signed-out share link never instantiates the account-only navigation graph. */
+@Composable
+fun GuestRoutineShareNavHost(
+    token: String,
+    onExit: () -> Unit,
+    onOpenImportedRoutine: (Long) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+  key(guestShareHostKey(token)) {
+    BoxWithConstraints(modifier.fillMaxSize()) {
+      val windowWidthClass = GymWindowWidthClass.from(maxWidth)
+      val navController = androidx.navigation.compose.rememberNavController()
+      NavHost(
+          navController = navController,
+          startDestination = GymRoutes.routineShare(token),
+          modifier = Modifier.fillMaxSize(),
+      ) {
+        composable(
+            route = GymRoutes.ROUTINE_SHARE,
+            arguments =
+                listOf(navArgument(GymRoutes.ROUTINE_SHARE_TOKEN) { type = NavType.StringType }),
+        ) {
+          RoutineSharePreviewScreen(
+              onBack = onExit,
+              onOpenImportedRoutine = onOpenImportedRoutine,
+              windowWidthClass = windowWidthClass,
+          )
+        }
+      }
+    }
+  }
+}
+
+internal fun guestShareHostKey(token: String): String = "routine-share:$token"
