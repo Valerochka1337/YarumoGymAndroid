@@ -45,7 +45,6 @@ import com.valerochka1337.valerochkagym.data.db.entity.ExerciseType
 import com.valerochka1337.valerochkagym.data.db.entity.Muscle
 import com.valerochka1337.valerochkagym.data.trainingproposal.ApprovalDraft
 import com.valerochka1337.valerochkagym.data.trainingproposal.PlannerExplanation
-import com.valerochka1337.valerochkagym.data.trainingproposal.ProposalAuthor
 import com.valerochka1337.valerochkagym.data.trainingproposal.ProposalPlannedExercise
 import com.valerochka1337.valerochkagym.data.trainingproposal.ProposalPlannedSet
 import com.valerochka1337.valerochkagym.data.trainingproposal.ProposalSource
@@ -883,14 +882,7 @@ private fun isPlannedSetValid(plannedSet: ProposalPlannedSet): Boolean {
 }
 
 private fun inboxDescription(proposal: TrainingProposal): String =
-    "Источник: ${sourceLabel(proposal.source)} · Автор: ${authorLabel(proposal.author)} · " +
-        "версия ${proposal.currentVersion}"
-
-private fun sourceLabel(source: ProposalSource): String =
-    if (source == ProposalSource.AI) "ИИ" else "Тренер"
-
-private fun authorLabel(author: ProposalAuthor): String =
-    if (author.kind == ProposalSource.AI) "ИИ" else "Тренер"
+    "Версия ${proposal.currentVersion}"
 
 private fun statusLabel(status: ProposalStatus): String =
     when (status) {

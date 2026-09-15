@@ -25,7 +25,6 @@ import com.valerochka1337.valerochkagym.ui.analysis.AnalysisScreen
 import com.valerochka1337.valerochkagym.ui.calendar.CalendarScreen
 import com.valerochka1337.valerochkagym.ui.calendarai.CalendarAiScreen
 import com.valerochka1337.valerochkagym.ui.coach.CoachChatScreen
-import com.valerochka1337.valerochkagym.ui.coachrelation.*
 import com.valerochka1337.valerochkagym.ui.exercise.ExerciseDetailScreen
 import com.valerochka1337.valerochkagym.ui.gyms.GymDetailScreen
 import com.valerochka1337.valerochkagym.ui.gyms.GymEditorScreen
@@ -220,19 +219,6 @@ fun GymNavGraph(
           onOpenSettings = { navController.navigate(GymRoutes.SETTINGS) },
       )
     }
-    composable("coach_relations") {
-      CoachRelationsScreen(
-          onBack = { navController.popBackStack() },
-          onOpen = { id, clients -> navController.navigate("coach_relation/$id/$clients") },
-      )
-    }
-    composable("coach_relation/{relationId}/{clients}") { entry ->
-      CoachRelationDetailScreen(
-          entry.arguments?.getString("relationId").orEmpty(),
-          entry.arguments?.getString("clients") == "true",
-          onBack = { navController.popBackStack() },
-      )
-    }
     composable("calendar_ai") {
       CalendarAiScreen(
           onBack = { navController.popBackStack() },
@@ -282,7 +268,6 @@ fun GymNavGraph(
           onBack = { navController.popBackStack() },
           onOpenGyms = { navController.navigate(GymRoutes.GYMS) },
           onOpenProfile = { navController.navigate(GymRoutes.PROFILE) },
-          onOpenRelations = { navController.navigate("coach_relations") },
           appUpdateState = appUpdateState,
           onCheckUpdate = onCheckUpdate,
           onDownloadUpdate = onDownloadUpdate,

@@ -39,8 +39,7 @@ data class ApprovalRequest(val operationId: String, val version: Int, val draft:
 
 @Serializable
 enum class ProposalSource {
-  AI,
-  COACH,
+  AI
 }
 
 @Serializable
@@ -221,9 +220,9 @@ internal object ProposalWire {
   fun valid(proposal: TrainingProposal): Boolean =
       uuid(proposal.proposalId) &&
           uuid(proposal.recipientId) &&
-          proposal.source == proposal.author.kind &&
-          (if (proposal.author.kind == ProposalSource.AI) proposal.author.accountId == null
-          else proposal.author.accountId?.let(::uuid) == true) &&
+          proposal.source == ProposalSource.AI &&
+          proposal.author.kind == ProposalSource.AI &&
+          proposal.author.accountId == null &&
           proposal.currentVersion > 0 &&
           proposal.currentVersion == proposal.snapshot.version &&
           proposal.createdAt >= 0 &&
