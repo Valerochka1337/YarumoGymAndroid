@@ -186,7 +186,7 @@ class CalendarAiComposeTest {
     }
 
     compose.onNodeWithText("Дом").performClick()
-    compose.onNodeWithText("Доступное время, мин").performTextReplacement("75")
+    compose.onNodeWithText("Желаемая длительность, мин").performTextReplacement("75")
     compose.onNodeWithContentDescription("Начать расчёт").assertIsEnabled().performClick()
 
     compose.runOnIdle {

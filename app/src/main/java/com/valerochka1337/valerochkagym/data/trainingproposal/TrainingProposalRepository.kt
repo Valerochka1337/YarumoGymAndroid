@@ -98,6 +98,14 @@ constructor(
         }
       }
 
+  suspend fun explanation(editor: ProposalEditor): PlannerExplanation =
+      withContext(Dispatchers.IO) {
+        guard(editor.session)
+        val result = api.explanation(editor.session, editor.proposal)
+        guard(editor.session)
+        result
+      }
+
   suspend fun save(editor: ProposalEditor, draft: ApprovalDraft): ProposalEditor =
       withContext(Dispatchers.IO) {
         actions.withLock {

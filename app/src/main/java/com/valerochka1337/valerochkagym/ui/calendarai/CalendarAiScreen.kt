@@ -226,7 +226,12 @@ private fun CalendarAiTimeCard(
         onValueChange = onDuration,
         modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
         shape = MaterialTheme.shapes.medium,
-        label = { Text("Доступное время, мин") },
+        label = { Text("Желаемая длительность, мин") },
+        supportingText = {
+          Text(
+              "Постараемся приблизиться к этому времени. Оценка включает подходы, отдых и переходы; разминку — если она есть в плане."
+          )
+        },
         singleLine = true,
     )
   }

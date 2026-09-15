@@ -42,13 +42,18 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.valerochka1337.valerochkagym.data.db.PlannedSet
 import com.valerochka1337.valerochkagym.data.db.entity.ExerciseType
+import com.valerochka1337.valerochkagym.data.db.entity.Muscle
 import com.valerochka1337.valerochkagym.data.trainingproposal.ApprovalDraft
+import com.valerochka1337.valerochkagym.data.trainingproposal.PlannerExplanation
 import com.valerochka1337.valerochkagym.data.trainingproposal.ProposalAuthor
 import com.valerochka1337.valerochkagym.data.trainingproposal.ProposalPlannedExercise
 import com.valerochka1337.valerochkagym.data.trainingproposal.ProposalPlannedSet
 import com.valerochka1337.valerochkagym.data.trainingproposal.ProposalSource
 import com.valerochka1337.valerochkagym.data.trainingproposal.ProposalStatus
 import com.valerochka1337.valerochkagym.data.trainingproposal.TrainingProposal
+import com.valerochka1337.valerochkagym.data.trainingproposal.estimatedSeconds
+import com.valerochka1337.valerochkagym.domain.PlannerDuration
+import com.valerochka1337.valerochkagym.domain.displayName
 import com.valerochka1337.valerochkagym.ui.components.ExerciseAvatar
 import com.valerochka1337.valerochkagym.ui.components.GymCard
 import com.valerochka1337.valerochkagym.ui.components.PillButton
@@ -215,6 +220,7 @@ fun TrainingProposalDetailContent(
     onReject: () -> Unit,
     onBack: () -> Unit,
     onRetry: () -> Unit,
+    explanation: PlannerExplanation? = null,
     exerciseTypes: Map<String, ExerciseType> = emptyMap(),
     availableExerciseIds: Set<String> = exerciseChoices.map { it.first }.toSet(),
 ) {
@@ -278,6 +284,10 @@ fun TrainingProposalDetailContent(
             draft,
             exerciseChoices,
             gymChoices,
+            explanationContent = {
+              if (proposal.source == ProposalSource.AI)
+                  PlannerExplanationCard(proposal, draft, explanation, exerciseChoices)
+            },
         )
 
     val canEdit = proposal.status == ProposalStatus.PENDING && !applied && !isExpired(proposal)
@@ -369,6 +379,7 @@ private fun ProposalDraftSummary(
     draft: ApprovalDraft,
     exerciseChoices: List<Pair<String, String>>,
     gymChoices: List<Pair<String, String>>,
+    explanationContent: @Composable () -> Unit = {},
 ) {
   Text(draft.name.ifBlank { "Не указано" }, style = MaterialTheme.typography.headlineSmall)
   GymCard(Modifier.fillMaxWidth()) {
@@ -388,6 +399,11 @@ private fun ProposalDraftSummary(
       )
     }
   }
+  Text(
+      "Около ${PlannerDuration.minutes(draft.estimatedSeconds())} мин по плану. Учтены подходы, отдых и переходы. Разминка — только если включена в подходы.",
+      style = MaterialTheme.typography.bodyMedium,
+  )
+  explanationContent()
   Text("Упражнения", style = MaterialTheme.typography.titleMedium)
   draft.exercises.forEach { exercise ->
     val exerciseName = exerciseChoices.nameFor(exercise.exerciseId) ?: "Упражнение недоступно"
@@ -952,4 +968,72 @@ fun ProposalDraftForm(
       { epoch++ },
       exerciseTypes,
   )
+}
+
+@Composable
+private fun PlannerExplanationCard(
+    proposal: TrainingProposal,
+    draft: ApprovalDraft,
+    explanation: PlannerExplanation?,
+    exerciseChoices: List<Pair<String, String>>,
+) {
+
+  GymCard(Modifier.fillMaxWidth()) {
+    Text("Почему такой план", style = MaterialTheme.typography.titleMedium)
+    if (explanation == null) {
+      Text("Пояснение пока недоступно. План можно просмотреть и изменить.")
+    } else if (draft != proposal.snapshot.draft) {
+      Text(
+          "Вы изменили план. Обоснование ИИ относится к исходному варианту; оценка времени выше пересчитана."
+      )
+    } else {
+      Text(
+          "Желаемое время: ${explanation.desiredMinutes} мин · оценка: около ${PlannerDuration.minutes(explanation.estimatedSeconds)} мин"
+      )
+      if (explanation.focusMuscles.isNotEmpty())
+          Text(
+              "Акцент по составу: " +
+                  explanation.focusMuscles.joinToString { Muscle.valueOf(it).displayName() }
+          )
+      Text(
+          "Замысел ИИ: " +
+              when (explanation.selectionReason) {
+                "CONTINUITY" -> "продолжить последовательность тренировок."
+                "PRIORITY" -> "учесть выбранные приоритеты."
+                "GOAL_BALANCE" -> "согласовать нагрузку с целью."
+                "CONSTRAINTS" -> "учесть заданные условия."
+                else -> "отдельное обоснование не сохранено."
+              }
+      )
+      if (explanation.repeatedExerciseIds.isNotEmpty()) {
+        Text(
+            "Повтор из последней тренировки: " +
+                explanation.repeatedExerciseIds.joinToString { id ->
+                  exerciseChoices.nameFor(id) ?: "Упражнение недоступно"
+                }
+        )
+        Text(
+            "Причина по замыслу ИИ: " +
+                when (explanation.repeatReason) {
+                  "CONTINUITY" -> "сохранить преемственность нагрузки."
+                  "PRIORITY" -> "поддержать выбранный акцент."
+                  "LIMITED_OPTIONS" -> "ограниченный выбор упражнений."
+                  else -> "не указана."
+                }
+        )
+      }
+      if (explanation.estimatedSeconds < explanation.minimumSeconds) {
+        Text(
+            "План существенно короче желаемого времени. " +
+                when (explanation.shortfallReason) {
+                  "CONSTRAINTS" -> "ИИ связывает недобор с заданными условиями."
+                  "VOLUME_LIMIT" ->
+                      "ИИ оставил меньший объём, чтобы не добавлять подходы только ради минут."
+                  else -> "Подходящий по времени вариант не получен; причина не сохранена."
+                }
+        )
+        Text("Это объяснение выбора ИИ, а не доказательство, что более длинный план невозможен.")
+      }
+    }
+  }
 }

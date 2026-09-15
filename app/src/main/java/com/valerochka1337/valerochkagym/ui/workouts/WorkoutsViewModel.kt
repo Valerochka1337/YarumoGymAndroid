@@ -11,6 +11,7 @@ import com.valerochka1337.valerochkagym.data.settings.SettingsRepository
 import com.valerochka1337.valerochkagym.domain.ActiveWorkoutRepository
 import com.valerochka1337.valerochkagym.domain.GymRepository
 import com.valerochka1337.valerochkagym.domain.NoOpGymRepository
+import com.valerochka1337.valerochkagym.domain.PlannerDuration
 import com.valerochka1337.valerochkagym.domain.RoutineGymConflictException
 import com.valerochka1337.valerochkagym.ui.permissions.LivePermissionState
 import com.valerochka1337.valerochkagym.ui.permissions.PermissionRecoveryController
@@ -21,7 +22,6 @@ import com.valerochka1337.valerochkagym.worker.RoutineUploadScheduler
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.util.UUID
 import javax.inject.Inject
-import kotlin.math.roundToInt
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -34,7 +34,6 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 /** Приблизительная длительность одного подхода без учёта отдыха, сек. */
-private const val WORK_SECONDS_PER_SET = 45
 
 /** Одна карточка программы в списке. [estimatedMinutes] — грубая оценка длительности. */
 data class RoutineCardUi(
@@ -236,20 +235,24 @@ constructor(
   }
 }
 
-/** Оценка длительности: Σ по упражнениям (кол-во подходов × работа + кол-во подходов × отдых). */
+/** Общая с AI-планом приблизительная оценка перечисленных подходов. */
 private fun RoutineWithExercises.toCardUi(defaultRestSeconds: Int): RoutineCardUi {
   val totalSeconds =
-      exercises.sumOf { item ->
-        val sets = item.routineExercise.plannedSets.size
-        val rest = item.routineExercise.restSeconds ?: defaultRestSeconds
-        sets * WORK_SECONDS_PER_SET + sets * rest
-      }
+      PlannerDuration.seconds(
+          exercises.map { item ->
+            PlannerDuration.Exercise(
+                item.routineExercise.plannedSets.map { it.durationSec },
+                item.routineExercise.restSeconds,
+            )
+          },
+          defaultRestSeconds,
+      )
   return RoutineCardUi(
       id = routine.id,
       name = routine.name,
       origin = routine.origin,
       exerciseCount = exercises.size,
-      estimatedMinutes = (totalSeconds / 60.0).roundToInt(),
+      estimatedMinutes = PlannerDuration.minutes(totalSeconds).toInt(),
       gymNames = gyms.map { it.name }.sortedWith(String.CASE_INSENSITIVE_ORDER),
   )
 }

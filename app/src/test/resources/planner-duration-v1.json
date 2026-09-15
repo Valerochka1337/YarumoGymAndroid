@@ -1,0 +1,311 @@
+{
+  "spec": "planner-duration-v1",
+  "cases": [
+    {
+      "name": "30-min-strength",
+      "desiredMinutes": 30,
+      "exercises": [
+        {
+          "durations": [
+            null,
+            null,
+            null
+          ],
+          "restSeconds": 90
+        },
+        {
+          "durations": [
+            null,
+            null,
+            null
+          ],
+          "restSeconds": 90
+        },
+        {
+          "durations": [
+            null,
+            null,
+            null
+          ],
+          "restSeconds": 90
+        },
+        {
+          "durations": [
+            null,
+            null,
+            null
+          ],
+          "restSeconds": 90
+        }
+      ],
+      "seconds": 1530,
+      "minimumSeconds": 1440,
+      "shortfall": false
+    },
+    {
+      "name": "60-min-strength",
+      "desiredMinutes": 60,
+      "exercises": [
+        {
+          "durations": [
+            null,
+            null,
+            null,
+            null
+          ],
+          "restSeconds": 90
+        },
+        {
+          "durations": [
+            null,
+            null,
+            null,
+            null
+          ],
+          "restSeconds": 90
+        },
+        {
+          "durations": [
+            null,
+            null,
+            null,
+            null
+          ],
+          "restSeconds": 90
+        },
+        {
+          "durations": [
+            null,
+            null,
+            null,
+            null
+          ],
+          "restSeconds": 90
+        },
+        {
+          "durations": [
+            null,
+            null,
+            null,
+            null
+          ],
+          "restSeconds": 90
+        },
+        {
+          "durations": [
+            null,
+            null,
+            null,
+            null
+          ],
+          "restSeconds": 90
+        }
+      ],
+      "seconds": 3150,
+      "minimumSeconds": 2880,
+      "shortfall": false
+    },
+    {
+      "name": "90-min-strength",
+      "desiredMinutes": 90,
+      "exercises": [
+        {
+          "durations": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "restSeconds": 90
+        },
+        {
+          "durations": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "restSeconds": 90
+        },
+        {
+          "durations": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "restSeconds": 90
+        },
+        {
+          "durations": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "restSeconds": 90
+        },
+        {
+          "durations": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "restSeconds": 90
+        },
+        {
+          "durations": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "restSeconds": 90
+        },
+        {
+          "durations": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "restSeconds": 90
+        },
+        {
+          "durations": [
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "restSeconds": 90
+        }
+      ],
+      "seconds": 5310,
+      "minimumSeconds": 4320,
+      "shortfall": false
+    },
+    {
+      "name": "60-min-limited-two-exercises",
+      "desiredMinutes": 60,
+      "exercises": [
+        {
+          "durations": [
+            null,
+            null,
+            null,
+            null
+          ],
+          "restSeconds": 90
+        },
+        {
+          "durations": [
+            null,
+            null,
+            null,
+            null
+          ],
+          "restSeconds": 90
+        }
+      ],
+      "seconds": 990,
+      "minimumSeconds": 2880,
+      "shortfall": true
+    },
+    {
+      "name": "empty",
+      "desiredMinutes": 60,
+      "exercises": [],
+      "seconds": 0,
+      "minimumSeconds": 2880,
+      "shortfall": true
+    },
+    {
+      "name": "timed-exact-30",
+      "desiredMinutes": 30,
+      "exercises": [
+        {
+          "durations": [
+            1800
+          ],
+          "restSeconds": 0
+        }
+      ],
+      "seconds": 1800,
+      "minimumSeconds": 1440,
+      "shortfall": false
+    },
+    {
+      "name": "explicit-warmup-once",
+      "desiredMinutes": 30,
+      "exercises": [
+        {
+          "durations": [
+            300
+          ],
+          "restSeconds": 0
+        },
+        {
+          "durations": [
+            null,
+            null,
+            null
+          ],
+          "restSeconds": 90
+        }
+      ],
+      "seconds": 705,
+      "minimumSeconds": 1440,
+      "shortfall": true
+    },
+    {
+      "name": "default-rest-no-final-rest",
+      "desiredMinutes": 30,
+      "exercises": [
+        {
+          "durations": [
+            null,
+            null
+          ],
+          "restSeconds": null
+        }
+      ],
+      "seconds": 180,
+      "minimumSeconds": 1440,
+      "shortfall": true
+    },
+    {
+      "name": "mixed-cardio-and-strength",
+      "desiredMinutes": 60,
+      "exercises": [
+        {
+          "durations": [
+            600,
+            300
+          ],
+          "restSeconds": 60
+        },
+        {
+          "durations": [
+            null,
+            null,
+            null
+          ],
+          "restSeconds": 90
+        }
+      ],
+      "seconds": 1365,
+      "minimumSeconds": 2880,
+      "shortfall": true
+    }
+  ]
+}

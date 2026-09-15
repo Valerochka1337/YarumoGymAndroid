@@ -1,0 +1,597 @@
+[
+  {
+    "case": "baseline-60-underfill",
+    "desiredMinutes": 60,
+    "history": "EMPTY",
+    "eligibleCount": 12,
+    "expectedSeconds": 990,
+    "providerOutput": {
+      "result": {
+        "name": "Synthetic session",
+        "exercises": [
+          {
+            "exerciseId": "00000001-1111-4111-8111-111111111111",
+            "restSeconds": 90,
+            "plannedSets": [
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              }
+            ]
+          },
+          {
+            "exerciseId": "00000002-1111-4111-8111-111111111111",
+            "restSeconds": 90,
+            "plannedSets": [
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              }
+            ]
+          }
+        ],
+        "rationale": {
+          "selection": "GOAL_BALANCE",
+          "repeat": "NONE",
+          "shortfall": "VOLUME_LIMIT"
+        }
+      }
+    }
+  },
+  {
+    "case": "candidate-30",
+    "desiredMinutes": 30,
+    "history": "EMPTY",
+    "eligibleCount": 12,
+    "expectedSeconds": 1530,
+    "providerOutput": {
+      "result": {
+        "name": "Synthetic session",
+        "exercises": [
+          {
+            "exerciseId": "00000001-1111-4111-8111-111111111111",
+            "restSeconds": 90,
+            "plannedSets": [
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              }
+            ]
+          },
+          {
+            "exerciseId": "00000002-1111-4111-8111-111111111111",
+            "restSeconds": 90,
+            "plannedSets": [
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              }
+            ]
+          },
+          {
+            "exerciseId": "00000003-1111-4111-8111-111111111111",
+            "restSeconds": 90,
+            "plannedSets": [
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              }
+            ]
+          },
+          {
+            "exerciseId": "00000004-1111-4111-8111-111111111111",
+            "restSeconds": 90,
+            "plannedSets": [
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              }
+            ]
+          }
+        ],
+        "rationale": {
+          "selection": "GOAL_BALANCE",
+          "repeat": "NONE",
+          "shortfall": "NONE"
+        }
+      }
+    }
+  },
+  {
+    "case": "candidate-60",
+    "desiredMinutes": 60,
+    "history": "EMPTY",
+    "eligibleCount": 12,
+    "expectedSeconds": 3150,
+    "providerOutput": {
+      "result": {
+        "name": "Synthetic session",
+        "exercises": [
+          {
+            "exerciseId": "00000001-1111-4111-8111-111111111111",
+            "restSeconds": 90,
+            "plannedSets": [
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              }
+            ]
+          },
+          {
+            "exerciseId": "00000002-1111-4111-8111-111111111111",
+            "restSeconds": 90,
+            "plannedSets": [
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              }
+            ]
+          },
+          {
+            "exerciseId": "00000003-1111-4111-8111-111111111111",
+            "restSeconds": 90,
+            "plannedSets": [
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              }
+            ]
+          },
+          {
+            "exerciseId": "00000004-1111-4111-8111-111111111111",
+            "restSeconds": 90,
+            "plannedSets": [
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              }
+            ]
+          },
+          {
+            "exerciseId": "00000005-1111-4111-8111-111111111111",
+            "restSeconds": 90,
+            "plannedSets": [
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              }
+            ]
+          },
+          {
+            "exerciseId": "00000006-1111-4111-8111-111111111111",
+            "restSeconds": 90,
+            "plannedSets": [
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              }
+            ]
+          }
+        ],
+        "rationale": {
+          "selection": "GOAL_BALANCE",
+          "repeat": "NONE",
+          "shortfall": "NONE"
+        }
+      }
+    }
+  },
+  {
+    "case": "candidate-90",
+    "desiredMinutes": 90,
+    "history": "EMPTY",
+    "eligibleCount": 12,
+    "expectedSeconds": 5310,
+    "providerOutput": {
+      "result": {
+        "name": "Synthetic session",
+        "exercises": [
+          {
+            "exerciseId": "00000001-1111-4111-8111-111111111111",
+            "restSeconds": 90,
+            "plannedSets": [
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              }
+            ]
+          },
+          {
+            "exerciseId": "00000002-1111-4111-8111-111111111111",
+            "restSeconds": 90,
+            "plannedSets": [
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              }
+            ]
+          },
+          {
+            "exerciseId": "00000003-1111-4111-8111-111111111111",
+            "restSeconds": 90,
+            "plannedSets": [
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              }
+            ]
+          },
+          {
+            "exerciseId": "00000004-1111-4111-8111-111111111111",
+            "restSeconds": 90,
+            "plannedSets": [
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              }
+            ]
+          },
+          {
+            "exerciseId": "00000005-1111-4111-8111-111111111111",
+            "restSeconds": 90,
+            "plannedSets": [
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              }
+            ]
+          },
+          {
+            "exerciseId": "00000006-1111-4111-8111-111111111111",
+            "restSeconds": 90,
+            "plannedSets": [
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              }
+            ]
+          },
+          {
+            "exerciseId": "00000007-1111-4111-8111-111111111111",
+            "restSeconds": 90,
+            "plannedSets": [
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              }
+            ]
+          },
+          {
+            "exerciseId": "00000008-1111-4111-8111-111111111111",
+            "restSeconds": 90,
+            "plannedSets": [
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              }
+            ]
+          }
+        ],
+        "rationale": {
+          "selection": "GOAL_BALANCE",
+          "repeat": "NONE",
+          "shortfall": "NONE"
+        }
+      }
+    }
+  },
+  {
+    "case": "limited-gym-60",
+    "desiredMinutes": 60,
+    "history": "EMPTY",
+    "eligibleCount": 2,
+    "expectedSeconds": 990,
+    "providerOutput": {
+      "result": {
+        "name": "Synthetic session",
+        "exercises": [
+          {
+            "exerciseId": "00000001-1111-4111-8111-111111111111",
+            "restSeconds": 90,
+            "plannedSets": [
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              }
+            ]
+          },
+          {
+            "exerciseId": "00000002-1111-4111-8111-111111111111",
+            "restSeconds": 90,
+            "plannedSets": [
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              },
+              {
+                "reps": 10,
+                "durationSec": null
+              }
+            ]
+          }
+        ],
+        "rationale": {
+          "selection": "GOAL_BALANCE",
+          "repeat": "NONE",
+          "shortfall": "VOLUME_LIMIT"
+        }
+      }
+    }
+  }
+]

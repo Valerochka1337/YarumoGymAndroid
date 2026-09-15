@@ -93,7 +93,7 @@ class WorkoutsViewModelTest {
         val card = viewModel.uiState.value.routines!!.single()
         assertEquals("День ног", card.name)
         assertEquals(2, card.exerciseCount)
-        assertEquals(10, card.estimatedMinutes)
+        assertEquals(9, card.estimatedMinutes)
         assertEquals(listOf("Альфа", "Яблоко"), card.gymNames)
       }
 
