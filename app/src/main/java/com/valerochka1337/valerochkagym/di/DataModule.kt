@@ -22,9 +22,11 @@ import com.valerochka1337.valerochkagym.data.db.dao.HealthAiConsentDao
 import com.valerochka1337.valerochkagym.data.db.dao.HealthDao
 import com.valerochka1337.valerochkagym.data.db.dao.HealthSyncDao
 import com.valerochka1337.valerochkagym.data.db.dao.ProfileDao
+import com.valerochka1337.valerochkagym.data.db.dao.StrengthPlannerProfileDao
 import com.valerochka1337.valerochkagym.data.db.dao.RoutineDao
 import com.valerochka1337.valerochkagym.data.db.dao.ScheduledWorkoutDao
 import com.valerochka1337.valerochkagym.data.db.dao.WorkoutDao
+import com.valerochka1337.valerochkagym.data.db.dao.WorkoutEffortDao
 import com.valerochka1337.valerochkagym.data.settings.MuscleLoadUpgradeNotice
 import com.valerochka1337.valerochkagym.data.settings.RoomMuscleLoadUpgradeNotice
 import com.valerochka1337.valerochkagym.service.WallClock
@@ -117,6 +119,9 @@ object DataModule {
 
   @Provides fun provideWorkoutDao(database: GymDatabase): WorkoutDao = database.workoutDao()
 
+  @Provides
+  fun provideWorkoutEffortDao(database: GymDatabase): WorkoutEffortDao = database.workoutEffortDao()
+
   @Provides fun provideCoachDao(database: GymDatabase): CoachDao = database.coachDao()
 
   @Provides
@@ -124,6 +129,10 @@ object DataModule {
       database.muscleLoadUpgradeNoticeDao()
 
   @Provides fun provideProfileDao(database: GymDatabase): ProfileDao = database.profileDao()
+
+  @Provides
+  fun provideStrengthPlannerProfileDao(database: GymDatabase): StrengthPlannerProfileDao =
+      database.strengthPlannerProfileDao()
 
   @Provides
   fun provideScheduledWorkoutDao(database: GymDatabase): ScheduledWorkoutDao =

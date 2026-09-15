@@ -518,3 +518,11 @@ titleMedium, как история тренировки, без номерных
 упражнения, отсутствующие в плане. `PlannedSetFields` общий с редактором программы;
 тип каталога определяет поля, замена очищает несовместимые значения. Незавершённый
 черновик сохраняется локально; применение требует валидного плана и явного подтверждения.
+
+### Strength priorities and workout effort
+
+The STRENGTH profile optionally selects up to five key exercises through the shared searchable
+sheet. Each choice has normal/high priority and explicit removal; unavailable choices remain
+removable. Completed workout summaries offer optional EASY/MODERATE/HARD effort and clear.
+Controls wrap at large font sizes and expose selection semantics. Done awaits persistence;
+a failure preserves the editable draft. The backend uses these saved values for the STRENGTH planner; other goals retain their existing behavior.

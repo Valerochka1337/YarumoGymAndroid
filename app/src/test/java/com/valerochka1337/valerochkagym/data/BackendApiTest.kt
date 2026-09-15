@@ -245,6 +245,7 @@ class BackendApiTest {
             .build()
     BackendApi(Store(), client, "https://test.invalid/").authorizedResponse("GET", "/sync", null)
     assertTrue("health-ledger-v1" in advertised.orEmpty().split(','))
+    assertTrue("strength-planner-personalization" in advertised.orEmpty().split(','))
     assertEquals(false, bodyPresent)
   }
 

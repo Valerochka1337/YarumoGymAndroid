@@ -110,15 +110,9 @@ fun RoutineShareOwnerScreen(
                 Spacer(Modifier.height(12.dp))
                 PillButton(
                     text = if (state.busy) "Создаём ссылку" else "Создать ссылку",
-                    onClick = {
-                      haptics.tap()
-                      viewModel.create()
-                    },
+                    onClick = { haptics.tap(); viewModel.create() },
                     enabled = !state.busy && state.links.size < 50,
-                    modifier =
-                        Modifier.fillMaxWidth().semantics {
-                          contentDescription = "Создать ссылку на программу"
-                        },
+                    modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Создать ссылку на программу" },
                 )
                 if (state.links.size >= 50)
                     Text(
@@ -128,64 +122,28 @@ fun RoutineShareOwnerScreen(
                     )
               }
             }
-            item {
-              Text(
-                  "Активные ссылки · ${state.links.size}",
-                  style = MaterialTheme.typography.titleLarge,
-              )
-            }
+            item { Text("Активные ссылки · ${state.links.size}", style = MaterialTheme.typography.titleLarge) }
             items(state.links, key = { it.shareId }) { link ->
               GymCard(Modifier.fillMaxWidth()) {
                 Text("Ссылка создана", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    link.url,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Text(link.url, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 TextButton(
                     onClick = { onOpenPreview(link.url.substringAfterLast('/')) },
-                    modifier =
-                        Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp).semantics {
-                          contentDescription = "Открыть снимок программы"
-                        },
-                ) {
-                  Text("Открыть снимок")
-                }
+                    modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp).semantics { contentDescription = "Открыть снимок программы" },
+                ) { Text("Открыть снимок") }
                 TextButton(
-                    onClick = {
-                      haptics.tap()
-                      viewModel.share(link.url)
-                    },
-                    modifier =
-                        Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp).semantics {
-                          contentDescription = "Поделиться ссылкой"
-                        },
-                ) {
-                  Text("Поделиться")
-                }
+                    onClick = { haptics.tap(); viewModel.share(link.url) },
+                    modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp).semantics { contentDescription = "Поделиться ссылкой" },
+                ) { Text("Поделиться") }
                 TextButton(
-                    onClick = {
-                      haptics.tap()
-                      viewModel.copy(link.url)
-                    },
-                    modifier =
-                        Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp).semantics {
-                          contentDescription = "Скопировать ссылку"
-                        },
-                ) {
-                  Icon(Icons.Rounded.ContentCopy, null)
-                  Text("Копировать")
-                }
+                    onClick = { haptics.tap(); viewModel.copy(link.url) },
+                    modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp).semantics { contentDescription = "Скопировать ссылку" },
+                ) { Icon(Icons.Rounded.ContentCopy, null); Text("Копировать") }
                 TextButton(
                     onClick = { pendingRevoke = link.shareId },
                     enabled = !state.busy,
-                    modifier =
-                        Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp).semantics {
-                          contentDescription = "Отозвать ссылку"
-                        },
-                ) {
-                  Text("Отозвать", color = MaterialTheme.colorScheme.error)
-                }
+                    modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp).semantics { contentDescription = "Отозвать ссылку" },
+                ) { Text("Отозвать", color = MaterialTheme.colorScheme.error) }
               }
             }
           }
@@ -197,27 +155,15 @@ fun RoutineShareOwnerScreen(
     AlertDialog(
         onDismissRequest = { if (!state.busy) pendingRevoke = null },
         title = { Text("Отозвать ссылку?") },
-        text = {
-          Text(
-              "Ссылка перестанет открываться. Уже сохранённые копии программ останутся у получателей."
-          )
-        },
+        text = { Text("Ссылка перестанет открываться. Уже сохранённые копии программ останутся у получателей.") },
         confirmButton = {
           TextButton(
-              onClick = {
-                haptics.tap()
-                pendingRevoke = null
-                viewModel.revoke(shareId)
-              },
+              onClick = { haptics.tap(); pendingRevoke = null; viewModel.revoke(shareId) },
               enabled = !state.busy,
               modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
-          ) {
-            Text("Отозвать", color = MaterialTheme.colorScheme.error)
-          }
+          ) { Text("Отозвать", color = MaterialTheme.colorScheme.error) }
         },
-        dismissButton = {
-          TextButton(onClick = { pendingRevoke = null }, enabled = !state.busy) { Text("Отмена") }
-        },
+        dismissButton = { TextButton(onClick = { pendingRevoke = null }, enabled = !state.busy) { Text("Отмена") } },
     )
   }
 }
@@ -233,12 +179,11 @@ fun RoutineSharePreviewScreen(
   val state by viewModel.previewState.collectAsStateWithLifecycle()
   val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
   DisposableEffect(lifecycleOwner) {
-    val observer =
-        object : DefaultLifecycleObserver {
-          override fun onResume(owner: LifecycleOwner) {
-            viewModel.refreshPreview()
-          }
-        }
+    val observer = object : DefaultLifecycleObserver {
+      override fun onResume(owner: LifecycleOwner) {
+        viewModel.refreshPreview()
+      }
+    }
     lifecycleOwner.lifecycle.addObserver(observer)
     onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
   }
@@ -252,28 +197,27 @@ fun RoutineSharePreviewScreen(
       ShareTopBar(title = state.preview?.title ?: "Программа по ссылке", onBack = onBack)
       when {
         state.loading -> Loading()
-        state.preview == null ->
-            Message(state.error ?: "Ссылка недоступна", "Повторить", viewModel::refreshPreview)
+        state.preview == null -> Message(state.error ?: "Ссылка недоступна", "Повторить", viewModel::refreshPreview)
         else -> {
           val preview = requireNotNull(state.preview)
           RoutineDetailContent(
-              routine = preview.toDetailRoutine(),
-              onExerciseClick = null,
-              windowWidthClass = windowWidthClass,
-              showGyms = false,
-              originContent = {
-                GymCard(Modifier.fillMaxWidth()) {
-                  Text("Программа по ссылке", style = MaterialTheme.typography.titleMedium)
-                  Text(
-                      "Около ${(preview.estimatedDurationSeconds + 30) / 60} мин",
-                      style = MaterialTheme.typography.bodyMedium,
-                      color = MaterialTheme.colorScheme.onSurfaceVariant,
-                  )
-                }
-              },
-              actionContent = {
-                RoutineShareActions(state, viewModel::import, onOpenImportedRoutine)
-              },
+            routine = preview.toDetailRoutine(),
+            onExerciseClick = null,
+            windowWidthClass = windowWidthClass,
+            showGyms = false,
+            originContent = {
+              GymCard(Modifier.fillMaxWidth()) {
+                Text("Программа по ссылке", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Около ${(preview.estimatedDurationSeconds + 30) / 60} мин",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+              }
+            },
+            actionContent = {
+              RoutineShareActions(state, viewModel::import, onOpenImportedRoutine)
+            },
           )
         }
       }
@@ -289,16 +233,13 @@ internal fun RoutineShareActions(
 ) {
   val haptics = gymHaptics()
   Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-    state.error?.let {
-      Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
-    }
+    state.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium) }
     PillButton(
-        text =
-            when {
-              state.importing -> "Сохраняем программу"
-              state.importedRoutineId != null -> "Открыть мою программу"
-              else -> "Сохранить себе"
-            },
+        text = when {
+          state.importing -> "Сохраняем программу"
+          state.importedRoutineId != null -> "Открыть мою программу"
+          else -> "Сохранить себе"
+        },
         onClick = {
           haptics.tap()
           state.importedRoutineId?.let(onOpenImportedRoutine) ?: onSave()
@@ -323,28 +264,19 @@ internal fun RoutineShareActions(
 private fun ShareTopBar(title: String, onBack: () -> Unit) {
   TopAppBar(
       title = { Text(title) },
-      navigationIcon = {
-        IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Назад") }
-      },
-      colors =
-          TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
+      navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Назад") } },
+      colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
   )
 }
 
 @Composable
-private fun Loading() =
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+private fun Loading() = Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
 
 @Composable
 private fun Message(message: String, action: String, onAction: () -> Unit) =
     Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
       Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(message, style = MaterialTheme.typography.titleMedium)
-        TextButton(
-            onClick = onAction,
-            modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
-        ) {
-          Text(action)
-        }
+        TextButton(onClick = onAction, modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)) { Text(action) }
       }
     }

@@ -236,11 +236,7 @@ internal fun RoutineDetailContent(
     if (showGyms) {
       item {
         GymCard(modifier = Modifier.fillMaxWidth()) {
-          Text(
-              "Залы",
-              style = MaterialTheme.typography.titleMedium,
-              fontWeight = FontWeight.SemiBold,
-          )
+          Text("Залы", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
           Spacer(Modifier.height(4.dp))
           Text(
               text =

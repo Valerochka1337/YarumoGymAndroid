@@ -66,4 +66,11 @@ interface ProfileRepository {
   fun observe(target: ProfileEditTarget): Flow<BasicProfile?>
 
   suspend fun save(target: ProfileEditTarget, profile: BasicProfile): ProfileSaveResult
+
+  /** Baseline profile and optional strength draft share one owner-guarded Room transaction. */
+  suspend fun saveWithStrength(
+      target: ProfileEditTarget,
+      profile: BasicProfile,
+      keyExercises: List<KeyExerciseChoice>,
+  ): ProfileSaveResult = save(target, profile)
 }

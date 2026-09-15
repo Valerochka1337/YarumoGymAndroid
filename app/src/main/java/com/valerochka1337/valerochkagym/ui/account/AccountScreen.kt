@@ -38,8 +38,7 @@ fun AccountGate(
     content: @Composable () -> Unit,
 ) {
   val session by vm.session.collectAsStateWithLifecycle()
-  if (session != null || allowGuest)
-      key(if (allowGuest) "guest" else session!!.userId) { content() }
+  if (session != null || allowGuest) key(if (allowGuest) "guest" else session!!.userId) { content() }
   else
       Surface(Modifier.fillMaxSize()) {
         Column(

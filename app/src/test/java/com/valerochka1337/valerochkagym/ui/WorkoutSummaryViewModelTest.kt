@@ -1,6 +1,10 @@
 package com.valerochka1337.valerochkagym.ui
 
 import androidx.lifecycle.SavedStateHandle
+import com.valerochka1337.valerochkagym.domain.WorkoutEffortRepository
+import com.valerochka1337.valerochkagym.domain.WorkoutEffortEditTarget
+import com.valerochka1337.valerochkagym.domain.WorkoutEffortSaveResult
+import com.valerochka1337.valerochkagym.data.db.entity.WorkoutEffort
 import com.valerochka1337.valerochkagym.data.db.dao.RoutineDao
 import com.valerochka1337.valerochkagym.data.db.dao.WorkoutDao
 import com.valerochka1337.valerochkagym.data.db.entity.ExerciseEntity
@@ -56,6 +60,50 @@ import org.junit.Test
 class WorkoutSummaryViewModelTest {
 
   @get:Rule val mainDispatcherRule = MainDispatcherRule()
+
+  private class EffortRepository : WorkoutEffortRepository {
+    var epoch = 1L
+    val saved = kotlinx.coroutines.flow.MutableStateFlow<WorkoutEffort?>(WorkoutEffort.HARD)
+    val writes = mutableListOf<WorkoutEffort?>()
+    override fun captureTarget(workoutId: String) = WorkoutEffortEditTarget(workoutId, "owner", epoch)
+    override fun observe(target: WorkoutEffortEditTarget) = saved
+    override suspend fun save(target: WorkoutEffortEditTarget, effort: WorkoutEffort?): WorkoutEffortSaveResult {
+      if (target.sessionEpoch != epoch) return WorkoutEffortSaveResult.StaleOwner
+      writes += effort
+      saved.value = effort
+      return WorkoutEffortSaveResult.Saved
+    }
+  }
+
+  @Test fun `an explicit effort clear survives recreation and saves before done`() =
+      runTest(mainDispatcherRule.testDispatcher.scheduler) {
+        val full = fullWorkout()
+        val repo = EffortRepository()
+        val handle = SavedStateHandle(mapOf(GymRoutes.WORKOUT_ID_ARG to full.workout.id))
+        val first = viewModel(full, savedStateHandle = handle, effortRepository = repo)
+        first.setEffort(null)
+        val restored = viewModel(full, savedStateHandle = handle, effortRepository = repo)
+        assertTrue(restored.uiState.value.effortDraftPresent)
+        assertEquals(null, restored.uiState.value.effortDraft)
+        restored.onDone()
+        assertEquals(listOf<WorkoutEffort?>(null), repo.writes)
+        assertTrue(restored.uiState.value.showSaveChoice)
+      }
+
+  @Test fun `recreated effort draft cannot adopt a new login session`() =
+      runTest(mainDispatcherRule.testDispatcher.scheduler) {
+        val full = fullWorkout()
+        val repo = EffortRepository()
+        val handle = SavedStateHandle(mapOf(GymRoutes.WORKOUT_ID_ARG to full.workout.id))
+        val first = viewModel(full, savedStateHandle = handle, effortRepository = repo)
+        first.setEffort(WorkoutEffort.EASY)
+        repo.epoch++
+        val restored = viewModel(full, savedStateHandle = handle, effortRepository = repo)
+        restored.onDone()
+        assertTrue(repo.writes.isEmpty())
+        assertFalse(restored.uiState.value.showSaveChoice)
+        assertTrue(restored.uiState.value.effortError != null)
+      }
 
   @Test
   fun `summary shows duration volume and completed sets in domain order`() =
@@ -474,6 +522,7 @@ class WorkoutSummaryViewModelTest {
           ),
       savedStateHandle: SavedStateHandle? = null,
       routineRepository: GymRepository = NoOpGymRepository,
+      effortRepository: WorkoutEffortRepository? = null,
   ): WorkoutSummaryViewModel {
     val workoutDao = FakeWorkoutDao(full)
     return WorkoutSummaryViewModel(
@@ -493,6 +542,7 @@ class WorkoutSummaryViewModelTest {
             ),
         previousSetsUseCase = PreviousSetsUseCase(workoutDao),
         saveCompletedWorkoutAsRoutineUseCase = saveUseCase,
+        workoutEffortRepository = effortRepository,
     )
   }
 

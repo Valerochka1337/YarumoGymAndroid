@@ -11,6 +11,11 @@ import com.valerochka1337.valerochkagym.domain.ProfileEditTarget
 import com.valerochka1337.valerochkagym.domain.ProfileEditorSnapshot
 import com.valerochka1337.valerochkagym.domain.ProfileRepository
 import com.valerochka1337.valerochkagym.domain.ProfileSaveResult
+import com.valerochka1337.valerochkagym.domain.StrengthPlannerRepository
+import com.valerochka1337.valerochkagym.domain.StrengthExerciseCandidate
+import com.valerochka1337.valerochkagym.domain.KeyExerciseChoice
+import com.valerochka1337.valerochkagym.domain.StrengthPlannerSaveResult
+import com.valerochka1337.valerochkagym.data.db.entity.KeyExercisePriority
 import com.valerochka1337.valerochkagym.service.WallClock
 import com.valerochka1337.valerochkagym.util.MainDispatcherRule
 import java.util.TimeZone
@@ -81,6 +86,23 @@ class ProfileViewModelTest {
         }
       }
 
+  @Test
+  fun `key exercise draft restores across recreation`() =
+      runTest(mainDispatcherRule.testDispatcher.scheduler) {
+        val repository = FakeProfileRepository()
+        val handle = SavedStateHandle()
+        val strength = FakeStrengthPlannerRepository()
+        val first = ProfileViewModel(repository, gate(repository), handle, strengthPlannerRepository = strength)
+        advanceUntilIdle()
+        first.setGoal(com.valerochka1337.valerochkagym.domain.TrainingGoal.STRENGTH)
+        first.toggleKeyExercise(7)
+
+        val recreated = ProfileViewModel(repository, gate(repository), handle, strengthPlannerRepository = strength)
+        advanceUntilIdle()
+
+        assertEquals(listOf(7L), recreated.uiState.value.keyExercises.mapNotNull { it.exerciseId })
+      }
+
   private fun gate(repository: ProfileRepository) =
       AiProfilePromptGate(SettingsRepository(FakeDataStore()), repository, WallClock { 1L })
 }
@@ -109,4 +131,17 @@ private class FakeDataStore : DataStore<Preferences> {
 
   override suspend fun updateData(transform: suspend (Preferences) -> Preferences): Preferences =
       transform(data.value).also { data.value = it }
+}
+
+private class FakeStrengthPlannerRepository : StrengthPlannerRepository {
+  override fun observeLiveStrengthExercises(): Flow<List<StrengthExerciseCandidate>> =
+      flowOf(listOf(StrengthExerciseCandidate(7, "sync-7", "Жим")))
+
+  override fun observe(target: ProfileEditTarget): Flow<List<KeyExerciseChoice>?> = flowOf(emptyList())
+
+  override suspend fun save(
+      target: ProfileEditTarget,
+      profileGoal: com.valerochka1337.valerochkagym.domain.TrainingGoal?,
+      choices: List<KeyExerciseChoice>,
+  ): StrengthPlannerSaveResult = StrengthPlannerSaveResult.Saved
 }

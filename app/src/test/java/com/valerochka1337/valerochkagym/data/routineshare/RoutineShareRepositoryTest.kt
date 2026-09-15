@@ -33,13 +33,7 @@ class RoutineShareRepositoryTest : RoomDaoTest() {
     val transport = FakeTransport()
     val sessions = FakeSessions(epochValue = 7)
     val ready = SyncReady.Ready("user-a", revision = 42, catalogRevision = 9, sessionEpoch = 7)
-    val repository =
-        RoutineShareRepository(
-            transport,
-            FakeReady(ready),
-            sessions,
-            BackendSync(db, transport, sessions),
-        )
+    val repository = RoutineShareRepository(transport, FakeReady(ready), sessions, BackendSync(db, transport, sessions))
 
     val created = repository.create(routineId, operationId, null, null) { _, _ -> }
 
@@ -55,13 +49,7 @@ class RoutineShareRepositoryTest : RoomDaoTest() {
     val transport = FakeTransport()
     val sessions = FakeSessions(epochValue = 7)
     val ready = SyncReady.Ready("user-a", revision = 42, catalogRevision = 9, sessionEpoch = 7)
-    val repository =
-        RoutineShareRepository(
-            transport,
-            FakeReady(ready, current = false),
-            sessions,
-            BackendSync(db, transport, sessions),
-        )
+    val repository = RoutineShareRepository(transport, FakeReady(ready, current = false), sessions, BackendSync(db, transport, sessions))
 
     try {
       repository.create(routineId, operationId, null, null) { _, _ -> }
@@ -72,23 +60,11 @@ class RoutineShareRepositoryTest : RoomDaoTest() {
 
   @Test
   fun `preview rejects private fields instead of silently accepting them`() = runTest {
-    val transport =
-        FakeTransport().apply {
-          preview = buildJsonObject {
-            put("title", "Ноги")
-            put("estimatedDurationSeconds", 90)
-            put("exercises", kotlinx.serialization.json.JsonArray(emptyList()))
-            put("author", "private")
-          }
-        }
+    val transport = FakeTransport().apply {
+      preview = buildJsonObject { put("title", "Ноги"); put("estimatedDurationSeconds", 90); put("exercises", kotlinx.serialization.json.JsonArray(emptyList())); put("author", "private") }
+    }
     val sessions = FakeSessions(epochValue = 7)
-    val repository =
-        RoutineShareRepository(
-            transport,
-            FakeReady(SyncReady.Ready("user-a", 1, 1, 7)),
-            sessions,
-            BackendSync(db, transport, sessions),
-        )
+    val repository = RoutineShareRepository(transport, FakeReady(SyncReady.Ready("user-a", 1, 1, 7)), sessions, BackendSync(db, transport, sessions))
 
     try {
       repository.preview("AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-ABCDE")
@@ -96,24 +72,17 @@ class RoutineShareRepositoryTest : RoomDaoTest() {
     } catch (_: RoutineShareException) {}
   }
 
-  private class FakeReady(private val ready: SyncReady.Ready, private val current: Boolean = true) :
-      SyncReadySource {
+  private class FakeReady(private val ready: SyncReady.Ready, private val current: Boolean = true) : SyncReadySource {
     override suspend fun await(): SyncReady = ready
-
     override suspend fun isCurrent(ready: SyncReady.Ready): Boolean = current
   }
 
   private class FakeSessions(private val epochValue: Long) : BackendSessionStore {
     private val tokens = BackendTokens("user-a", "a@example.com", "access", "refresh")
     override val session = MutableStateFlow<BackendTokens?>(tokens)
-    override val sessionEpoch: Long
-      get() = epochValue
-
+    override val sessionEpoch: Long get() = epochValue
     override fun snapshot() = BackendSessionSnapshot(tokens, epochValue)
-
-    override fun save(tokens: BackendTokens?) {
-      session.value = tokens
-    }
+    override fun save(tokens: BackendTokens?) { session.value = tokens }
   }
 
   private class FakeTransport : BackendTransport {
@@ -121,18 +90,10 @@ class RoutineShareRepositoryTest : RoomDaoTest() {
     var request: JsonObject? = null
     var expectedOwner: String? = null
     var expectedEpoch: Long? = null
-    var preview: JsonElement = buildJsonObject {
-      put("title", "Ноги")
-      put("estimatedDurationSeconds", 90)
-      put("exercises", kotlinx.serialization.json.JsonArray(emptyList()))
-    }
+    var preview: JsonElement = buildJsonObject { put("title", "Ноги"); put("estimatedDurationSeconds", 90); put("exercises", kotlinx.serialization.json.JsonArray(emptyList())) }
 
-    override suspend fun public(method: String, path: String, body: JsonElement?): JsonElement =
-        preview
-
-    override suspend fun authorized(method: String, path: String, body: JsonElement?): JsonElement =
-        error("raw response is required")
-
+    override suspend fun public(method: String, path: String, body: JsonElement?): JsonElement = preview
+    override suspend fun authorized(method: String, path: String, body: JsonElement?): JsonElement = error("raw response is required")
     override suspend fun authorizedRawResponse(
         method: String,
         path: String,
@@ -147,16 +108,7 @@ class RoutineShareRepositoryTest : RoomDaoTest() {
       this.expectedEpoch = expectedSessionEpoch
       request = json.parseToJsonElement(rawBody.decodeToString()).jsonObject
       return BackendResponse(
-          body =
-              buildJsonObject {
-                put("shareId", "00000000-0000-0000-0000-000000000013")
-                put(
-                    "url",
-                    "https://api.valerochkagym.tech/r/AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-ABCDE",
-                )
-                put("routineId", "00000000-0000-0000-0000-000000000011")
-                put("createdAt", 1)
-              },
+          body = buildJsonObject { put("shareId", "00000000-0000-0000-0000-000000000013"); put("url", "https://api.valerochkagym.tech/r/AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-ABCDE"); put("routineId", "00000000-0000-0000-0000-000000000011"); put("createdAt", 1) },
           rawBody = ByteArray(0),
           acceptedCapabilities = emptySet(),
           owner = expectedOwner,

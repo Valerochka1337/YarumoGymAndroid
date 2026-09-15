@@ -1,8 +1,6 @@
 package com.valerochka1337.valerochkagym.data.routineshare
 
-/**
- * Exact routine-sharing routes. Paths are intentionally assembled only from validated IDs/tokens.
- */
+/** Exact routine-sharing routes. Paths are intentionally assembled only from validated IDs/tokens. */
 internal object RoutineShareApi {
   const val shares = "/routine-shares"
 

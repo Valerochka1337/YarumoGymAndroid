@@ -9,6 +9,7 @@ import com.valerochka1337.valerochkagym.data.backend.SyncReadySource
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -17,6 +18,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
@@ -64,8 +66,7 @@ constructor(
     requireResponseContext(response.owner, response.sessionEpoch, ready)
     requireSessionCurrent(ready.owner, ready.sessionEpoch)
     requireCurrent(ready)
-    return response.body
-        .objectStrict("share create", setOf("shareId", "url", "routineId", "createdAt"))
+    return response.body.objectStrict("share create", setOf("shareId", "url", "routineId", "createdAt"))
         .let { body ->
           CreatedRoutineShare(
               shareId = body.uuid("shareId"),
@@ -90,28 +91,19 @@ constructor(
         )
     requireSessionCurrent(snapshot)
     if (response.owner != snapshot.tokens.userId || response.sessionEpoch != snapshot.epoch)
-        throw RoutineShareException("Аккаунт изменился")
-    val items =
-        response.body.objectStrict("share list", setOf("items"))["items"]?.jsonArray
-            ?: throw RoutineShareException("Некорректный список ссылок")
+      throw RoutineShareException("Аккаунт изменился")
+    val items = response.body.objectStrict("share list", setOf("items"))["items"]?.jsonArray
+        ?: throw RoutineShareException("Некорректный список ссылок")
     if (items.size > 50) throw RoutineShareException("Некорректный список ссылок")
     return items.map { element ->
-      val item =
-          element.objectStrict(
-              "share list item",
-              setOf("shareId", "routineId", "url", "createdAt", "active"),
-          )
+      val item = element.objectStrict("share list item", setOf("shareId", "routineId", "url", "createdAt", "active"))
       RoutineShareLink(
-              shareId = item.uuid("shareId"),
-              routineId = item.uuid("routineId"),
-              url = item.shareUrl("url"),
-              createdAt = item.long("createdAt"),
-              active = item.boolean("active"),
-          )
-          .also {
-            if (it.routineId != routineId || !it.active)
-                throw RoutineShareException("Некорректный список ссылок")
-          }
+          shareId = item.uuid("shareId"),
+          routineId = item.uuid("routineId"),
+          url = item.shareUrl("url"),
+          createdAt = item.long("createdAt"),
+          active = item.boolean("active"),
+      ).also { if (it.routineId != routineId || !it.active) throw RoutineShareException("Некорректный список ссылок") }
     }
   }
 
@@ -130,7 +122,7 @@ constructor(
         )
     requireSessionCurrent(snapshot)
     if (response.owner != snapshot.tokens.userId || response.sessionEpoch != snapshot.epoch)
-        throw RoutineShareException("Аккаунт изменился")
+      throw RoutineShareException("Аккаунт изменился")
     val body = response.body.objectStrict("share revoke", setOf("shareId", "revokedAt"))
     if (body.uuid("shareId") != shareId) throw RoutineShareException("Некорректный ответ сервера")
     body.long("revokedAt")
@@ -156,12 +148,8 @@ constructor(
         )
     requireSessionCurrent(snapshot)
     if (response.owner != snapshot.tokens.userId || response.sessionEpoch != snapshot.epoch)
-        throw RoutineShareException("Аккаунт изменился")
-    val body =
-        response.body.objectStrict(
-            "share import",
-            setOf("routineId", "revision", "importedAt", "alreadyImported"),
-        )
+      throw RoutineShareException("Аккаунт изменился")
+    val body = response.body.objectStrict("share import", setOf("routineId", "revision", "importedAt", "alreadyImported"))
     val result =
         ImportedRoutineShare(
             routineId = body.uuid("routineId"),
@@ -176,8 +164,7 @@ constructor(
   private suspend fun awaitReady(): SyncReady.Ready =
       when (val ready = syncReady.await()) {
         is SyncReady.Ready -> ready
-        SyncReady.Blocked ->
-            throw RoutineShareException("Синхронизация ещё не готова. Повторите позже")
+        SyncReady.Blocked -> throw RoutineShareException("Синхронизация ещё не готова. Повторите позже")
         is SyncReady.Failure -> throw RoutineShareException(ready.message, ready.cause)
       }
 
@@ -195,7 +182,7 @@ constructor(
   private fun requireSessionCurrent(owner: String, epoch: Long) {
     val current = sessions.snapshot()
     if (current?.tokens?.userId != owner || current.epoch != epoch)
-        throw RoutineShareException("Аккаунт изменился")
+      throw RoutineShareException("Аккаунт изменился")
   }
 
   private fun requireResponseContext(owner: String?, epoch: Long, ready: SyncReady.Ready) {
@@ -217,47 +204,33 @@ private fun requireCanonicalUuid(value: String, field: String) {
 }
 
 private fun responsePreview(element: JsonElement): RoutineSharePreview {
-  val body =
-      element.objectStrict("share preview", setOf("title", "estimatedDurationSeconds", "exercises"))
-  val exercises =
-      body["exercises"]?.jsonArray ?: throw RoutineShareException("Некорректный предпросмотр")
+  val body = element.objectStrict("share preview", setOf("title", "estimatedDurationSeconds", "exercises"))
+  val exercises = body["exercises"]?.jsonArray ?: throw RoutineShareException("Некорректный предпросмотр")
   if (exercises.size > 200) throw RoutineShareException("Некорректный предпросмотр")
   return RoutineSharePreview(
       title = body.string("title", 1..200),
       estimatedDurationSeconds = body.nonNegativeLong("estimatedDurationSeconds"),
-      exercises =
-          exercises.map { raw ->
-            val exercise =
-                raw.objectStrict(
-                    "share exercise",
-                    setOf("exerciseKey", "name", "type", "sets", "restSeconds"),
-                )
-            val sets =
-                exercise["sets"]?.jsonArray
-                    ?: throw RoutineShareException("Некорректный предпросмотр")
-            if (sets.size > 1_000) throw RoutineShareException("Некорректный предпросмотр")
-            RoutineShareExercise(
-                exerciseKey = exercise.uuid("exerciseKey"),
-                name = exercise.string("name", 1..200),
-                type = exercise.exerciseType(),
-                restSeconds = exercise.int("restSeconds", 0..86_400),
-                sets =
-                    sets.map { setRaw ->
-                      val set =
-                          setRaw.objectStrict(
-                              "share set",
-                              setOf("weightKg", "reps", "durationSec", "speedKmh", "inclinePct"),
-                          )
-                      RoutineShareSet(
-                          weightKg = set.optionalDouble("weightKg", -1_000_000.0..1_000_000.0),
-                          reps = set.optionalInt("reps", -1_000_000..1_000_000),
-                          durationSec = set.optionalInt("durationSec", -1_000_000..1_000_000),
-                          speedKmh = set.optionalDouble("speedKmh", -1_000_000.0..1_000_000.0),
-                          inclinePct = set.optionalDouble("inclinePct", -100.0..1_000_000.0),
-                      )
-                    },
-            )
-          },
+      exercises = exercises.map { raw ->
+        val exercise = raw.objectStrict("share exercise", setOf("exerciseKey", "name", "type", "sets", "restSeconds"))
+        val sets = exercise["sets"]?.jsonArray ?: throw RoutineShareException("Некорректный предпросмотр")
+        if (sets.size > 1_000) throw RoutineShareException("Некорректный предпросмотр")
+        RoutineShareExercise(
+            exerciseKey = exercise.uuid("exerciseKey"),
+            name = exercise.string("name", 1..200),
+            type = exercise.exerciseType(),
+            restSeconds = exercise.int("restSeconds", 0..86_400),
+            sets = sets.map { setRaw ->
+              val set = setRaw.objectStrict("share set", setOf("weightKg", "reps", "durationSec", "speedKmh", "inclinePct"))
+              RoutineShareSet(
+                  weightKg = set.optionalDouble("weightKg", -1_000_000.0..1_000_000.0),
+                  reps = set.optionalInt("reps", -1_000_000..1_000_000),
+                  durationSec = set.optionalInt("durationSec", -1_000_000..1_000_000),
+                  speedKmh = set.optionalDouble("speedKmh", -1_000_000.0..1_000_000.0),
+                  inclinePct = set.optionalDouble("inclinePct", -100.0..1_000_000.0),
+              )
+            },
+        )
+      },
   )
 }
 
@@ -271,8 +244,7 @@ private fun JsonObject.string(key: String, length: IntRange): String =
     (this[key] as? JsonPrimitive)?.content?.takeIf { it.length in length }
         ?: throw RoutineShareException("Некорректное поле $key")
 
-private fun JsonObject.uuid(key: String): String =
-    string(key, 36..36).also { requireCanonicalUuid(it, key) }
+private fun JsonObject.uuid(key: String): String = string(key, 36..36).also { requireCanonicalUuid(it, key) }
 
 private fun JsonObject.shareUrl(key: String): String =
     string(key, 1..500).also { value ->
@@ -304,10 +276,7 @@ private fun JsonObject.optionalInt(key: String, range: IntRange): Int? {
       ?: throw RoutineShareException("Некорректное поле $key")
 }
 
-private fun JsonObject.optionalDouble(
-    key: String,
-    range: ClosedFloatingPointRange<Double>,
-): Double? {
+private fun JsonObject.optionalDouble(key: String, range: ClosedFloatingPointRange<Double>): Double? {
   val element = this[key] ?: throw RoutineShareException("Некорректное поле $key")
   if (element is kotlinx.serialization.json.JsonNull) return null
   return element.jsonPrimitive.doubleOrNull?.takeIf { it in range }

@@ -55,10 +55,7 @@ class RoutineShareActionsTest {
       }
     }
 
-    compose
-        .onNodeWithContentDescription("Сохранить программу себе")
-        .assertIsDisplayed()
-        .performClick()
+    compose.onNodeWithContentDescription("Сохранить программу себе").assertIsDisplayed().performClick()
     assertEquals(1, saves)
     compose.runOnIdle { state = state.copy(importing = true) }
     compose.onNodeWithContentDescription("Сохранить программу себе").assertIsNotEnabled()

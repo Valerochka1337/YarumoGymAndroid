@@ -8,11 +8,13 @@ import com.valerochka1337.valerochkagym.data.backend.BackendTransport
 import com.valerochka1337.valerochkagym.data.db.LocalEquipmentCatalog
 import com.valerochka1337.valerochkagym.data.db.entity.ProfileEntity
 import com.valerochka1337.valerochkagym.data.db.entity.ProfileEquipmentPreferenceEntity
+import com.valerochka1337.valerochkagym.data.db.entity.KeyExercisePriority
 import com.valerochka1337.valerochkagym.domain.BasicProfile
 import com.valerochka1337.valerochkagym.domain.ExperienceLevel
 import com.valerochka1337.valerochkagym.domain.ProfileSaveResult
 import com.valerochka1337.valerochkagym.domain.ProfileSex
 import com.valerochka1337.valerochkagym.domain.TrainingGoal
+import com.valerochka1337.valerochkagym.domain.KeyExerciseChoice
 import com.valerochka1337.valerochkagym.service.WallClock
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -55,6 +57,24 @@ class ProfileRepositoryImplTest : RoomDaoTest() {
   }
 
   @Test
+  fun `a session change during profile writes rolls back the entire profile`() = runTest {
+    val store = Store()
+    val sync = BackendSync(db, Server, store)
+    sync.claim("owner")
+    val tokens = BackendTokens("owner", "owner@example.com", "access", "refresh")
+    store.save(tokens)
+    var clockReads = 0
+    val repo = ProfileRepositoryImpl(db, db.profileDao(), sync, store, WallClock {
+      clockReads++
+      if (clockReads == 2) store.save(tokens)
+      1_800_000_000_000L
+    })
+    val target = requireNotNull(repo.openEditor()).target
+    assertEquals(ProfileSaveResult.StaleTarget, repo.save(target, BasicProfile(trainingGoal = TrainingGoal.STRENGTH)))
+    assertNull(db.profileDao().get("owner"))
+  }
+
+  @Test
   fun `empty guest editor remains valid without creating a profile row`() = runTest {
     val (repository, _) = repository(Store())
 
@@ -62,6 +82,24 @@ class ProfileRepositoryImplTest : RoomDaoTest() {
 
     assertEquals(BasicProfile(), snapshot?.profile)
     assertEquals(0, tableCount("profiles"))
+  }
+
+  @Test
+  fun `invalid combined strength draft leaves baseline profile unchanged`() = runTest {
+    val (repository, _) = repository(Store())
+    val target = requireNotNull(repository.openEditor()).target
+
+    assertEquals(
+        ProfileSaveResult.Invalid,
+        repository.saveWithStrength(
+            target,
+            BasicProfile(trainingGoal = TrainingGoal.STRENGTH),
+            listOf(KeyExerciseChoice(99L, "missing", KeyExercisePriority.HIGH)),
+        ),
+    )
+
+    assertNull(db.profileDao().get("GUEST"))
+    assertNull(db.strengthPlannerProfileDao().get("GUEST"))
   }
 
   @Test

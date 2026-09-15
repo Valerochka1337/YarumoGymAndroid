@@ -16,6 +16,9 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.unit.Density
 import com.valerochka1337.valerochkagym.domain.ProfileEditTarget
 import com.valerochka1337.valerochkagym.domain.TrainingGoal
+import com.valerochka1337.valerochkagym.domain.KeyExerciseChoice
+import com.valerochka1337.valerochkagym.domain.StrengthExerciseCandidate
+import com.valerochka1337.valerochkagym.data.db.entity.KeyExercisePriority
 import com.valerochka1337.valerochkagym.ui.theme.GymTheme
 import org.junit.Assert.assertNull
 import org.junit.Rule
@@ -126,5 +129,64 @@ class ProfileScreenTest {
       }
     }
     compose.onNodeWithContentDescription("Загружаем профиль").assertIsDisplayed()
+  }
+
+  @Test
+  fun `strength key choices remain removable at font scale two`() {
+    var removed: String? = null
+    compose.setContent {
+      val density = LocalDensity.current
+      CompositionLocalProvider(LocalDensity provides Density(density.density, fontScale = 2f)) {
+        GymTheme {
+          ProfileScreenContent(
+              state =
+                  ProfileEditorUiState(
+                      isLoading = false,
+                      target = ProfileEditTarget("owner", "owner", 1),
+                      trainingGoal = TrainingGoal.STRENGTH,
+                      keyExercises =
+                          listOf(KeyExerciseChoice(null, "deleted-exercise", KeyExercisePriority.HIGH)),
+                      strengthExercises = listOf(StrengthExerciseCandidate(1, "live", "Жим")),
+                  ),
+              onBack = {}, onGoal = {}, onExperience = {}, onSex = {}, onBirthDate = {},
+              onSessions = {}, onDuration = {}, onConstraints = {}, onEquipment = {},
+              onPromptDisabled = {}, onSave = {}, onRemoveKeyExercise = { removed = it },
+          )
+        }
+      }
+    }
+    compose.onNodeWithText("Недоступное упражнение").performScrollTo().assertIsDisplayed()
+    compose.onNodeWithText("Удалить").performScrollTo().performClick()
+    compose.runOnIdle { org.junit.Assert.assertEquals("deleted-exercise", removed) }
+  }
+
+  @Test
+  fun `live strength name and priority remain accessible at font scale two`() {
+    var removed: String? = null
+    compose.setContent {
+      val density = LocalDensity.current
+      CompositionLocalProvider(LocalDensity provides Density(density.density, fontScale = 2f)) {
+        GymTheme {
+          ProfileScreenContent(
+              state =
+                  ProfileEditorUiState(
+                      isLoading = false,
+                      target = ProfileEditTarget("owner", "owner", 1),
+                      trainingGoal = TrainingGoal.STRENGTH,
+                      keyExercises =
+                          listOf(KeyExerciseChoice(1, "live", KeyExercisePriority.HIGH)),
+                      strengthExercises = listOf(StrengthExerciseCandidate(1, "live", "Жим штанги лёжа на горизонтальной скамье")),
+                  ),
+              onBack = {}, onGoal = {}, onExperience = {}, onSex = {}, onBirthDate = {},
+              onSessions = {}, onDuration = {}, onConstraints = {}, onEquipment = {},
+              onPromptDisabled = {}, onSave = {}, onRemoveKeyExercise = { removed = it },
+          )
+        }
+      }
+    }
+    compose.onNodeWithText("Жим штанги лёжа на горизонтальной скамье").performScrollTo().assertIsDisplayed()
+    compose.onNodeWithText("Высокий").performScrollTo().assertIsDisplayed().performClick()
+    compose.onNodeWithText("Удалить").performScrollTo().performClick()
+    compose.runOnIdle { org.junit.Assert.assertEquals("live", removed) }
   }
 }
