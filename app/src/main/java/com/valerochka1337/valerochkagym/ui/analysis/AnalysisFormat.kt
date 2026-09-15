@@ -21,6 +21,7 @@ import kotlin.math.roundToInt
  * зависит от языка устройства, а хвостовые нули не превращают «12» в «12.0».
  */
 private val DATE_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("dd.MM")
+private val FULL_DATE_FORMATTER = DateTimeFormatter.ofPattern("dd.MM.yyyy")
 private val DATE_YEAR_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("dd.MM.yy")
 
 /** Число с [digits] знаками после запятой, без хвостовых нулей. */
@@ -42,13 +43,9 @@ fun formatMinutes(minutes: Int): String =
     if (minutes >= 60) "${minutes / 60} ч ${"%02d".format(minutes % 60)} мин" else "$minutes мин"
 
 /** Дата последней тренировки относительно конца выбранного периода. */
-fun formatLastSessionCaption(daysSinceLast: Int): String {
-  val days = daysSinceLast.coerceAtLeast(0)
-  return when (days) {
-    0 -> "последняя — в последний день периода"
-    1 -> "последняя — за день до конца периода"
-    else -> "последняя — за $days дн. до конца периода"
-  }
+fun formatLastSessionCaption(daysSinceLast: Int, periodEnd: LocalDate): String {
+  val date = periodEnd.minusDays(daysSinceLast.coerceAtLeast(0).toLong())
+  return "последняя ${FULL_DATE_FORMATTER.format(date)}"
 }
 
 fun formatDate(millis: Long, zone: ZoneId): String =

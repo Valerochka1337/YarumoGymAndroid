@@ -36,8 +36,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.valerochka1337.valerochkagym.domain.analysis.ExerciseProgress
 import com.valerochka1337.valerochkagym.domain.analysis.TrendVerdict
-import com.valerochka1337.valerochkagym.ui.analysis.charts.ColumnChart
-import com.valerochka1337.valerochkagym.ui.analysis.charts.ColumnDatum
 import com.valerochka1337.valerochkagym.ui.analysis.charts.LinePoint
 import com.valerochka1337.valerochkagym.ui.analysis.charts.StatTile
 import com.valerochka1337.valerochkagym.ui.analysis.charts.TrendLineChart
@@ -84,13 +82,14 @@ internal fun SummaryCard(
       StatTile(
           label = "Средняя тренировка",
           value = formatMinutes(report.avgSessionMinutes),
-          caption = report.daysSinceLast?.let(::formatLastSessionCaption),
+          caption =
+              report.daysSinceLast?.let { formatLastSessionCaption(it, report.range.endInclusive) },
           modifier = Modifier.weight(1f),
       )
     }
     Spacer(Modifier.height(14.dp))
     ValueRow(
-        label = "Недель подряд до конца периода",
+        label = "Недель подряд",
         value = report.streakWeeks.toString(),
         accent = true,
     )
@@ -101,7 +100,7 @@ internal fun SummaryCard(
 }
 
 /**
- * Прогресс выбранного упражнения: тренд расчётного максимума и силовая кривая.
+ * Прогресс выбранного упражнения: тренд расчётного максимума.
  *
  * Сравнивать подходы напрямую нельзя — 100 кг × 5 и 110 кг × 3 это разная работа, поэтому по
  * вертикали отложена оценка одноповторного максимума (формула Эпли по лучшему подходу тренировки).
@@ -157,40 +156,6 @@ internal fun ExerciseProgressCard(
 
     Spacer(Modifier.height(8.dp))
     SessionDetails(shown, state.selectedSessionIndex, state.zone)
-
-    if (shown.repMaxes.size >= 2) {
-      Spacer(Modifier.height(18.dp))
-      Text(
-          text = "Максимальный вес × повторения",
-          style = MaterialTheme.typography.titleSmall,
-          fontWeight = FontWeight.SemiBold,
-          color = MaterialTheme.colorScheme.onSurface,
-      )
-      Text(
-          text = "Лучший вес, поднятый хотя бы на столько повторений",
-          style = MaterialTheme.typography.bodySmall,
-          color = MaterialTheme.colorScheme.onSurfaceVariant,
-      )
-      Spacer(Modifier.height(10.dp))
-      ColumnChart(
-          data =
-              shown.repMaxes.map { point ->
-                ColumnDatum(label = "${point.reps}", value = point.weightKg.toFloat())
-              },
-          height = 150.dp,
-          labelEveryColumn = true,
-          valueFormatter = { "${it.toInt()}" },
-      )
-      Spacer(Modifier.height(6.dp))
-      shown.repMaxes
-          .filter { it.reps in KEY_REPS }
-          .forEach { point ->
-            ValueRow(
-                label = "${point.reps} повт.",
-                value = "${formatKg(point.weightKg)} · ${formatDate(point.dateMillis, state.zone)}",
-            )
-          }
-    }
   }
 }
 
@@ -377,8 +342,5 @@ internal fun RecordsCard(
     }
   }
 }
-
-/** Повторения, которые выводятся таблицей под силовой кривой: остальные читаются с графика. */
-private val KEY_REPS = setOf(1, 3, 5, 8, 10, 12)
 
 private const val MAX_RECORDS = 12
