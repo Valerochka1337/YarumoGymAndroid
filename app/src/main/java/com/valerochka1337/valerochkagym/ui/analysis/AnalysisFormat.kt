@@ -78,6 +78,7 @@ fun formatSigned(value: Double, unit: String): String {
 fun AnalysisPeriod.displayName(): String =
     when (this) {
       AnalysisPeriod.LAST_7_DAYS -> "Последние 7 дней"
+      AnalysisPeriod.WEEKS_2 -> "2 недели"
       AnalysisPeriod.WEEKS_4 -> "4 недели"
       AnalysisPeriod.WEEKS_12 -> "12 недель"
       AnalysisPeriod.WEEKS_52 -> "52 недели"

@@ -602,6 +602,22 @@ class AnalyticsEngineTest {
 
   // endregion
 
+  @Test
+  fun `two week period includes fourteen days and normalizes muscle volume`() {
+    val report =
+        analyze(
+            sets = listOf(0L, 13L, 14L).map { set(BENCH, weight = 80.0, reps = 5, daysAgo = it) },
+            muscles = mapOf(BENCH to listOf(MuscleLoad(Muscle.UPPER_CHEST, 100))),
+            period = AnalysisPeriod.WEEKS_2,
+        )
+    assertEquals(14L, report.range.days)
+    assertEquals(2.0, report.periodWeeks, 1e-6)
+    assertEquals(2, report.sessions)
+    val chest = report.muscleLoads.first { it.muscle == Muscle.UPPER_CHEST }
+    assertEquals(2.0, chest.totalSets, 1e-6)
+    assertEquals(1.0, chest.weeklySets, 1e-6)
+  }
+
   // region helpers
 
   /**

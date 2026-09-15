@@ -21,6 +21,8 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextClearance
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import com.valerochka1337.valerochkagym.data.db.entity.ExerciseEntity
@@ -48,6 +50,7 @@ import com.valerochka1337.valerochkagym.ui.analysis.ExerciseProgressCard
 import com.valerochka1337.valerochkagym.ui.analysis.MuscleFrequencyCard
 import com.valerochka1337.valerochkagym.ui.analysis.MuscleHeatmapCard
 import com.valerochka1337.valerochkagym.ui.analysis.MuscleVolumeCard
+import com.valerochka1337.valerochkagym.ui.analysis.ProgressExerciseSelector
 import com.valerochka1337.valerochkagym.ui.analysis.RecordsCard
 import com.valerochka1337.valerochkagym.ui.analysis.SummaryCard
 import com.valerochka1337.valerochkagym.ui.analysis.WeeklyVolumeCard
@@ -128,6 +131,8 @@ class AnalysisRenderTest {
         }
       }
     }
+    composeRule.onNodeWithText("Объём по мышцам").performClick()
+    composeRule.onNodeWithText("Частота и пауза").performClick()
     composeRule.waitForIdle()
 
     val bitmap = composeRule.onRoot().captureToImage().asAndroidBitmap()
@@ -158,6 +163,34 @@ class AnalysisRenderTest {
   }
 
   @Test
+  fun `exercise search includes all data backed exercises and selects a filtered result`() {
+    val example = buildState().report.exercises.first()
+    val choices =
+        (1L..12L).map { example.copy(exerciseId = it, name = "Упражнение $it") } +
+            example.copy(exerciseId = 13L, name = "Без данных", points = emptyList())
+    var selected: Long? = null
+    composeRule.setContent {
+      GymTheme {
+        ProgressExerciseSelector(
+            choices,
+            example.copy(name = "Выбрать упражнение"),
+            { selected = it },
+        )
+      }
+    }
+    composeRule.onNodeWithText("Выбрать упражнение").performClick()
+    composeRule.onNodeWithText("Без данных").assertDoesNotExist()
+    composeRule.onNodeWithText("Поиск упражнения").performTextInput("НЕСУЩЕСТВУЮЩЕЕ")
+    composeRule.onNodeWithText("Ничего не найдено").assertIsDisplayed()
+    composeRule.onNodeWithText("Поиск упражнения").performTextClearance()
+    composeRule.onNodeWithText("Поиск упражнения").performTextInput("упражнение 12")
+    composeRule.onNodeWithText("Упражнение 1").assertDoesNotExist()
+    composeRule.onNodeWithText("Упражнение 12").performClick()
+    assertEquals(12L, selected)
+    composeRule.onNodeWithText("Поиск упражнения").assertDoesNotExist()
+  }
+
+  @Test
   fun `period selector opens one menu with presets and custom dates`() {
     val today = LocalDate.of(2026, 6, 10)
     val range = AnalysisDateRange(today.minusDays(6), today)
@@ -175,8 +208,8 @@ class AnalysisRenderTest {
     }
 
     composeRule.onNodeWithContentDescription("Выбрать период анализа").performClick()
-    composeRule.onNodeWithText("4 недели").assertIsDisplayed().performClick()
-    assertEquals(AnalysisPeriod.WEEKS_4, selected)
+    composeRule.onNodeWithText("2 недели").assertIsDisplayed().performClick()
+    assertEquals(AnalysisPeriod.WEEKS_2, selected)
 
     composeRule.onNodeWithContentDescription("Выбрать период анализа").performClick()
     composeRule.onNodeWithText("Выбрать даты…").assertIsDisplayed()

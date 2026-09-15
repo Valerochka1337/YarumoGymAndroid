@@ -81,6 +81,8 @@ fun BodyMapFlip(
     selectedMuscle: Muscle? = null,
     onMuscleClick: ((Muscle?) -> Unit)? = null,
     initialView: BodyView = BodyView.FRONT,
+    figureWidthFraction: Float = 0.56f,
+    showViewLabel: Boolean = true,
 ) {
   var view by remember { mutableStateOf(initialView) }
   LaunchedEffect(selectedMuscle) { selectedMuscle?.let(::preferredBodyView)?.let { view = it } }
@@ -89,7 +91,7 @@ fun BodyMapFlip(
       modifier = modifier.fillMaxWidth(),
       horizontalAlignment = Alignment.CenterHorizontally,
   ) {
-    Box(modifier = Modifier.fillMaxWidth(0.56f)) {
+    Box(modifier = Modifier.fillMaxWidth(figureWidthFraction)) {
       Crossfade(
           targetState = view,
           animationSpec = GymMotion.effectsDefault(),
@@ -114,13 +116,15 @@ fun BodyMapFlip(
         )
       }
     }
-    Spacer(Modifier.height(6.dp))
-    Text(
-        text = view.title(),
-        style = MaterialTheme.typography.labelMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(bottom = 2.dp),
-    )
+    if (showViewLabel) {
+      Spacer(Modifier.height(6.dp))
+      Text(
+          text = view.title(),
+          style = MaterialTheme.typography.labelMedium,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+          modifier = Modifier.padding(bottom = 2.dp),
+      )
+    }
   }
 }
 

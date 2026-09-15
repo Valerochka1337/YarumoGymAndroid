@@ -17,6 +17,8 @@ sealed interface AnalysisPeriod {
   /** Последние семь календарных дней, включая сегодня. Значение по умолчанию. */
   data object LAST_7_DAYS : AnalysisPeriod
 
+  data object WEEKS_2 : AnalysisPeriod
+
   data object WEEKS_4 : AnalysisPeriod
 
   data object WEEKS_12 : AnalysisPeriod
@@ -44,6 +46,7 @@ sealed interface AnalysisPeriod {
     val presets: List<AnalysisPeriod> =
         listOf(
             LAST_7_DAYS,
+            WEEKS_2,
             WEEKS_4,
             WEEKS_12,
             WEEKS_52,
@@ -78,6 +81,7 @@ fun AnalysisPeriod.resolveRange(
 ): AnalysisDateRange =
     when (this) {
       AnalysisPeriod.LAST_7_DAYS -> recentRange(today, 7)
+      AnalysisPeriod.WEEKS_2 -> recentRange(today, 2 * 7)
       AnalysisPeriod.WEEKS_4 -> recentRange(today, 4 * 7)
       AnalysisPeriod.WEEKS_12 -> recentRange(today, 12 * 7)
       AnalysisPeriod.WEEKS_52 -> recentRange(today, 52 * 7)

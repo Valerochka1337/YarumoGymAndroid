@@ -1,7 +1,11 @@
 package com.valerochka1337.valerochkagym.ui
 
 import android.app.Application
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsActions
@@ -12,11 +16,18 @@ import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
+import com.valerochka1337.valerochkagym.data.db.entity.Muscle
+import com.valerochka1337.valerochkagym.domain.analysis.MuscleLoadSummary
+import com.valerochka1337.valerochkagym.domain.analysis.VolumeZone
 import com.valerochka1337.valerochkagym.ui.analysis.AnalysisScreenContent
 import com.valerochka1337.valerochkagym.ui.analysis.AnalysisUiState
+import com.valerochka1337.valerochkagym.ui.analysis.MuscleFrequencyCard
+import com.valerochka1337.valerochkagym.ui.analysis.MuscleHeatmapCard
+import com.valerochka1337.valerochkagym.ui.analysis.MuscleVolumeCard
 import com.valerochka1337.valerochkagym.ui.theme.GymTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -73,6 +84,99 @@ class AnalysisSectionsComposeTest {
       GymTheme { AnalysisScreenContent(AnalysisUiState(loading = false), {}, {}, {}) }
     }
     assertSections()
+  }
+
+  @Test
+  fun `muscle summary stays beside the figure with large text`() {
+    val load =
+        MuscleLoadSummary(
+            muscle = Muscle.UPPER_CHEST,
+            weeklySets = 6.0,
+            totalSets = 12.0,
+            tonnageKg = 2400.0,
+            zone = VolumeZone.WORKING,
+            sessionsPerWeek = 2.0,
+            daysSinceLast = 3,
+            topExercises = listOf("Жим штанги лёжа", "Жим гантелей на наклонной скамье"),
+        )
+    val initial = AnalysisUiState(loading = false)
+    val state =
+        initial.copy(
+            report = initial.report.copy(muscleLoads = listOf(load)),
+            selectedMuscle = load.muscle,
+        )
+    compose.setContent {
+      val density = LocalDensity.current
+      CompositionLocalProvider(LocalDensity provides Density(density.density, 2f)) {
+        GymTheme {
+          Column(
+              modifier = Modifier.verticalScroll(rememberScrollState()),
+          ) {
+            MuscleHeatmapCard(state, {})
+          }
+        }
+      }
+    }
+    val figure =
+        compose.onNodeWithContentDescription("Карта тела, спереди").getUnclippedBoundsInRoot()
+    compose.onNodeWithText("2.4 т").assertDoesNotExist()
+    compose.onNodeWithText("рабочий объём").assertDoesNotExist()
+    val summary = compose.onNodeWithText("Объём").getUnclippedBoundsInRoot()
+    assertTrue(summary.left >= figure.right)
+    listOf("Объём", "Подходы", "Пауза", "Рабочий", "12", "3 дн.").forEach { label ->
+      val layouts = mutableListOf<TextLayoutResult>()
+      compose.onNodeWithText(label).performSemanticsAction(SemanticsActions.GetTextLayoutResult) {
+        it(layouts)
+      }
+      val layout = layouts.single()
+      assertFalse("$label clips vertically", layout.didOverflowHeight)
+      repeat(layout.lineCount) { line ->
+        assertFalse("$label is ellipsized", layout.isLineEllipsized(line))
+        assertTrue("$label clips horizontally", layout.getLineRight(line) <= layout.size.width + 1f)
+      }
+    }
+    compose.onNodeWithText("Как считаем").assertDoesNotExist()
+    compose.onNodeWithText("Жим гантелей на наклонной скамье").assertDoesNotExist()
+    compose.onNodeWithText("Основной вклад").performScrollTo().performClick()
+    compose.onNodeWithText("Жим гантелей на наклонной скамье").performScrollTo().assertIsDisplayed()
+  }
+
+  @Test
+  fun `muscle cards expand independently and restore their state`() {
+    val initial = AnalysisUiState(loading = false)
+    val load =
+        MuscleLoadSummary(
+            muscle = Muscle.UPPER_CHEST,
+            weeklySets = 6.0,
+            totalSets = 12.0,
+            tonnageKg = 2400.0,
+            zone = VolumeZone.WORKING,
+            sessionsPerWeek = 2.0,
+            daysSinceLast = 3,
+            topExercises = emptyList(),
+        )
+    val state = initial.copy(report = initial.report.copy(muscleLoads = listOf(load)))
+    val restoration = StateRestorationTester(compose)
+    restoration.setContent {
+      GymTheme {
+        Column {
+          MuscleVolumeCard(state, {})
+          MuscleFrequencyCard(state)
+        }
+      }
+    }
+    val collapsed = SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Свернуто")
+    val expanded = SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Развернуто")
+    compose.onNodeWithText("Объём по мышцам").assert(collapsed).performClick().assert(expanded)
+    compose.onNodeWithText("Частота и пауза").assert(collapsed)
+    compose.onNodeWithText("6").assertIsDisplayed()
+    compose.onNodeWithText("3 д").assertDoesNotExist()
+    compose.onNodeWithText("Частота и пауза").performClick().assert(expanded)
+    compose.onNodeWithText("3 д").assertIsDisplayed()
+    restoration.emulateSavedInstanceStateRestore()
+    compose.onNodeWithText("Объём по мышцам").assert(expanded).performClick().assert(collapsed)
+    compose.onNodeWithText("6").assertDoesNotExist()
+    compose.onNodeWithText("Частота и пауза").assert(expanded)
   }
 
   private fun assertSections() {

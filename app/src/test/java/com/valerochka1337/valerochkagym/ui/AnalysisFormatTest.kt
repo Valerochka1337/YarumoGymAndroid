@@ -86,7 +86,7 @@ class AnalysisFormatTest {
   @Test
   fun `every analysis period has a display name`() {
     assertEquals(
-        listOf("Последние 7 дней", "4 недели", "12 недель", "52 недели", "Всё время"),
+        listOf("Последние 7 дней", "2 недели", "4 недели", "12 недель", "52 недели", "Всё время"),
         AnalysisPeriod.presets.map { it.displayName() },
     )
     assertEquals(
