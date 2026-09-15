@@ -22,15 +22,10 @@ class RoutineShareLinkActivity : Activity() {
 }
 
 internal fun android.net.Uri.routineShareTokenOrNull(): String? {
-  if (
-      scheme != "https" ||
-          host != "api.valerochkagym.tech" ||
-          port != -1 ||
-          userInfo != null
-  ) return null
-  if (query != null || fragment != null || pathSegments.size != 2 || pathSegments[0] != "r") return null
+  if (scheme != "https" || host != "api.valerochkagym.tech" || port != -1 || userInfo != null)
+      return null
+  if (query != null || fragment != null || pathSegments.size != 2 || pathSegments[0] != "r")
+      return null
   val token = pathSegments[1]
-  return token.takeIf {
-    Regex("[A-Za-z0-9_-]{43}").matches(it) && encodedPath == "/r/$it"
-  }
+  return token.takeIf { Regex("[A-Za-z0-9_-]{43}").matches(it) && encodedPath == "/r/$it" }
 }

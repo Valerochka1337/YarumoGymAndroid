@@ -5,7 +5,9 @@ import kotlinx.coroutines.flow.Flow
 
 sealed interface WorkoutEffortSaveResult {
   data object Saved : WorkoutEffortSaveResult
+
   data object Invalid : WorkoutEffortSaveResult
+
   data object StaleOwner : WorkoutEffortSaveResult
 }
 

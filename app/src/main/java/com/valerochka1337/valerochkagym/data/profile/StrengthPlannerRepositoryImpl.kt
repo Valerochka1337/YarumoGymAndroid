@@ -11,9 +11,9 @@ import com.valerochka1337.valerochkagym.data.db.entity.StrengthPlannerKeyExercis
 import com.valerochka1337.valerochkagym.data.db.entity.StrengthPlannerProfileEntity
 import com.valerochka1337.valerochkagym.domain.KeyExerciseChoice
 import com.valerochka1337.valerochkagym.domain.ProfileEditTarget
+import com.valerochka1337.valerochkagym.domain.StrengthExerciseCandidate
 import com.valerochka1337.valerochkagym.domain.StrengthPlannerRepository
 import com.valerochka1337.valerochkagym.domain.StrengthPlannerSaveResult
-import com.valerochka1337.valerochkagym.domain.StrengthExerciseCandidate
 import com.valerochka1337.valerochkagym.domain.TrainingGoal
 import com.valerochka1337.valerochkagym.service.WallClock
 import java.nio.charset.StandardCharsets.UTF_8
@@ -48,7 +48,12 @@ constructor(
       }
 
   override fun observe(target: ProfileEditTarget): Flow<List<KeyExerciseChoice>?> =
-      combine(profileDao.observeKeyExercises(target.scope), exerciseDao.getAll(), sync.transfer, sessions.session) { choices, exercises, _, _ ->
+      combine(
+          profileDao.observeKeyExercises(target.scope),
+          exerciseDao.getAll(),
+          sync.transfer,
+          sessions.session,
+      ) { choices, exercises, _, _ ->
         if (!targetStillCurrent(target)) null
         else {
           val ids = exercises.associateBy { it.syncId }
@@ -67,17 +72,19 @@ constructor(
       profileGoal: TrainingGoal?,
       choices: List<KeyExerciseChoice>,
   ): StrengthPlannerSaveResult {
-    if (profileGoal != TrainingGoal.STRENGTH || !validShape(choices)) return StrengthPlannerSaveResult.Invalid
+    if (profileGoal != TrainingGoal.STRENGTH || !validShape(choices))
+        return StrengthPlannerSaveResult.Invalid
     return mutationMutex.withLock {
       database.withTransaction {
-        if (!targetStillCurrent(target)) return@withTransaction StrengthPlannerSaveResult.StaleTarget
+        if (!targetStillCurrent(target))
+            return@withTransaction StrengthPlannerSaveResult.StaleTarget
         val exercises = exerciseDao.getAllOnce().associateBy { it.id }
         // Existing stale rows are removable, but a new save never retains a non-live selection.
         if (
             choices.any { choice ->
-              choice.exerciseId?.let { exercises[it] }?.let {
-                it.type != ExerciseType.STRENGTH || it.archived
-              } != false
+              choice.exerciseId
+                  ?.let { exercises[it] }
+                  ?.let { it.type != ExerciseType.STRENGTH || it.archived } != false
             }
         )
             return@withTransaction StrengthPlannerSaveResult.Invalid
@@ -94,7 +101,7 @@ constructor(
         profileDao.deleteKeyExercises(target.scope)
         profileDao.upsertKeyExercises(
             choices.sortedWith(choiceComparator).map { choice ->
-                StrengthPlannerKeyExerciseEntity(target.scope, choice.exerciseSyncId, choice.priority)
+              StrengthPlannerKeyExerciseEntity(target.scope, choice.exerciseSyncId, choice.priority)
             },
         )
         StrengthPlannerSaveResult.Saved
@@ -103,17 +110,22 @@ constructor(
   }
 
   private fun validShape(choices: List<KeyExerciseChoice>): Boolean =
-      choices.size <= 5 && choices.map(KeyExerciseChoice::exerciseSyncId).distinct().size == choices.size
+      choices.size <= 5 &&
+          choices.map(KeyExerciseChoice::exerciseSyncId).distinct().size == choices.size
 
   private fun targetStillCurrent(target: ProfileEditTarget): Boolean {
     val owner = sync.owner()
     val session = sessions.snapshot()
     return if (target.ownerId == null) owner == null && session == null && target.scope == "GUEST"
-    else owner == target.ownerId && session?.tokens?.userId == target.ownerId && session.epoch == target.sessionEpoch
+    else
+        owner == target.ownerId &&
+            session?.tokens?.userId == target.ownerId &&
+            session.epoch == target.sessionEpoch
   }
 
   private fun profileSyncId(owner: String): String =
-      UUID.nameUUIDFromBytes("ValerochkaGym.strength-planner-profile.v1:$owner".toByteArray(UTF_8)).toString()
+      UUID.nameUUIDFromBytes("ValerochkaGym.strength-planner-profile.v1:$owner".toByteArray(UTF_8))
+          .toString()
 
   private companion object {
     val choiceComparator =

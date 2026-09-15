@@ -15,14 +15,21 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(application = android.app.Application::class)
 class Migration1To30Test {
-  @get:Rule val helper = MigrationTestHelper(InstrumentationRegistry.getInstrumentation(), GymDatabase::class.java)
+  @get:Rule
+  val helper =
+      MigrationTestHelper(InstrumentationRegistry.getInstrumentation(), GymDatabase::class.java)
   private val name = "strength-planner-1-30.db"
 
-  @After fun cleanup() { ApplicationProvider.getApplicationContext<Context>().deleteDatabase(name) }
+  @After
+  fun cleanup() {
+    ApplicationProvider.getApplicationContext<Context>().deleteDatabase(name)
+  }
 
   @Test
   fun `full migration retains historical routine and reaches planner schema`() {
-    helper.createDatabase(name, 1).use { it.execSQL("INSERT INTO routines(id,name,note) VALUES(1,'Ноги','')") }
+    helper.createDatabase(name, 1).use {
+      it.execSQL("INSERT INTO routines(id,name,note) VALUES(1,'Ноги','')")
+    }
     helper.runMigrationsAndValidate(name, 30, true, *GymDatabase.ALL_MIGRATIONS).use { db ->
       db.query("SELECT COUNT(*) FROM routines WHERE id=1").use { cursor ->
         cursor.moveToFirst()

@@ -1,10 +1,10 @@
 package com.valerochka1337.valerochkagym.di
 
 import com.valerochka1337.valerochkagym.data.ActiveWorkoutRepositoryImpl
-import com.valerochka1337.valerochkagym.data.WorkoutEffortRepositoryImpl
 import com.valerochka1337.valerochkagym.data.ExerciseCatalogRepositoryImpl
 import com.valerochka1337.valerochkagym.data.ExercisePersonalHintRepositoryImpl
 import com.valerochka1337.valerochkagym.data.GymRepositoryImpl
+import com.valerochka1337.valerochkagym.data.WorkoutEffortRepositoryImpl
 import com.valerochka1337.valerochkagym.data.ai.AndroidInBodyPhotoEncoder
 import com.valerochka1337.valerochkagym.data.ai.BackendAiRepository
 import com.valerochka1337.valerochkagym.data.ai.ExerciseAiGenerator

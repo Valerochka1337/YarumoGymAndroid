@@ -6,15 +6,15 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsSelected
-import androidx.compose.ui.test.performClick
-import com.valerochka1337.valerochkagym.data.db.entity.WorkoutEffort
-import org.junit.Assert.assertEquals
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
+import com.valerochka1337.valerochkagym.data.db.entity.WorkoutEffort
 import com.valerochka1337.valerochkagym.ui.theme.GymTheme
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -44,7 +44,10 @@ class WorkoutSummaryScreenTest {
     listOf("Легко", "Умеренно", "Тяжело", "Очистить").forEach { label ->
       val node = composeRule.onNodeWithText(label).assertIsDisplayed()
       val bounds = node.fetchSemanticsNode().touchBoundsInRoot
-      assertTrue("$label: $bounds, minimum $minimumTargetPx", bounds.width + 0.5f >= minimumTargetPx && bounds.height + 0.5f >= minimumTargetPx)
+      assertTrue(
+          "$label: $bounds, minimum $minimumTargetPx",
+          bounds.width + 0.5f >= minimumTargetPx && bounds.height + 0.5f >= minimumTargetPx,
+      )
       node.performClick()
     }
     composeRule.onNodeWithText("Тяжело").assertIsSelected()

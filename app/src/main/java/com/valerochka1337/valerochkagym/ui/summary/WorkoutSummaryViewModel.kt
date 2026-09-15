@@ -4,6 +4,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.valerochka1337.valerochkagym.data.db.dao.WorkoutDao
+import com.valerochka1337.valerochkagym.data.db.entity.WorkoutEffort
 import com.valerochka1337.valerochkagym.data.db.relation.WorkoutFull
 import com.valerochka1337.valerochkagym.data.sortedWorkoutFull
 import com.valerochka1337.valerochkagym.domain.PrResult
@@ -13,11 +14,10 @@ import com.valerochka1337.valerochkagym.domain.RoutineUpdateResult
 import com.valerochka1337.valerochkagym.domain.RoutineUpdateUseCase
 import com.valerochka1337.valerochkagym.domain.SaveCompletedWorkoutAsRoutineResult
 import com.valerochka1337.valerochkagym.domain.SaveCompletedWorkoutAsRoutineUseCase
-import com.valerochka1337.valerochkagym.domain.WorkoutStatsUseCase
 import com.valerochka1337.valerochkagym.domain.WorkoutEffortEditTarget
 import com.valerochka1337.valerochkagym.domain.WorkoutEffortRepository
 import com.valerochka1337.valerochkagym.domain.WorkoutEffortSaveResult
-import com.valerochka1337.valerochkagym.data.db.entity.WorkoutEffort
+import com.valerochka1337.valerochkagym.domain.WorkoutStatsUseCase
 import com.valerochka1337.valerochkagym.ui.navigation.GymRoutes
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.util.UUID
@@ -89,15 +89,17 @@ constructor(
 
   private val workoutId: String? = savedStateHandle[GymRoutes.WORKOUT_ID_ARG]
 
-  private val effortTarget: WorkoutEffortEditTarget? = workoutId?.let { id ->
-    val scope = savedStateHandle.get<String>(EFFORT_TARGET_SCOPE)
-    val epoch = savedStateHandle.get<Long>(EFFORT_TARGET_EPOCH)
-    if (scope != null && epoch != null) WorkoutEffortEditTarget(id, scope, epoch)
-    else workoutEffortRepository?.captureTarget(id)?.also {
-      savedStateHandle[EFFORT_TARGET_SCOPE] = it.scope
-      savedStateHandle[EFFORT_TARGET_EPOCH] = it.sessionEpoch
-    }
-  }
+  private val effortTarget: WorkoutEffortEditTarget? =
+      workoutId?.let { id ->
+        val scope = savedStateHandle.get<String>(EFFORT_TARGET_SCOPE)
+        val epoch = savedStateHandle.get<Long>(EFFORT_TARGET_EPOCH)
+        if (scope != null && epoch != null) WorkoutEffortEditTarget(id, scope, epoch)
+        else
+            workoutEffortRepository?.captureTarget(id)?.also {
+              savedStateHandle[EFFORT_TARGET_SCOPE] = it.scope
+              savedStateHandle[EFFORT_TARGET_EPOCH] = it.sessionEpoch
+            }
+      }
 
   private val _uiState =
       MutableStateFlow(
@@ -207,7 +209,9 @@ constructor(
             _uiState.update { state ->
               state.copy(
                   effort = effort,
-                  effortDraft = if (state.isSavingEffort || state.effortDraftPresent) state.effortDraft else effort,
+                  effortDraft =
+                      if (state.isSavingEffort || state.effortDraftPresent) state.effortDraft
+                      else effort,
               )
             }
           }
@@ -229,31 +233,52 @@ constructor(
     val state = _uiState.value
     val repository = workoutEffortRepository
     val id = workoutId
-    if (repository != null && id != null && state.effortDraftPresent && state.effortDraft != state.effort && !state.isSavingEffort) {
+    if (
+        repository != null &&
+            id != null &&
+            state.effortDraftPresent &&
+            state.effortDraft != state.effort &&
+            !state.isSavingEffort
+    ) {
       _uiState.update { it.copy(isSavingEffort = true, effortError = null) }
       viewModelScope.launch {
-        val result = try {
-          effortTarget?.let { repository.save(it, state.effortDraft) } ?: WorkoutEffortSaveResult.StaleOwner
-        } catch (cancelled: CancellationException) {
-          throw cancelled
-        } catch (_: Exception) {
-          _uiState.update { it.copy(isSavingEffort = false, effortError = "Не удалось сохранить оценку. Попробуйте ещё раз.") }
-          return@launch
-        }
+        val result =
+            try {
+              effortTarget?.let { repository.save(it, state.effortDraft) }
+                  ?: WorkoutEffortSaveResult.StaleOwner
+            } catch (cancelled: CancellationException) {
+              throw cancelled
+            } catch (_: Exception) {
+              _uiState.update {
+                it.copy(
+                    isSavingEffort = false,
+                    effortError = "Не удалось сохранить оценку. Попробуйте ещё раз.",
+                )
+              }
+              return@launch
+            }
         when (result) {
           WorkoutEffortSaveResult.Saved -> {
             savedStateHandle.remove<String>(EFFORT_DRAFT)
             savedStateHandle.remove<Boolean>(EFFORT_DRAFT_PRESENT)
-            _uiState.update { it.copy(effort = it.effortDraft, effortDraftPresent = false, isSavingEffort = false) }
+            _uiState.update {
+              it.copy(effort = it.effortDraft, effortDraftPresent = false, isSavingEffort = false)
+            }
             continueDone()
           }
           WorkoutEffortSaveResult.Invalid ->
               _uiState.update {
-                it.copy(isSavingEffort = false, effortError = "Оценку можно сохранить только для завершённой тренировки")
+                it.copy(
+                    isSavingEffort = false,
+                    effortError = "Оценку можно сохранить только для завершённой тренировки",
+                )
               }
           WorkoutEffortSaveResult.StaleOwner ->
               _uiState.update {
-                it.copy(isSavingEffort = false, effortError = "Аккаунт изменился. Откройте итоги снова.")
+                it.copy(
+                    isSavingEffort = false,
+                    effortError = "Аккаунт изменился. Откройте итоги снова.",
+                )
               }
         }
       }

@@ -20,9 +20,9 @@ import com.valerochka1337.valerochkagym.data.db.dao.HealthDao
 import com.valerochka1337.valerochkagym.data.db.dao.HealthSyncDao
 import com.valerochka1337.valerochkagym.data.db.dao.MuscleLoadUpgradeNoticeDao
 import com.valerochka1337.valerochkagym.data.db.dao.ProfileDao
-import com.valerochka1337.valerochkagym.data.db.dao.StrengthPlannerProfileDao
 import com.valerochka1337.valerochkagym.data.db.dao.RoutineDao
 import com.valerochka1337.valerochkagym.data.db.dao.ScheduledWorkoutDao
+import com.valerochka1337.valerochkagym.data.db.dao.StrengthPlannerProfileDao
 import com.valerochka1337.valerochkagym.data.db.dao.WorkoutDao
 import com.valerochka1337.valerochkagym.data.db.dao.WorkoutEffortDao
 import com.valerochka1337.valerochkagym.data.db.entity.BodyMeasurementEntity
@@ -61,14 +61,14 @@ import com.valerochka1337.valerochkagym.data.db.entity.HealthSyncStateEntity
 import com.valerochka1337.valerochkagym.data.db.entity.MuscleLoadUpgradeNoticeEntity
 import com.valerochka1337.valerochkagym.data.db.entity.ProfileEntity
 import com.valerochka1337.valerochkagym.data.db.entity.ProfileEquipmentPreferenceEntity
-import com.valerochka1337.valerochkagym.data.db.entity.StrengthPlannerKeyExerciseEntity
-import com.valerochka1337.valerochkagym.data.db.entity.StrengthPlannerProfileEntity
 import com.valerochka1337.valerochkagym.data.db.entity.RoutineEntity
 import com.valerochka1337.valerochkagym.data.db.entity.RoutineExerciseEntity
 import com.valerochka1337.valerochkagym.data.db.entity.RoutineGymEntity
 import com.valerochka1337.valerochkagym.data.db.entity.ScheduledWorkoutEntity
-import com.valerochka1337.valerochkagym.data.db.entity.WorkoutEntity
+import com.valerochka1337.valerochkagym.data.db.entity.StrengthPlannerKeyExerciseEntity
+import com.valerochka1337.valerochkagym.data.db.entity.StrengthPlannerProfileEntity
 import com.valerochka1337.valerochkagym.data.db.entity.WorkoutEffortEntity
+import com.valerochka1337.valerochkagym.data.db.entity.WorkoutEntity
 import com.valerochka1337.valerochkagym.data.db.entity.WorkoutExerciseEntity
 import com.valerochka1337.valerochkagym.data.db.entity.WorkoutGymEntity
 import com.valerochka1337.valerochkagym.data.db.entity.WorkoutSetEntity
@@ -1402,16 +1402,31 @@ abstract class GymDatabase : RoomDatabase() {
           }
         }
 
-    /** v29 → v30: independent optional personalization records. Existing profile/workout bytes stay unchanged. */
+    /**
+     * v29 → v30: independent optional personalization records. Existing profile/workout bytes stay
+     * unchanged.
+     */
     val MIGRATION_29_30: Migration =
         object : Migration(29, 30) {
           override fun migrate(db: SupportSQLiteDatabase) {
-            db.execSQL("CREATE TABLE IF NOT EXISTS `strength_planner_profiles` (`scope` TEXT NOT NULL, `syncId` TEXT NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`scope`))")
-            db.execSQL("CREATE TABLE IF NOT EXISTS `strength_planner_key_exercises` (`scope` TEXT NOT NULL, `exerciseSyncId` TEXT NOT NULL, `priority` TEXT NOT NULL, PRIMARY KEY(`scope`, `exerciseSyncId`), FOREIGN KEY(`scope`) REFERENCES `strength_planner_profiles`(`scope`) ON UPDATE CASCADE ON DELETE CASCADE)")
-            db.execSQL("CREATE INDEX IF NOT EXISTS `index_strength_planner_key_exercises_exerciseSyncId` ON `strength_planner_key_exercises` (`exerciseSyncId`)")
-            db.execSQL("CREATE TABLE IF NOT EXISTS `workout_efforts` (`workoutId` TEXT NOT NULL, `scope` TEXT NOT NULL, `syncId` TEXT NOT NULL, `updatedAt` INTEGER NOT NULL, `effort` TEXT, PRIMARY KEY(`workoutId`), FOREIGN KEY(`workoutId`) REFERENCES `workouts`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE)")
-            db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_workout_efforts_syncId` ON `workout_efforts` (`syncId`)")
-            db.execSQL("CREATE INDEX IF NOT EXISTS `index_workout_efforts_scope` ON `workout_efforts` (`scope`)")
+            db.execSQL(
+                "CREATE TABLE IF NOT EXISTS `strength_planner_profiles` (`scope` TEXT NOT NULL, `syncId` TEXT NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`scope`))"
+            )
+            db.execSQL(
+                "CREATE TABLE IF NOT EXISTS `strength_planner_key_exercises` (`scope` TEXT NOT NULL, `exerciseSyncId` TEXT NOT NULL, `priority` TEXT NOT NULL, PRIMARY KEY(`scope`, `exerciseSyncId`), FOREIGN KEY(`scope`) REFERENCES `strength_planner_profiles`(`scope`) ON UPDATE CASCADE ON DELETE CASCADE)"
+            )
+            db.execSQL(
+                "CREATE INDEX IF NOT EXISTS `index_strength_planner_key_exercises_exerciseSyncId` ON `strength_planner_key_exercises` (`exerciseSyncId`)"
+            )
+            db.execSQL(
+                "CREATE TABLE IF NOT EXISTS `workout_efforts` (`workoutId` TEXT NOT NULL, `scope` TEXT NOT NULL, `syncId` TEXT NOT NULL, `updatedAt` INTEGER NOT NULL, `effort` TEXT, PRIMARY KEY(`workoutId`), FOREIGN KEY(`workoutId`) REFERENCES `workouts`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE)"
+            )
+            db.execSQL(
+                "CREATE UNIQUE INDEX IF NOT EXISTS `index_workout_efforts_syncId` ON `workout_efforts` (`syncId`)"
+            )
+            db.execSQL(
+                "CREATE INDEX IF NOT EXISTS `index_workout_efforts_scope` ON `workout_efforts` (`scope`)"
+            )
             com.valerochka1337.valerochkagym.data.backend.SyncSchema.install(db)
           }
         }

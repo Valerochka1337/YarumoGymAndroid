@@ -546,22 +546,29 @@ class PortableData(private val db: SupportSQLiteDatabase) {
                           "ValerochkaGym.strength-planner-profile.v1:$scope".toByteArray(UTF_8),
                       )
                       .toString()
-              if (r.id != expectedId || n.keys != setOf("schemaVersion", "syncId", "updatedAt", "keyExercises") ||
-                  n["schemaVersion"]?.jsonPrimitive?.intOrNull != 1 ||
-                  n["syncId"]?.jsonPrimitive?.content != r.id ||
-                  n["updatedAt"]?.jsonPrimitive?.longOrNull?.takeIf { it >= 0 } == null)
+              if (
+                  r.id != expectedId ||
+                      n.keys != setOf("schemaVersion", "syncId", "updatedAt", "keyExercises") ||
+                      n["schemaVersion"]?.jsonPrimitive?.intOrNull != 1 ||
+                      n["syncId"]?.jsonPrimitive?.content != r.id ||
+                      n["updatedAt"]?.jsonPrimitive?.longOrNull?.takeIf { it >= 0 } == null
+              )
                   error("Invalid strength planner profile payload")
               val keys = n["keyExercises"]?.jsonArray ?: error("Invalid strength planner keys")
               if (keys.size > 5) error("Too many strength planner keys")
-              val mapped = keys.map { item ->
-                val key = item.jsonObject
-                if (key.keys != setOf("exerciseId", "priority")) error("Invalid strength planner key")
-                val exerciseSyncId = key.getValue("exerciseId").jsonPrimitive.content
-                val priority = key["priority"]?.jsonPrimitive?.content
-                if (priority !in setOf("HIGH", "NORMAL")) error("Invalid strength planner priority")
-                exerciseSyncId to requireNotNull(priority)
-              }
-              if (mapped.map { it.first }.distinct().size != mapped.size) error("Duplicate strength planner key")
+              val mapped =
+                  keys.map { item ->
+                    val key = item.jsonObject
+                    if (key.keys != setOf("exerciseId", "priority"))
+                        error("Invalid strength planner key")
+                    val exerciseSyncId = key.getValue("exerciseId").jsonPrimitive.content
+                    val priority = key["priority"]?.jsonPrimitive?.content
+                    if (priority !in setOf("HIGH", "NORMAL"))
+                        error("Invalid strength planner priority")
+                    exerciseSyncId to requireNotNull(priority)
+                  }
+              if (mapped.map { it.first }.distinct().size != mapped.size)
+                  error("Duplicate strength planner key")
               if (
                   mapped !=
                       mapped.sortedWith(
@@ -570,11 +577,18 @@ class PortableData(private val db: SupportSQLiteDatabase) {
                               { it.first },
                           ),
                       )
-              ) error("Noncanonical strength planner key order")
-              val body = mapOf("scope" to JsonPrimitive(scope), "syncId" to JsonPrimitive(r.id), "updatedAt" to n.getValue("updatedAt"))
+              )
+                  error("Noncanonical strength planner key order")
+              val body =
+                  mapOf(
+                      "scope" to JsonPrimitive(scope),
+                      "syncId" to JsonPrimitive(r.id),
+                      "updatedAt" to n.getValue("updatedAt"),
+                  )
               if (rows("strength_planner_profiles", "WHERE scope=?", arrayOf(scope)).isEmpty())
                   insert("strength_planner_profiles", body)
-              else db.update("strength_planner_profiles", 0, values(body), "scope=?", arrayOf(scope))
+              else
+                  db.update("strength_planner_profiles", 0, values(body), "scope=?", arrayOf(scope))
               db.delete("strength_planner_key_exercises", "scope=?", arrayOf(scope))
               mapped.forEach { (exerciseSyncId, priority) ->
                 insert(
@@ -726,19 +740,49 @@ class PortableData(private val db: SupportSQLiteDatabase) {
             "workout_effort" -> {
               val scope = profileScope()
               if (scope == "GUEST") error("Remote workout effort requires an authenticated owner")
-              val workoutId = n["workoutId"]?.jsonPrimitive?.content ?: error("Missing workout effort workout")
-              val expectedId = UUID.nameUUIDFromBytes("ValerochkaGym.workout-effort.v1:$scope:$workoutId".toByteArray(UTF_8)).toString()
-              if (r.id != expectedId || n.keys != setOf("schemaVersion", "syncId", "workoutId", "updatedAt", "effort") ||
-                  n["schemaVersion"]?.jsonPrimitive?.intOrNull != 1 ||
-                  n["syncId"]?.jsonPrimitive?.content != r.id || n["updatedAt"]?.jsonPrimitive?.longOrNull?.takeIf { it >= 0 } == null ||
-                  n["effort"]?.let { it != JsonNull && it.jsonPrimitive.content !in setOf("EASY", "MODERATE", "HARD") } == true)
+              val workoutId =
+                  n["workoutId"]?.jsonPrimitive?.content ?: error("Missing workout effort workout")
+              val expectedId =
+                  UUID.nameUUIDFromBytes(
+                          "ValerochkaGym.workout-effort.v1:$scope:$workoutId".toByteArray(UTF_8)
+                      )
+                      .toString()
+              if (
+                  r.id != expectedId ||
+                      n.keys !=
+                          setOf("schemaVersion", "syncId", "workoutId", "updatedAt", "effort") ||
+                      n["schemaVersion"]?.jsonPrimitive?.intOrNull != 1 ||
+                      n["syncId"]?.jsonPrimitive?.content != r.id ||
+                      n["updatedAt"]?.jsonPrimitive?.longOrNull?.takeIf { it >= 0 } == null ||
+                      n["effort"]?.let {
+                        it != JsonNull &&
+                            it.jsonPrimitive.content !in setOf("EASY", "MODERATE", "HARD")
+                      } == true
+              )
                   error("Invalid workout effort payload")
-              val workout = rows("workouts", "WHERE id=?", arrayOf(workoutId)).singleOrNull()
-                  ?: error("Missing workout effort parent")
-              if (workout["finishedAt"] == JsonNull) error("Workout effort needs a completed workout")
-              val body = mapOf("workoutId" to JsonPrimitive(workoutId), "scope" to JsonPrimitive(scope), "syncId" to JsonPrimitive(r.id), "updatedAt" to n.getValue("updatedAt"), "effort" to (n["effort"] ?: JsonNull))
-              if (rows("workout_efforts", "WHERE workoutId=?", arrayOf(workoutId)).isEmpty()) insert("workout_efforts", body)
-              else db.update("workout_efforts", 0, values(body), "workoutId=? AND scope=?", arrayOf(workoutId, scope))
+              val workout =
+                  rows("workouts", "WHERE id=?", arrayOf(workoutId)).singleOrNull()
+                      ?: error("Missing workout effort parent")
+              if (workout["finishedAt"] == JsonNull)
+                  error("Workout effort needs a completed workout")
+              val body =
+                  mapOf(
+                      "workoutId" to JsonPrimitive(workoutId),
+                      "scope" to JsonPrimitive(scope),
+                      "syncId" to JsonPrimitive(r.id),
+                      "updatedAt" to n.getValue("updatedAt"),
+                      "effort" to (n["effort"] ?: JsonNull),
+                  )
+              if (rows("workout_efforts", "WHERE workoutId=?", arrayOf(workoutId)).isEmpty())
+                  insert("workout_efforts", body)
+              else
+                  db.update(
+                      "workout_efforts",
+                      0,
+                      values(body),
+                      "workoutId=? AND scope=?",
+                      arrayOf(workoutId, scope),
+                  )
             }
             "measurement" -> {
               val body =
@@ -825,7 +869,8 @@ class PortableData(private val db: SupportSQLiteDatabase) {
     deletes
         .sortedByDescending { order.indexOf(it.kind) }
         .forEach { r ->
-          if (r.kind in setOf("profile", "strength_planner_profile")) error("Profile tombstones are a protocol violation")
+          if (r.kind in setOf("profile", "strength_planner_profile"))
+              error("Profile tombstones are a protocol violation")
           val table =
               when (r.kind) {
                 "exercise" -> "exercises"

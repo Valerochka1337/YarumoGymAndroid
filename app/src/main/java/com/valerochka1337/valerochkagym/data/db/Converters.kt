@@ -6,9 +6,9 @@ import com.valerochka1337.valerochkagym.data.db.entity.CalendarEventAccountLinkS
 import com.valerochka1337.valerochkagym.data.db.entity.CalendarExceptionKind
 import com.valerochka1337.valerochkagym.data.db.entity.CalendarMigrationPhase
 import com.valerochka1337.valerochkagym.data.db.entity.ExerciseType
+import com.valerochka1337.valerochkagym.data.db.entity.KeyExercisePriority
 import com.valerochka1337.valerochkagym.data.db.entity.Muscle
 import com.valerochka1337.valerochkagym.data.db.entity.MuscleGroup
-import com.valerochka1337.valerochkagym.data.db.entity.KeyExercisePriority
 import com.valerochka1337.valerochkagym.data.db.entity.UploadStatus
 import com.valerochka1337.valerochkagym.data.db.entity.WorkoutEffort
 import kotlinx.serialization.json.Json
@@ -40,7 +40,8 @@ class Converters {
 
   @TypeConverter fun fromWorkoutEffort(value: WorkoutEffort?): String? = value?.name
 
-  @TypeConverter fun toWorkoutEffort(value: String?): WorkoutEffort? = value?.let(WorkoutEffort::valueOf)
+  @TypeConverter
+  fun toWorkoutEffort(value: String?): WorkoutEffort? = value?.let(WorkoutEffort::valueOf)
 
   @TypeConverter
   fun fromCalendarEventAccountLinkState(value: CalendarEventAccountLinkState): String = value.name

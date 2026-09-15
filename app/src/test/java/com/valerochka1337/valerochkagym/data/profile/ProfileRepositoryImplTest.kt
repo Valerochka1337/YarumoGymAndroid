@@ -6,15 +6,15 @@ import com.valerochka1337.valerochkagym.data.backend.BackendSync
 import com.valerochka1337.valerochkagym.data.backend.BackendTokens
 import com.valerochka1337.valerochkagym.data.backend.BackendTransport
 import com.valerochka1337.valerochkagym.data.db.LocalEquipmentCatalog
+import com.valerochka1337.valerochkagym.data.db.entity.KeyExercisePriority
 import com.valerochka1337.valerochkagym.data.db.entity.ProfileEntity
 import com.valerochka1337.valerochkagym.data.db.entity.ProfileEquipmentPreferenceEntity
-import com.valerochka1337.valerochkagym.data.db.entity.KeyExercisePriority
 import com.valerochka1337.valerochkagym.domain.BasicProfile
 import com.valerochka1337.valerochkagym.domain.ExperienceLevel
+import com.valerochka1337.valerochkagym.domain.KeyExerciseChoice
 import com.valerochka1337.valerochkagym.domain.ProfileSaveResult
 import com.valerochka1337.valerochkagym.domain.ProfileSex
 import com.valerochka1337.valerochkagym.domain.TrainingGoal
-import com.valerochka1337.valerochkagym.domain.KeyExerciseChoice
 import com.valerochka1337.valerochkagym.service.WallClock
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -64,13 +64,23 @@ class ProfileRepositoryImplTest : RoomDaoTest() {
     val tokens = BackendTokens("owner", "owner@example.com", "access", "refresh")
     store.save(tokens)
     var clockReads = 0
-    val repo = ProfileRepositoryImpl(db, db.profileDao(), sync, store, WallClock {
-      clockReads++
-      if (clockReads == 2) store.save(tokens)
-      1_800_000_000_000L
-    })
+    val repo =
+        ProfileRepositoryImpl(
+            db,
+            db.profileDao(),
+            sync,
+            store,
+            WallClock {
+              clockReads++
+              if (clockReads == 2) store.save(tokens)
+              1_800_000_000_000L
+            },
+        )
     val target = requireNotNull(repo.openEditor()).target
-    assertEquals(ProfileSaveResult.StaleTarget, repo.save(target, BasicProfile(trainingGoal = TrainingGoal.STRENGTH)))
+    assertEquals(
+        ProfileSaveResult.StaleTarget,
+        repo.save(target, BasicProfile(trainingGoal = TrainingGoal.STRENGTH)),
+    )
     assertNull(db.profileDao().get("owner"))
   }
 

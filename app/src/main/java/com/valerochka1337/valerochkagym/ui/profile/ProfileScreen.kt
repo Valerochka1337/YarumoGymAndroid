@@ -34,14 +34,14 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.valerochka1337.valerochkagym.data.db.LocalEquipmentCatalog
+import com.valerochka1337.valerochkagym.data.db.entity.KeyExercisePriority
 import com.valerochka1337.valerochkagym.domain.ExperienceLevel
 import com.valerochka1337.valerochkagym.domain.ProfileSex
 import com.valerochka1337.valerochkagym.domain.TrainingGoal
-import com.valerochka1337.valerochkagym.data.db.entity.KeyExercisePriority
-import com.valerochka1337.valerochkagym.ui.components.PlanningChoiceSheet
 import com.valerochka1337.valerochkagym.ui.components.GlowBackground
 import com.valerochka1337.valerochkagym.ui.components.GymCard
 import com.valerochka1337.valerochkagym.ui.components.PillButton
+import com.valerochka1337.valerochkagym.ui.components.PlanningChoiceSheet
 import com.valerochka1337.valerochkagym.ui.haptics.gymHaptics
 
 @Composable
@@ -64,10 +64,22 @@ fun ProfileScreen(
       onConstraints = viewModel::setConstraints,
       onEquipment = viewModel::toggleEquipment,
       onPromptDisabled = viewModel::setPromptDisabled,
-      onKeyExercise = { haptics.tap(); viewModel.toggleKeyExercise(it) },
-      onKeyPriority = { id, priority -> haptics.tap(); viewModel.setKeyExercisePriority(id, priority) },
-      onRemoveKeyExercise = { haptics.tap(); viewModel.removeKeyExercise(it) },
-      onKeySheet = { haptics.tap(); viewModel.setKeyExerciseSheet(it) },
+      onKeyExercise = {
+        haptics.tap()
+        viewModel.toggleKeyExercise(it)
+      },
+      onKeyPriority = { id, priority ->
+        haptics.tap()
+        viewModel.setKeyExercisePriority(id, priority)
+      },
+      onRemoveKeyExercise = {
+        haptics.tap()
+        viewModel.removeKeyExercise(it)
+      },
+      onKeySheet = {
+        haptics.tap()
+        viewModel.setKeyExerciseSheet(it)
+      },
       onSave = {
         haptics.confirm()
         viewModel.save()
@@ -136,7 +148,11 @@ internal fun ProfileScreenContent(
           )
           if (state.trainingGoal == TrainingGoal.STRENGTH) {
             GymCard(modifier = Modifier.fillMaxWidth()) {
-              Text("Ключевые упражнения", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+              Text(
+                  "Ключевые упражнения",
+                  style = MaterialTheme.typography.titleMedium,
+                  fontWeight = FontWeight.SemiBold,
+              )
               Text(
                   "Необязательно. Выберите до пяти упражнений для планирования.",
                   style = MaterialTheme.typography.bodySmall,
@@ -149,26 +165,37 @@ internal fun ProfileScreenContent(
                   compact = true,
               )
               state.keyExercises.forEach { choice ->
-                val name = state.strengthExercises.firstOrNull { it.id == choice.exerciseId }?.name ?: "Недоступное упражнение"
+                val name =
+                    state.strengthExercises.firstOrNull { it.id == choice.exerciseId }?.name
+                        ?: "Недоступное упражнение"
                 Column(modifier = Modifier.fillMaxWidth()) {
                   Text(name)
                   FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                  if (choice.exerciseId != null) {
-                    FilterChip(
-                        selected = choice.priority == KeyExercisePriority.HIGH,
-                        onClick = {
-                          onKeyPriority(
-                              choice.exerciseId,
-                              if (choice.priority == KeyExercisePriority.HIGH) KeyExercisePriority.NORMAL else KeyExercisePriority.HIGH,
-                          )
-                        },
-                        label = { Text(if (choice.priority == KeyExercisePriority.HIGH) "Высокий" else "Обычный") },
-                    )
-                  }
-                  androidx.compose.material3.TextButton(
-                      onClick = { onRemoveKeyExercise(choice.exerciseSyncId) },
-                      modifier = Modifier.sizeIn(minHeight = 48.dp),
-                  ) { Text("Удалить") }
+                    if (choice.exerciseId != null) {
+                      FilterChip(
+                          selected = choice.priority == KeyExercisePriority.HIGH,
+                          onClick = {
+                            onKeyPriority(
+                                choice.exerciseId,
+                                if (choice.priority == KeyExercisePriority.HIGH)
+                                    KeyExercisePriority.NORMAL
+                                else KeyExercisePriority.HIGH,
+                            )
+                          },
+                          label = {
+                            Text(
+                                if (choice.priority == KeyExercisePriority.HIGH) "Высокий"
+                                else "Обычный"
+                            )
+                          },
+                      )
+                    }
+                    androidx.compose.material3.TextButton(
+                        onClick = { onRemoveKeyExercise(choice.exerciseSyncId) },
+                        modifier = Modifier.sizeIn(minHeight = 48.dp),
+                    ) {
+                      Text("Удалить")
+                    }
                   }
                 }
               }

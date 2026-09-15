@@ -119,9 +119,10 @@ constructor(
     if (!supportsExerciseHints()) result = result.filterKeys { !it.startsWith("exercise_hint:") }
     if (!supportsProfile()) result = result.filterKeys { !it.startsWith("profile:") }
     if (!supportsStrengthPlannerPersonalization()) {
-      result = result.filterKeys {
-        !it.startsWith("strength_planner_profile:") && !it.startsWith("workout_effort:")
-      }
+      result =
+          result.filterKeys {
+            !it.startsWith("strength_planner_profile:") && !it.startsWith("workout_effort:")
+          }
     }
     if (!supportsAnnotatedWorkoutWrites()) {
       result =
@@ -178,9 +179,10 @@ constructor(
     if (!supportsExerciseHints()) result = result.filterKeys { !it.startsWith("exercise_hint:") }
     if (!supportsProfile()) result = result.filterKeys { !it.startsWith("profile:") }
     if (!supportsStrengthPlannerPersonalization()) {
-      result = result.filterKeys {
-        !it.startsWith("strength_planner_profile:") && !it.startsWith("workout_effort:")
-      }
+      result =
+          result.filterKeys {
+            !it.startsWith("strength_planner_profile:") && !it.startsWith("workout_effort:")
+          }
     }
     if (!supportsAnnotatedWorkoutWrites()) {
       result =
@@ -372,7 +374,9 @@ constructor(
         }
     LegacyCoachArchiveRegistry.purge(db)
     profileScope?.let { db.execSQL("DELETE FROM profiles WHERE scope=?", arrayOf(it)) }
-    profileScope?.let { db.execSQL("DELETE FROM strength_planner_profiles WHERE scope=?", arrayOf(it)) }
+    profileScope?.let {
+      db.execSQL("DELETE FROM strength_planner_profiles WHERE scope=?", arrayOf(it))
+    }
     profileScope?.let { db.execSQL("DELETE FROM workout_efforts WHERE scope=?", arrayOf(it)) }
     profileScope?.let { owner ->
       db.execSQL("DELETE FROM workout_preparations WHERE owner=?", arrayOf(owner))
@@ -407,10 +411,15 @@ constructor(
       db.execSQL("UPDATE profiles SET scope=?,syncId=? WHERE scope='GUEST'", arrayOf(owner, syncId))
     }
     val guestStrength =
-        db.query("SELECT 1 FROM strength_planner_profiles WHERE scope='GUEST'").use { it.moveToFirst() }
+        db.query("SELECT 1 FROM strength_planner_profiles WHERE scope='GUEST'").use {
+          it.moveToFirst()
+        }
     val ownerStrength =
-        db.query("SELECT 1 FROM strength_planner_profiles WHERE scope=?", arrayOf(owner)).use { it.moveToFirst() }
-    if (guestStrength && ownerStrength) db.execSQL("DELETE FROM strength_planner_profiles WHERE scope='GUEST'")
+        db.query("SELECT 1 FROM strength_planner_profiles WHERE scope=?", arrayOf(owner)).use {
+          it.moveToFirst()
+        }
+    if (guestStrength && ownerStrength)
+        db.execSQL("DELETE FROM strength_planner_profiles WHERE scope='GUEST'")
     else if (guestStrength) {
       val strengthSyncId =
           UUID.nameUUIDFromBytes(
@@ -955,7 +964,11 @@ constructor(
               )
           val remote = api.json.decodeFromJsonElement<CloudSnapshot>(response.body)
           if (remote.revision < importedRevision)
-              throw BackendException(409, "routine_share_pending", "Импорт ещё не появился в синхронизации")
+              throw BackendException(
+                  409,
+                  "routine_share_pending",
+                  "Импорт ещё не появился в синхронизации",
+              )
           require(remote.records.any { it.kind == "routine" && it.id == routineId && !it.deleted })
           rejectProfileTombstone(remote)
           rejectInvalidProfile(remote, expected.tokens.userId)

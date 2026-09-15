@@ -22,9 +22,9 @@ import com.valerochka1337.valerochkagym.data.db.dao.HealthAiConsentDao
 import com.valerochka1337.valerochkagym.data.db.dao.HealthDao
 import com.valerochka1337.valerochkagym.data.db.dao.HealthSyncDao
 import com.valerochka1337.valerochkagym.data.db.dao.ProfileDao
-import com.valerochka1337.valerochkagym.data.db.dao.StrengthPlannerProfileDao
 import com.valerochka1337.valerochkagym.data.db.dao.RoutineDao
 import com.valerochka1337.valerochkagym.data.db.dao.ScheduledWorkoutDao
+import com.valerochka1337.valerochkagym.data.db.dao.StrengthPlannerProfileDao
 import com.valerochka1337.valerochkagym.data.db.dao.WorkoutDao
 import com.valerochka1337.valerochkagym.data.db.dao.WorkoutEffortDao
 import com.valerochka1337.valerochkagym.data.settings.MuscleLoadUpgradeNotice

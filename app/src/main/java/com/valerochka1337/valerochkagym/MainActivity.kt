@@ -12,9 +12,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.valerochka1337.valerochkagym.data.settings.SettingsRepository
 import com.valerochka1337.valerochkagym.ui.haptics.LocalGymHaptics
 import com.valerochka1337.valerochkagym.ui.haptics.rememberGymHaptics
-import com.valerochka1337.valerochkagym.ui.navigation.MainScaffold
-import com.valerochka1337.valerochkagym.ui.navigation.GymRoutes
 import com.valerochka1337.valerochkagym.ui.navigation.GuestRoutineShareNavHost
+import com.valerochka1337.valerochkagym.ui.navigation.GymRoutes
+import com.valerochka1337.valerochkagym.ui.navigation.MainScaffold
 import com.valerochka1337.valerochkagym.ui.theme.GymTheme
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
@@ -65,7 +65,9 @@ class MainActivity : ComponentActivity() {
                       enabled = currentSettings.hapticsEnabled,
                   ),
           ) {
-            com.valerochka1337.valerochkagym.ui.account.AccountGate(allowGuest = shareToken != null) {
+            com.valerochka1337.valerochkagym.ui.account.AccountGate(
+                allowGuest = shareToken != null
+            ) {
               if (shareToken != null) {
                 GuestRoutineShareNavHost(
                     token = shareToken!!,

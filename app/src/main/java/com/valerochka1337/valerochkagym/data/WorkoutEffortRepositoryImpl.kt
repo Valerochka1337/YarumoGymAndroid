@@ -36,11 +36,18 @@ constructor(
       currentOwner()?.let { WorkoutEffortEditTarget(workoutId, it.scope, it.epoch) }
 
   override fun observe(target: WorkoutEffortEditTarget): Flow<WorkoutEffort?> =
-      combine(effortDao.observe(target.workoutId, target.scope), sync.transfer, sessions.sessionEpochs) {
-        row, _, _ -> if (captureTarget(target.workoutId) == target) row?.effort else null
+      combine(
+          effortDao.observe(target.workoutId, target.scope),
+          sync.transfer,
+          sessions.sessionEpochs,
+      ) { row, _, _ ->
+        if (captureTarget(target.workoutId) == target) row?.effort else null
       }
 
-  override suspend fun save(target: WorkoutEffortEditTarget, effort: WorkoutEffort?): WorkoutEffortSaveResult =
+  override suspend fun save(
+      target: WorkoutEffortEditTarget,
+      effort: WorkoutEffort?,
+  ): WorkoutEffortSaveResult =
       mutationMutex.withLock {
         try {
           database.withTransaction {
@@ -48,8 +55,9 @@ constructor(
               if (captureTarget(target.workoutId) != target) throw StaleEffortTarget()
             }
             checkTarget()
-            val workout = workoutDao.getWorkoutFull(target.workoutId)?.workout
-                ?: return@withTransaction WorkoutEffortSaveResult.Invalid
+            val workout =
+                workoutDao.getWorkoutFull(target.workoutId)?.workout
+                    ?: return@withTransaction WorkoutEffortSaveResult.Invalid
             if (workout.finishedAt == null) return@withTransaction WorkoutEffortSaveResult.Invalid
             val existing = effortDao.get(target.workoutId, target.scope)
             checkTarget()

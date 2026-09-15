@@ -15,10 +15,14 @@ interface StrengthPlannerProfileDao {
   @Query("SELECT * FROM strength_planner_profiles WHERE scope=:scope")
   suspend fun get(scope: String): StrengthPlannerProfileEntity?
 
-  @Query("SELECT * FROM strength_planner_key_exercises WHERE scope=:scope ORDER BY CASE priority WHEN 'HIGH' THEN 0 ELSE 1 END, exerciseSyncId")
+  @Query(
+      "SELECT * FROM strength_planner_key_exercises WHERE scope=:scope ORDER BY CASE priority WHEN 'HIGH' THEN 0 ELSE 1 END, exerciseSyncId"
+  )
   fun observeKeyExercises(scope: String): Flow<List<StrengthPlannerKeyExerciseEntity>>
 
-  @Query("SELECT * FROM strength_planner_key_exercises WHERE scope=:scope ORDER BY CASE priority WHEN 'HIGH' THEN 0 ELSE 1 END, exerciseSyncId")
+  @Query(
+      "SELECT * FROM strength_planner_key_exercises WHERE scope=:scope ORDER BY CASE priority WHEN 'HIGH' THEN 0 ELSE 1 END, exerciseSyncId"
+  )
   suspend fun keyExercises(scope: String): List<StrengthPlannerKeyExerciseEntity>
 
   @Upsert suspend fun upsert(profile: StrengthPlannerProfileEntity)
@@ -28,5 +32,6 @@ interface StrengthPlannerProfileDao {
 
   @Upsert suspend fun upsertKeyExercises(items: List<StrengthPlannerKeyExerciseEntity>)
 
-  @Query("DELETE FROM strength_planner_profiles WHERE scope=:scope") suspend fun delete(scope: String)
+  @Query("DELETE FROM strength_planner_profiles WHERE scope=:scope")
+  suspend fun delete(scope: String)
 }

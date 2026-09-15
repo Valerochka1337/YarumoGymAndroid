@@ -14,7 +14,9 @@ data class StrengthExerciseCandidate(val id: Long, val syncId: String, val name:
 
 sealed interface StrengthPlannerSaveResult {
   data object Saved : StrengthPlannerSaveResult
+
   data object Invalid : StrengthPlannerSaveResult
+
   data object StaleTarget : StrengthPlannerSaveResult
 }
 

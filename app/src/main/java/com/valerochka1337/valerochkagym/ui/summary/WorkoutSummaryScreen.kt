@@ -42,8 +42,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.valerochka1337.valerochkagym.domain.PrResult
 import com.valerochka1337.valerochkagym.data.db.entity.WorkoutEffort
+import com.valerochka1337.valerochkagym.domain.PrResult
 import com.valerochka1337.valerochkagym.ui.components.ExerciseAvatar
 import com.valerochka1337.valerochkagym.ui.components.GlowBackground
 import com.valerochka1337.valerochkagym.ui.components.GymCard
@@ -178,7 +178,10 @@ fun WorkoutSummaryScreen(
                   selected = state.effortDraft,
                   isSaving = state.isSavingEffort,
                   error = state.effortError,
-                  onSelect = { haptics.tap(); viewModel.setEffort(it) },
+                  onSelect = {
+                    haptics.tap()
+                    viewModel.setEffort(it)
+                  },
               )
             }
           }
@@ -289,7 +292,9 @@ internal fun WorkoutEffortCard(
           onClick = { onSelect(null) },
           enabled = !isSaving,
           modifier = Modifier.sizeIn(minHeight = 48.dp),
-      ) { Text("Очистить") }
+      ) {
+        Text("Очистить")
+      }
     }
     error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
   }

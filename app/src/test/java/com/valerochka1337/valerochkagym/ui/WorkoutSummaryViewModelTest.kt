@@ -1,10 +1,6 @@
 package com.valerochka1337.valerochkagym.ui
 
 import androidx.lifecycle.SavedStateHandle
-import com.valerochka1337.valerochkagym.domain.WorkoutEffortRepository
-import com.valerochka1337.valerochkagym.domain.WorkoutEffortEditTarget
-import com.valerochka1337.valerochkagym.domain.WorkoutEffortSaveResult
-import com.valerochka1337.valerochkagym.data.db.entity.WorkoutEffort
 import com.valerochka1337.valerochkagym.data.db.dao.RoutineDao
 import com.valerochka1337.valerochkagym.data.db.dao.WorkoutDao
 import com.valerochka1337.valerochkagym.data.db.entity.ExerciseEntity
@@ -13,6 +9,7 @@ import com.valerochka1337.valerochkagym.data.db.entity.MuscleGroup
 import com.valerochka1337.valerochkagym.data.db.entity.RoutineEntity
 import com.valerochka1337.valerochkagym.data.db.entity.RoutineExerciseEntity
 import com.valerochka1337.valerochkagym.data.db.entity.UploadStatus
+import com.valerochka1337.valerochkagym.data.db.entity.WorkoutEffort
 import com.valerochka1337.valerochkagym.data.db.entity.WorkoutEntity
 import com.valerochka1337.valerochkagym.data.db.entity.WorkoutExerciseEntity
 import com.valerochka1337.valerochkagym.data.db.entity.WorkoutSetEntity
@@ -31,6 +28,9 @@ import com.valerochka1337.valerochkagym.domain.RoutineConfigurationDraft
 import com.valerochka1337.valerochkagym.domain.RoutineUpdateUseCase
 import com.valerochka1337.valerochkagym.domain.SaveCompletedWorkoutAsRoutineUseCase
 import com.valerochka1337.valerochkagym.domain.SaveRoutineConfigurationResult
+import com.valerochka1337.valerochkagym.domain.WorkoutEffortEditTarget
+import com.valerochka1337.valerochkagym.domain.WorkoutEffortRepository
+import com.valerochka1337.valerochkagym.domain.WorkoutEffortSaveResult
 import com.valerochka1337.valerochkagym.domain.WorkoutStatsUseCase
 import com.valerochka1337.valerochkagym.ui.navigation.GymRoutes
 import com.valerochka1337.valerochkagym.ui.summary.WorkoutSummaryViewModel
@@ -65,9 +65,16 @@ class WorkoutSummaryViewModelTest {
     var epoch = 1L
     val saved = kotlinx.coroutines.flow.MutableStateFlow<WorkoutEffort?>(WorkoutEffort.HARD)
     val writes = mutableListOf<WorkoutEffort?>()
-    override fun captureTarget(workoutId: String) = WorkoutEffortEditTarget(workoutId, "owner", epoch)
+
+    override fun captureTarget(workoutId: String) =
+        WorkoutEffortEditTarget(workoutId, "owner", epoch)
+
     override fun observe(target: WorkoutEffortEditTarget) = saved
-    override suspend fun save(target: WorkoutEffortEditTarget, effort: WorkoutEffort?): WorkoutEffortSaveResult {
+
+    override suspend fun save(
+        target: WorkoutEffortEditTarget,
+        effort: WorkoutEffort?,
+    ): WorkoutEffortSaveResult {
       if (target.sessionEpoch != epoch) return WorkoutEffortSaveResult.StaleOwner
       writes += effort
       saved.value = effort
@@ -75,7 +82,8 @@ class WorkoutSummaryViewModelTest {
     }
   }
 
-  @Test fun `an explicit effort clear survives recreation and saves before done`() =
+  @Test
+  fun `an explicit effort clear survives recreation and saves before done`() =
       runTest(mainDispatcherRule.testDispatcher.scheduler) {
         val full = fullWorkout()
         val repo = EffortRepository()
@@ -90,7 +98,8 @@ class WorkoutSummaryViewModelTest {
         assertTrue(restored.uiState.value.showSaveChoice)
       }
 
-  @Test fun `recreated effort draft cannot adopt a new login session`() =
+  @Test
+  fun `recreated effort draft cannot adopt a new login session`() =
       runTest(mainDispatcherRule.testDispatcher.scheduler) {
         val full = fullWorkout()
         val repo = EffortRepository()

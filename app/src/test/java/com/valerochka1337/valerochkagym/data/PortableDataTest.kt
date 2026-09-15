@@ -28,9 +28,9 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -51,13 +51,25 @@ class PortableDataTest : RoomDaoTest() {
             "INSERT INTO strength_planner_profiles(scope,syncId,updatedAt) VALUES(?,?,?)",
             arrayOf<Any>(owner, profileId, 1800000000000L),
         )
-        sql.execSQL("INSERT INTO strength_planner_key_exercises(scope,exerciseSyncId,priority) VALUES(?,?,?)", arrayOf(owner, exerciseId, "HIGH"))
+        sql.execSQL(
+            "INSERT INTO strength_planner_key_exercises(scope,exerciseSyncId,priority) VALUES(?,?,?)",
+            arrayOf(owner, exerciseId, "HIGH"),
+        )
 
         val snapshot = PortableData(sql).snapshot()
 
         val record = requireNotNull(snapshot["strength_planner_profile:$profileId"])
         assertEquals(profileId, record["syncId"]?.jsonPrimitive?.content)
-        assertEquals(exerciseId, record["keyExercises"]?.jsonArray?.single()?.jsonObject?.get("exerciseId")?.jsonPrimitive?.content)
+        assertEquals(
+            exerciseId,
+            record["keyExercises"]
+                ?.jsonArray
+                ?.single()
+                ?.jsonObject
+                ?.get("exerciseId")
+                ?.jsonPrimitive
+                ?.content,
+        )
         assertFalse(snapshot.keys.any { it == "profile:$profileId" })
       }
 
