@@ -17,4 +17,6 @@ data class ProfileEntity(
     val preferredSessionDurationMinutes: Int? = null,
     val manualConstraints: String? = null,
     val updatedAt: Long = 0,
+    val preferredRepMin: Int? = null,
+    val preferredRepMax: Int? = null,
 )

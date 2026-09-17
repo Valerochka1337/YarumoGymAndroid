@@ -148,7 +148,17 @@ class PortableDataTest : RoomDaoTest() {
             "UPDATE backend_state SET owner=?,phase='OWNED' WHERE id=1",
             arrayOf(owner),
         )
-        db.profileDao().upsert(ProfileEntity(owner, syncId, trainingGoal = "OTHER", updatedAt = 1))
+        db.profileDao()
+            .upsert(
+                ProfileEntity(
+                    owner,
+                    syncId,
+                    trainingGoal = "OTHER",
+                    updatedAt = 1,
+                    preferredRepMin = 6,
+                    preferredRepMax = 12,
+                )
+            )
         db.profileDao()
             .upsertEquipment(localEquipment.map { ProfileEquipmentPreferenceEntity(owner, it) })
         val payload = buildJsonObject {
@@ -172,6 +182,9 @@ class PortableDataTest : RoomDaoTest() {
         assertEquals(serverEquipment.sorted(), db.profileDao().equipmentIds(owner))
         assertEquals("STRENGTH", db.profileDao().get(owner)?.trainingGoal)
         assertEquals(null, db.profileDao().get(owner)?.sex)
+        assertEquals(6, db.profileDao().get(owner)?.preferredRepMin)
+        assertEquals(12, db.profileDao().get(owner)?.preferredRepMax)
+        assertFalse(portable.snapshot().getValue("profile:$syncId").containsKey("preferredRepMin"))
 
         val malformed = JsonObject(payload + ("plannedSessionsPerWeek" to JsonPrimitive("3")))
         try {

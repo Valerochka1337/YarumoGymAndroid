@@ -46,6 +46,98 @@ import org.junit.Test
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class WorkoutEditorTest : RoomDaoTest() {
   @Test
+  fun `ordinary proposal expires without a click and does not block a fresh proposal`() = runTest {
+    val workout = insertWorkout("expiry")
+    val section = insertWorkoutExercise(workout, exercise("Press"))
+    val id = insertSet(section, 0, weightKg = 50.0, reps = 8)
+    val set = db.workoutDao().getSet(id)!!
+    val editor = coordinator(RestTimerEngine(backgroundScope) { 0L })
+    val packet =
+        WorkoutChangeSet.Packet(
+            listOf(WorkoutChangeSet.Operation.EditSet(set.syncId, weightKg = 47.5))
+        )
+    val proposal = editor.saveProposal("user", workout, packet, 0, Long.MAX_VALUE)!!
+    db.openHelper.writableDatabase.execSQL(
+        "UPDATE coach_proposals SET expiresAt=1 WHERE id=?",
+        arrayOf(proposal.id),
+    )
+    editor.refreshAutoregulationProposal("user", workout, null)
+    editor.refreshAutoregulationProposal("user", workout, null)
+    assertNull(db.coachDao().pendingProposal(workout))
+    assertEquals(
+        1,
+        db.coachDao().messages(workout).count { it.text.contains("Срок предложения истёк") },
+    )
+    assertEquals(50.0, db.workoutDao().getSet(id)!!.weightKg!!, 0.0)
+    assertNotNull(editor.saveProposal("user", workout, packet, 0, Long.MAX_VALUE))
+  }
+
+  @Test
+  fun `ordinary proposal becomes stale after a workout revision and old approval cannot apply`() =
+      runTest {
+        val workout = insertWorkout("stale-ordinary")
+        val section = insertWorkoutExercise(workout, exercise("Press"))
+        val id = insertSet(section, 0, weightKg = 50.0, reps = 8)
+        val set = db.workoutDao().getSet(id)!!
+        val editor = coordinator(RestTimerEngine(backgroundScope) { 0L })
+        val packet =
+            WorkoutChangeSet.Packet(
+                listOf(WorkoutChangeSet.Operation.EditSet(set.syncId, weightKg = 47.5))
+            )
+        val proposal = editor.saveProposal("user", workout, packet, 0, Long.MAX_VALUE)!!
+        db.openHelper.writableDatabase.execSQL(
+            "UPDATE workouts SET coachRevision=1 WHERE id=?",
+            arrayOf(workout),
+        )
+        editor.refreshAutoregulationProposal("user", workout, null)
+        assertNull(db.coachDao().pendingProposal(workout))
+        assertTrue(
+            db.coachDao().messages(workout).any { it.text.contains("потеряло актуальность") }
+        )
+        assertEquals(
+            CommandResult.STALE,
+            editor.confirmProposal("user", proposal.id, "old-confirm").result,
+        )
+        assertEquals(50.0, db.workoutDao().getSet(id)!!.weightKg!!, 0.0)
+      }
+
+  @Test
+  fun `confirmed and rejected decisions survive editor recreation and reach model state`() =
+      runTest {
+        val workout = insertWorkout("memory")
+        val section = insertWorkoutExercise(workout, exercise("Press"))
+        val id = insertSet(section, 0, weightKg = 50.0, reps = 8)
+        val set = db.workoutDao().getSet(id)!!
+        val timer = RestTimerEngine(backgroundScope) { 0L }
+        val editor = coordinator(timer)
+        val packet =
+            WorkoutChangeSet.Packet(
+                listOf(WorkoutChangeSet.Operation.EditSet(set.syncId, weightKg = 47.5))
+            )
+        val rejected = editor.saveProposal("user", workout, packet, 0, Long.MAX_VALUE)!!
+        assertTrue(
+            editor.cancelProposal(
+                "user",
+                rejected.id,
+                reason = CoachRejectionReason.UNAVAILABLE_WEIGHT,
+            )
+        )
+        val accepted = coordinator(timer).saveProposal("user", workout, packet, 0, Long.MAX_VALUE)!!
+        assertEquals(
+            CommandResult.APPLIED,
+            coordinator(timer).confirmProposal("user", accepted.id, "accept-memory").result,
+        )
+        val records =
+            CoachDecisionMemory.decode(db.coachDao().context(workout)!!.decisionMemoryJson)
+        assertEquals(listOf("REJECTED", "APPLIED"), records.map { it.status })
+        assertEquals(CoachRejectionReason.UNAVAILABLE_WEIGHT, records.first().reason)
+        val state = WorkoutSnapshot("user", workout, 1, emptyList(), coachDecisions = records)
+        val wire = com.valerochka1337.valerochkagym.data.ai.CoachToolCodec.snapshotJson(state)
+        assertTrue(wire.contains("UNAVAILABLE_WEIGHT"))
+        assertTrue(wire.contains("APPLIED"))
+      }
+
+  @Test
   fun `calculated proposal survives recreation applies atomically and undo restores RIR and targets`() =
       runTest {
         val workout = insertWorkout("autoregulated")

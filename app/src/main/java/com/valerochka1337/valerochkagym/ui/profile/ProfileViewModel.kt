@@ -47,6 +47,8 @@ data class ProfileEditorUiState(
     val keyExercises: List<KeyExerciseChoice> = emptyList(),
     val strengthExercises: List<StrengthExerciseCandidate> = emptyList(),
     val showKeyExercises: Boolean = false,
+    val preferredRepMin: String = "",
+    val preferredRepMax: String = "",
 )
 
 @HiltViewModel
@@ -112,6 +114,10 @@ constructor(
 
   fun setDuration(value: String) = update {
     copy(preferredSessionDurationMinutes = value, error = null)
+  }
+
+  fun setRepRange(min: String, max: String) = update {
+    copy(preferredRepMin = min, preferredRepMax = max, error = null)
   }
 
   fun setConstraints(value: String) = update { copy(manualConstraints = value, error = null) }
@@ -217,6 +223,8 @@ private fun BasicProfile.toUi(
                   preferredSessionDurationMinutes?.toString().orEmpty(),
               equipmentIds = equipmentIds,
               manualConstraints = manualConstraints.orEmpty(),
+              preferredRepMin = preferredRepMin?.toString().orEmpty(),
+              preferredRepMax = preferredRepMax?.toString().orEmpty(),
           ))
       .copy(promptDisabled = promptDisabled)
 }
@@ -258,6 +266,8 @@ private fun profileDraftFrom(
             )
           },
       showKeyExercises = handle.get<Boolean>("profile_draft_key_sheet") ?: false,
+      preferredRepMin = handle.get<String>("profile_draft_rep_min").orEmpty(),
+      preferredRepMax = handle.get<String>("profile_draft_rep_max").orEmpty(),
   )
 }
 
@@ -277,6 +287,8 @@ private fun ProfileEditorUiState.saveDraft(handle: SavedStateHandle) {
   handle["profile_draft_key_sync"] = ArrayList(keyExercises.map { it.exerciseSyncId })
   handle["profile_draft_key_priority"] = ArrayList(keyExercises.map { it.priority.name })
   handle["profile_draft_key_sheet"] = showKeyExercises
+  handle["profile_draft_rep_min"] = preferredRepMin
+  handle["profile_draft_rep_max"] = preferredRepMax
 }
 
 private fun ProfileEditorUiState.toProfileOrNull(nowMillis: Long): BasicProfile? {
@@ -293,6 +305,13 @@ private fun ProfileEditorUiState.toProfileOrNull(nowMillis: Long): BasicProfile?
   if (plannedSessionsPerWeek.isNotBlank() && sessions !in 1..7) return null
   val duration = preferredSessionDurationMinutes.trim().ifBlank { null }?.toIntOrNull()
   if (preferredSessionDurationMinutes.isNotBlank() && duration !in 10..240) return null
+  val min = preferredRepMin.trim().toIntOrNull()
+  val max = preferredRepMax.trim().toIntOrNull()
+  if (
+      (preferredRepMin.isNotBlank() || preferredRepMax.isNotBlank()) &&
+          (min == null || max == null || min !in 1..50 || max !in min..50)
+  )
+      return null
   val constraints = manualConstraints.trim().ifBlank { null }
   if (constraints != null && constraints.codePointCount(0, constraints.length) > 2000) return null
   return BasicProfile(
@@ -304,6 +323,8 @@ private fun ProfileEditorUiState.toProfileOrNull(nowMillis: Long): BasicProfile?
       duration,
       equipmentIds,
       constraints,
+      min,
+      max,
   )
 }
 

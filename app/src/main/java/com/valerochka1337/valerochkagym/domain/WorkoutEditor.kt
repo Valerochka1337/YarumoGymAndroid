@@ -502,6 +502,7 @@ constructor(
                                 workout.coachRevision,
                                 packet,
                             )
+                    rememberDecision(accountId, proposal, "APPLIED", packet)
                     coachDao.setProposalState(proposalId, "CONFIRMED")
                     updateContext(accountId, proposal.workoutId) {
                       it.copy(initiativePendingInteraction = false)
@@ -537,12 +538,20 @@ constructor(
       accountId: String,
       proposalId: String,
       expectedSessionEpoch: Long? = null,
+      reason: CoachRejectionReason? = null,
   ): Boolean =
       writes.write {
         database.withTransaction {
           if (!belongsToLiveAccount(accountId, expectedSessionEpoch)) return@withTransaction false
           val proposal = coachDao.pendingProposalForId(proposalId) ?: return@withTransaction false
           if (proposal.accountId != accountId) return@withTransaction false
+          rememberDecision(
+              accountId,
+              proposal,
+              "REJECTED",
+              json.decodeFromString(WorkoutChangeSet.Packet.serializer(), proposal.packetJson),
+              reason,
+          )
           coachDao.setProposalState(proposalId, "CANCELLED")
           json
               .decodeFromString(WorkoutChangeSet.Packet.serializer(), proposal.packetJson)
@@ -561,9 +570,41 @@ constructor(
               "system",
               "Предложение отменено",
           )
+          if (!belongsToLiveAccount(accountId, expectedSessionEpoch)) throw StaleCommand()
           true
         }
       }
+
+  private suspend fun rememberDecision(
+      accountId: String,
+      proposal: com.valerochka1337.valerochkagym.data.db.entity.CoachProposalEntity,
+      status: String,
+      packet: WorkoutChangeSet.Packet,
+      reason: CoachRejectionReason? = null,
+  ) {
+    val snapshot =
+        CoachWorkoutReader(database, restTimer, sessions).snapshot(accountId, proposal.workoutId)
+            ?: return
+    val decision =
+        CoachDecisionMemory.capture(
+            snapshot,
+            proposal.id,
+            status,
+            proposal.afterSummary,
+            packet,
+            reason,
+        )
+    updateContext(accountId, proposal.workoutId) {
+      it.copy(
+          decisionMemoryJson =
+              CoachDecisionMemory.encode(
+                  CoachDecisionMemory.decode(it.decisionMemoryJson).filterNot { d ->
+                    d.proposalId == proposal.id
+                  } + decision
+              )
+      )
+    }
+  }
 
   private suspend fun applyAccepted(
       accountId: String,
@@ -1642,17 +1683,51 @@ constructor(
           if (!belongsToLiveAccount(accountId, epoch)) return@withTransaction
           val old = coachDao.pendingProposal(workoutId) ?: return@withTransaction
           if (old.accountId != accountId) return@withTransaction
-          val packet = json.decodeFromString(WorkoutChangeSet.Packet.serializer(), old.packetJson)
-          val proof = packet.autoregulation ?: return@withTransaction
-          if (old.expiresAt < System.currentTimeMillis()) {
-            CoachDiagnostics.event("editor.proposal.refresh", "decision" to "expire")
-            coachDao.setProposalState(old.id, "EXPIRED")
+          suspend fun invalidate(state: String, text: String) {
+            coachDao.setProposalState(old.id, state)
             updateContext(accountId, workoutId) { it.copy(initiativePendingInteraction = false) }
+            val id = journalId("${old.id}:$state")
+            coachDao.saveMessage(
+                com.valerochka1337.valerochkagym.data.db.entity.CoachMessageEntity(
+                    id,
+                    accountId,
+                    workoutId,
+                    "system",
+                    text,
+                    System.currentTimeMillis(),
+                )
+            )
+            saveJournal(id, accountId, workoutId, "decision", "system", text)
+            if (!belongsToLiveAccount(accountId, epoch)) throw StaleCommand()
+          }
+          if (old.expiresAt <= System.currentTimeMillis()) {
+            invalidate("EXPIRED", "Срок предложения истёк. Изменения не применены.")
             return@withTransaction
           }
           val current =
               CoachWorkoutReader(database, restTimer, sessions)
-                  .snapshot(accountId, workoutId, epoch) ?: return@withTransaction
+                  .snapshot(accountId, workoutId, epoch)
+          if (!belongsToLiveAccount(accountId, epoch)) return@withTransaction
+          if (current == null) {
+            invalidate("STALE", "Предложение больше не актуально. Изменения не применены.")
+            return@withTransaction
+          }
+          val packet = json.decodeFromString(WorkoutChangeSet.Packet.serializer(), old.packetJson)
+          val proof = packet.autoregulation
+          if (proof == null) {
+            val staleRest =
+                packet.operations.filterIsInstance<WorkoutChangeSet.Operation.Rest>().any {
+                  it.expectedRestStartId != null &&
+                      (it.expectedRestStartId != current.rest?.startId ||
+                          current.rest.remainingSeconds == 0)
+                }
+            if (old.baseRevision != current.revision || staleRest)
+                invalidate(
+                    "STALE",
+                    "Предложение потеряло актуальность: тренировка изменилась. Изменения не применены.",
+                )
+            return@withTransaction
+          }
           val result =
               com.valerochka1337.valerochkagym.domain.autoregulation.AutoregulationEngine.calculate(
                   current,

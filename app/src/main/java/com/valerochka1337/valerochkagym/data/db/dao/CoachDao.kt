@@ -55,6 +55,15 @@ interface CoachDao {
       readAt: Long = System.currentTimeMillis(),
   ): Int
 
+  @Query(
+      "UPDATE coach_messages SET readAt=:readAt WHERE workoutId=:workoutId AND id IN (:ids) AND role='assistant' AND readAt IS NULL"
+  )
+  suspend fun markAssistantMessagesReadByIds(
+      workoutId: String,
+      ids: List<String>,
+      readAt: Long = System.currentTimeMillis(),
+  ): Int
+
   @Insert(onConflict = OnConflictStrategy.REPLACE)
   suspend fun saveMessage(message: CoachMessageEntity)
 

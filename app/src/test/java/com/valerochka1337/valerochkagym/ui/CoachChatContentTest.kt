@@ -27,6 +27,8 @@ abstract class CoachChatSemanticsBase {
       sent: (String) -> Unit = {},
       retried: (String) -> Unit = {},
       canceled: (String) -> Unit = {},
+      declined: ((String, com.valerochka1337.valerochkagym.domain.CoachRejectionReason) -> Unit)? =
+          null,
   ): androidx.compose.runtime.MutableState<CoachChatUiState> {
     val state = mutableStateOf(initial)
     compose.setContent {
@@ -44,6 +46,7 @@ abstract class CoachChatSemanticsBase {
                 state.value = state.value.copy(busy = true, status = "Применяем изменения…")
               },
               onCancel = canceled,
+              onCancelWithReason = declined,
               onUndo = {},
               onDisableInitiative = { state.value = state.value.copy(initiativeEnabled = false) },
           )
@@ -51,6 +54,41 @@ abstract class CoachChatSemanticsBase {
       }
     }
     return state
+  }
+
+  @Test
+  fun `opening chat reveals the first new message with an accessible new label`() {
+    val messages =
+        (0..30).map { index ->
+          CoachChatMessage("message-$index", "assistant", "Сообщение $index", isNew = index == 10)
+        }
+    content(CoachChatUiState(messages = messages))
+    compose
+        .onNodeWithTag("coach-message:message-10")
+        .assertIsDisplayed()
+        .assert(
+            SemanticsMatcher.expectValue(
+                androidx.compose.ui.semantics.SemanticsProperties.StateDescription,
+                "Новое сообщение",
+            )
+        )
+    compose.onNodeWithText("Тренер · Новое").assertIsDisplayed()
+  }
+
+  @Test
+  fun `decline reason is selectable without applying a proposal at large font`() {
+    var selected: com.valerochka1337.valerochkagym.domain.CoachRejectionReason? = null
+    content(
+        CoachChatUiState(proposal = CoachChatProposal("proposal", "50 кг", "47.5 кг")),
+        declined = { _, reason -> selected = reason },
+    )
+    compose.onNodeWithTag("coach-conversation").performScrollToNode(hasText("Отклонить с причиной"))
+    compose.onNodeWithText("Отклонить с причиной").performScrollTo().performClick()
+    compose.onNodeWithText("Нет такого веса").performClick()
+    assertEquals(
+        com.valerochka1337.valerochkagym.domain.CoachRejectionReason.UNAVAILABLE_WEIGHT,
+        selected,
+    )
   }
 
   @Test

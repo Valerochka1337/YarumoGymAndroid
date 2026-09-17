@@ -8,6 +8,12 @@ import org.junit.Test
 
 class AutoregulationEngineTest {
   @Test
+  fun `reported hard effort anchors the next repetition step to the actual result not old prefilling`() {
+    val result = calculate(upcoming = next.copy(reps = 2, targetReps = 2))
+    assertEquals(WorkoutChangeSet.Operation.EditSet("next", reps = 7), result.operations.first())
+  }
+
+  @Test
   fun `four plus stays a range and never produces an exact RIR adjustment`() {
     val result = calculate(done.copy(actualRir = null, actualRirAtLeastFour = true))
     assertEquals(RecommendationKind.NO_CHANGE, result.kind)
@@ -186,8 +192,8 @@ class AutoregulationEngineTest {
   }
 
   @Test
-  fun `different planned next set asks intent`() {
-    assertEquals(RecommendationKind.CLARIFY, calculate(upcoming = next.copy(targetReps = 6)).kind)
+  fun `stale next target does not override the reported result`() {
+    assertEquals(RecommendationKind.ADJUST, calculate(upcoming = next.copy(targetReps = 6)).kind)
   }
 
   @Test

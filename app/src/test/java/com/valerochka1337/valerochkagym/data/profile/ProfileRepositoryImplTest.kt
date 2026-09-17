@@ -57,6 +57,40 @@ class ProfileRepositoryImplTest : RoomDaoTest() {
   }
 
   @Test
+  fun `rep preference validates persists clears and remains isolated by owner`() = runTest {
+    val store = Store()
+    val (repo, sync) = repository(store)
+    val guest = repo.openEditor()!!.target
+    for ((min, max) in listOf(0 to 8, 12 to 6, 6 to 51)) {
+      assertEquals(
+          ProfileSaveResult.Invalid,
+          repo.save(guest, BasicProfile(preferredRepMin = min, preferredRepMax = max)),
+      )
+    }
+    assertEquals(ProfileSaveResult.Invalid, repo.save(guest, BasicProfile(preferredRepMin = 6)))
+    assertEquals(
+        ProfileSaveResult.Saved,
+        repo.save(guest, BasicProfile(preferredRepMin = 6, preferredRepMax = 12)),
+    )
+    assertEquals(6, repo.openEditor()!!.profile.preferredRepMin)
+    assertEquals(12, repo.openEditor()!!.profile.preferredRepMax)
+    assertEquals(ProfileSaveResult.Saved, repo.save(guest, BasicProfile()))
+    assertNull(repo.openEditor()!!.profile.preferredRepMin)
+    sync.claim("owner")
+    store.save(BackendTokens("owner", "owner@example.com", "access", "refresh"))
+    val owner = repo.openEditor()!!.target
+    assertEquals(
+        ProfileSaveResult.Saved,
+        repo.save(owner, BasicProfile(preferredRepMin = 3, preferredRepMax = 6)),
+    )
+    assertEquals(
+        ProfileSaveResult.StaleTarget,
+        repo.save(guest, BasicProfile(preferredRepMin = 8, preferredRepMax = 15)),
+    )
+    assertEquals(3, repo.openEditor()!!.profile.preferredRepMin)
+  }
+
+  @Test
   fun `a session change during profile writes rolls back the entire profile`() = runTest {
     val store = Store()
     val sync = BackendSync(db, Server, store)

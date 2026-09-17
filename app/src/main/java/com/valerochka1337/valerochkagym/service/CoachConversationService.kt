@@ -24,6 +24,7 @@ import com.valerochka1337.valerochkagym.domain.ModelProposalSaveResult
 import com.valerochka1337.valerochkagym.domain.WorkoutEditor
 import com.valerochka1337.valerochkagym.domain.WorkoutSnapshot
 import com.valerochka1337.valerochkagym.domain.WorkoutWriteQueue
+import com.valerochka1337.valerochkagym.domain.suppressesCoachInitiative
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
@@ -353,14 +354,22 @@ constructor(
     return receipt.result == com.valerochka1337.valerochkagym.domain.CommandResult.APPLIED
   }
 
-  suspend fun cancel(workoutId: String, proposalId: String): Boolean =
+  suspend fun cancel(
+      workoutId: String,
+      proposalId: String,
+      reason: com.valerochka1337.valerochkagym.domain.CoachRejectionReason? = null,
+  ): Boolean =
       CoachDiagnostics.trace("conversation.cancel") {
-        cancelLogged(workoutId, proposalId).also {
+        cancelLogged(workoutId, proposalId, reason).also {
           CoachDiagnostics.event("conversation.cancel.result", "accepted" to it)
         }
       }
 
-  private suspend fun cancelLogged(workoutId: String, proposalId: String): Boolean {
+  private suspend fun cancelLogged(
+      workoutId: String,
+      proposalId: String,
+      reason: com.valerochka1337.valerochkagym.domain.CoachRejectionReason?,
+  ): Boolean {
     val session = sessions.snapshot() ?: return false
     val accountId = session.tokens.userId
     val proposal = database.coachDao().pendingProposalForId(proposalId)
@@ -370,14 +379,15 @@ constructor(
             ?.actions
             ?.firstOrNull()
             ?.kind ?: "change"
-    val cancelled = editor.cancelProposal(accountId, proposalId, session.epoch)
+    val cancelled = editor.cancelProposal(accountId, proposalId, session.epoch, reason)
     if (cancelled)
         appendMessage(
             UUID.randomUUID().toString(),
             accountId,
             workoutId,
             "system",
-            "REJECTED|$actionKind|${proposal.afterSummary}",
+            "REJECTED|$actionKind|${proposal.afterSummary}" +
+                (reason?.let { " — ${it.label}" } ?: ""),
             expectedSessionEpoch = session.epoch,
         )
     return cancelled
@@ -421,9 +431,7 @@ constructor(
 
   suspend fun considerInitiative(workoutId: String): Boolean {
     val session = sessions.snapshot() ?: return false
-    return (considerInitiative(session.tokens.userId, workoutId, session.epoch) != null).also {
-      if (it) coachAlerts.emit(workoutId)
-    }
+    return considerInitiative(session.tokens.userId, workoutId, session.epoch) != null
   }
 
   private suspend fun runRequest(request: PendingRequest) =
@@ -945,6 +953,8 @@ constructor(
         com.valerochka1337.valerochkagym.domain.autoregulation.AutoregulationEngine.calculate(
             assessmentSnapshot
         )
+    if (assessment.performanceSignal && assessmentSnapshot.suppressesCoachInitiative())
+        return skip("declined_for_exercise")
     val pendingProposal = database.coachDao().pendingProposal(workoutId)
     val state =
         CoachInitiativeState(
@@ -1010,21 +1020,14 @@ constructor(
             accountId,
             session.epoch,
             workoutId,
-            "Самостоятельно оцени последние результаты тренировки. Сигнал для проверки: ${assessment.observation} " +
+            "Самостоятельно оцени последние результаты тренировки. Сигнал для проверки: ${assessment.explanation()} " +
                 "Это внутренний контекст, не сообщение пользователя. Сверь актуальные результаты через get_workout_state. " +
-                "Подбери изменение с учётом упражнения и сразу создай предложение; не повторяй пользователю текст правил или настройки приложения.",
+                "Сопоставь историю упражнения, профиль и решения пользователя. Если причина неясна, задай один вопрос; если изменение полезно, создай карточку. Если вмешательство не нужно, верни decision=no_change.",
             assessmentSnapshot,
             sentGeneration,
             scope,
             automatic = true,
-            automaticProposal =
-                assessment.kind in
-                    setOf(
-                        com.valerochka1337.valerochkagym.domain.autoregulation.RecommendationKind
-                            .ADVISE,
-                        com.valerochka1337.valerochkagym.domain.autoregulation.RecommendationKind
-                            .ADJUST,
-                    ),
+            automaticProposal = true,
         )
     if (!enqueue(request)) return skip("enqueue_failed")
     return decision

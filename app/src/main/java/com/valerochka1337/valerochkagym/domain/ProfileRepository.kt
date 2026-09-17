@@ -34,6 +34,8 @@ data class BasicProfile(
     val preferredSessionDurationMinutes: Int? = null,
     val equipmentIds: Set<String> = emptySet(),
     val manualConstraints: String? = null,
+    val preferredRepMin: Int? = null,
+    val preferredRepMax: Int? = null,
 )
 
 /**

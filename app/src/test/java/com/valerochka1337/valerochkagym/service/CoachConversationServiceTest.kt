@@ -21,6 +21,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -35,9 +36,81 @@ import org.junit.Test
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class CoachConversationServiceTest : RoomDaoTest() {
   @Test
-  fun `first low rep set sends one AI request and saves an estimated proposal without a user message`() =
+  fun `automatic no change stays quiet and does not repeat on unchanged evidence`() = runTest {
+    val workout = activeWorkout()
+    db.profileDao()
+        .upsert(
+            com.valerochka1337.valerochkagym.data.db.entity.ProfileEntity(
+                "user",
+                "profile",
+                preferredRepMin = 6,
+                preferredRepMax = 12,
+            )
+        )
+    val next = db.workoutDao().getWorkoutFull(workout)!!.exercises.single().sets.single()
+    db.workoutDao().updateSet(next.copy(setIndex = 1))
+    db.workoutDao()
+        .insertSet(
+            next.copy(
+                id = 0,
+                syncId = "completed",
+                setIndex = 0,
+                reps = 3,
+                setType = "WORK",
+                isCompleted = true,
+                completedAt = 1000,
+            )
+        )
+    val answered = CompletableDeferred<Unit>()
+    val gateway =
+        object :
+            RecordingGateway(
+                """{"decision":"no_change","text":"Режим подходит","quick_replies":[]}"""
+            ) {
+          override suspend fun complete(
+              expectedOwner: String,
+              expectedSessionEpoch: Long?,
+              messages: List<AiApiMessage>,
+              tools: List<AiApiTool>,
+          ): AiApiChatResponse {
+            return super.complete(expectedOwner, expectedSessionEpoch, messages, tools).also {
+              answered.complete(Unit)
+            }
+          }
+        }
+    val service = conversation(gateway)
+    service.attach(
+        kotlinx.coroutines.CoroutineScope(
+            backgroundScope.coroutineContext + kotlinx.coroutines.Dispatchers.Default
+        )
+    )
+    val alerts = mutableListOf<String>()
+    backgroundScope.launch(kotlinx.coroutines.test.UnconfinedTestDispatcher(testScheduler)) {
+      service.alerts.collect { alerts += it }
+    }
+    assertTrue(service.considerInitiative(workout))
+    answered.await()
+    service.runningWorkouts.first { workout !in it }
+    assertTrue(db.coachDao().messages(workout).isEmpty())
+    assertNull(db.coachDao().pendingProposal(workout))
+    assertNull(service.considerInitiative("user", workout))
+    assertEquals(1, gateway.calls)
+    assertTrue(alerts.isEmpty())
+  }
+
+  @Test
+  fun `first unfamiliar result outside the chosen range sends one AI request and saves an estimated proposal without a user message`() =
       runTest {
         val workout = activeWorkout()
+        db.profileDao()
+            .upsert(
+                com.valerochka1337.valerochkagym.data.db.entity.ProfileEntity(
+                    "user",
+                    "profile",
+                    preferredRepMin = 6,
+                    preferredRepMax = 12,
+                )
+            )
         val next = db.workoutDao().getWorkoutFull(workout)!!.exercises.single().sets.single()
         db.workoutDao().updateSet(next.copy(setIndex = 1))
         db.workoutDao()
@@ -87,11 +160,35 @@ class CoachConversationServiceTest : RoomDaoTest() {
         )
         assertTrue(service.cancel(workout, proposal.id))
         assertNull(service.considerInitiative("user", workout))
+        db.workoutDao().updateSet(next.copy(setIndex = 2))
+        db.workoutDao()
+            .insertSet(
+                next.copy(
+                    id = 0,
+                    syncId = "another-completed",
+                    setIndex = 1,
+                    reps = 2,
+                    setType = "WORK",
+                    isCompleted = true,
+                    completedAt = 2000,
+                )
+            )
+        assertNull(service.considerInitiative("user", workout))
+        assertEquals(2, gateway.calls)
       }
 
   @Test
   fun `disabling initiative discards an in flight automatic answer and proposal`() = runTest {
     val workout = activeWorkout()
+    db.profileDao()
+        .upsert(
+            com.valerochka1337.valerochkagym.data.db.entity.ProfileEntity(
+                "user",
+                "profile",
+                preferredRepMin = 6,
+                preferredRepMax = 12,
+            )
+        )
     val next = db.workoutDao().getWorkoutFull(workout)!!.exercises.single().sets.single()
     db.workoutDao().updateSet(next.copy(setIndex = 1))
     db.workoutDao()

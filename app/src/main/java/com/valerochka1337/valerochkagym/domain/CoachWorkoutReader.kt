@@ -130,6 +130,9 @@ constructor(
               )
             }
             .filterNotNull()
+    val profile = database.profileDao().get(accountId)
+    val profileEquipment = database.profileDao().equipmentIds(accountId).toSet()
+    if (!belongsToLiveAccount(accountId, expectedSessionEpoch)) return null
     val allSets = exercises.flatMap { it.sets }
     val current = allSets.firstOrNull { !it.completed }?.syncId
     val currentIndex = allSets.indexOfFirst { it.syncId == current }
@@ -152,6 +155,16 @@ constructor(
         workoutId = workoutId,
         revision = full.workout.coachRevision,
         exercises = exercises,
+        profile =
+            CoachProfile(
+                profile?.trainingGoal,
+                profile?.experienceLevel,
+                profile?.manualConstraints,
+                profileEquipment,
+                profile?.preferredRepMin,
+                profile?.preferredRepMax,
+            ),
+        coachDecisions = CoachDecisionMemory.decode(context?.decisionMemoryJson ?: "[]"),
         currentSetId = current,
         previousSetId = previous,
         nextSetId = next,

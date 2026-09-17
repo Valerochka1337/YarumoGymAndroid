@@ -6,36 +6,15 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AdjacentSetsAutoregulationTest {
-  private val previous =
-      SnapshotSet(
-          "previous",
-          0,
-          true,
-          50.0,
-          8,
-          null,
-          completedAt = 1000,
-          setType = "WORK",
-          actualRir = 0,
-      )
-  private val current =
-      previous.copy(syncId = "current", setIndex = 1, reps = 5, completedAt = 2000)
-  private val next =
-      current.copy(
-          syncId = "next",
-          setIndex = 2,
-          completed = false,
-          completedAt = null,
-          actualRir = null,
-          setType = "UNKNOWN",
-      )
+  private val done = SnapshotSet("done", 1, true, 50.0, 8, null, 3000, setType = "WORK")
+  private val next = done.copy(syncId = "next", setIndex = 2, completed = false, completedAt = null)
 
-  private fun snapshot(
-      before: SnapshotSet = previous,
-      done: SnapshotSet = current,
-      upcoming: SnapshotSet = next,
-      rest: Int? = 120,
-  ) =
+  private fun input(
+      reps: Int = 8,
+      history: List<SnapshotHistory> = emptyList(),
+      previous: Int? = null,
+      profile: CoachProfile = CoachProfile(),
+  ): WorkoutSnapshot =
       WorkoutSnapshot(
           "owner",
           "workout",
@@ -46,197 +25,189 @@ class AdjacentSetsAutoregulationTest {
                   1,
                   "exercise",
                   "Жим",
-                  sets = listOf(before, done, upcoming),
                   type = ExerciseType.STRENGTH,
+                  sets =
+                      listOfNotNull(
+                          previous?.let {
+                            done.copy(
+                                syncId = "before",
+                                setIndex = 0,
+                                completedAt = 2500,
+                                reps = it,
+                            )
+                          },
+                          done.copy(reps = reps),
+                          next,
+                      ),
+                  history = history,
               )
           ),
-          futureRestSeconds = rest,
+          profile = profile,
+          observedAtMillis = 4000,
       )
 
-  private fun calculate(
-      before: SnapshotSet = previous,
-      done: SnapshotSet = current,
-      rest: Int? = 120,
-      weights: List<Double> = emptyList(),
-  ) =
-      AutoregulationEngine.calculate(
-          snapshot(before, done, rest = rest),
-          AutoregulationOptions(availableWeightsKg = mapOf("exercise" to weights)),
-      )
-
-  @Test
-  fun `first working set outside the rep range triggers advice without a previous set`() {
-    for (reps in listOf(2, 16)) {
-      val input = snapshot(done = current.copy(reps = reps))
-      val only = input.exercises.single()
-      val result =
-          AutoregulationEngine.calculate(
-              input.copy(
-                  exercises = listOf(only.copy(sets = only.sets.filter { it.syncId != "previous" }))
-              )
-          )
-      assertEquals(RecommendationKind.ADVISE, result.kind)
-    }
-  }
-
-  @Test
-  fun `three fewer repetitions at equal weight proposes more rest without a chat report`() {
-    val result = calculate()
-    assertEquals(RecommendationKind.ADJUST, result.kind)
-    assertEquals(
-        listOf(WorkoutChangeSet.Operation.Rest(RestAction.FUTURE_DURATION, null, 150)),
-        result.operations,
-    )
-  }
-
-  @Test
-  fun `two fewer repetitions at equal weight preserves the plan`() {
-    assertEquals(RecommendationKind.NO_CHANGE, calculate(done = current.copy(reps = 6)).kind)
-  }
-
-  @Test
-  fun `five to two at fifty kilograms recommends a lower weight and more rest`() {
-    val result =
-        calculate(
-            previous.copy(reps = 5),
-            current.copy(reps = 2),
-            weights = listOf(47.5, 50.0, 52.5),
+  private fun history(reps: Int, weight: Double = 50.0, index: Int = 1) =
+      (1..3).map {
+        SnapshotHistory(
+            it * 1000L,
+            index,
+            weight,
+            reps,
+            null,
+            setType = "WORK",
+            workoutId = "past$it",
+            setSyncId = "set$it",
         )
-    assertEquals(
-        listOf(
-            WorkoutChangeSet.Operation.EditSet("next", weightKg = 47.5),
-            WorkoutChangeSet.Operation.Rest(RestAction.FUTURE_DURATION, null, 150),
-        ),
-        result.operations,
-    )
-    assertFalse(result.operations.any { it is WorkoutChangeSet.Operation.DeleteSet })
-  }
+      }
 
   @Test
-  fun `increased weight below five recommends reduction without attributing the drop to rest`() {
-    val result =
-        calculate(
-            previous.copy(weightKg = 47.5),
-            current.copy(reps = 4),
-            weights = listOf(47.5, 50.0),
-        )
-    assertEquals(
-        listOf(WorkoutChangeSet.Operation.EditSet("next", weightKg = 47.5)),
-        result.operations,
-    )
-    assertEquals(
+  fun `three and twenty repetitions alone do not invent an obligatory range`() {
+    for (reps in listOf(3, 20)) assertEquals(
         RecommendationKind.NO_CHANGE,
-        calculate(previous.copy(weightKg = 47.5), current.copy(reps = 5)).kind,
+        AutoregulationEngine.calculate(input(reps)).kind,
     )
   }
 
   @Test
-  fun `more than fifteen recommends a small available increase even with four plus RIR`() {
-    val result =
-        calculate(
-            done = current.copy(reps = 16, actualRir = null, actualRirAtLeastFour = true),
-            weights = listOf(50.0, 52.5, 55.0),
-        )
-    assertEquals(
-        listOf(WorkoutChangeSet.Operation.EditSet("next", weightKg = 52.5)),
-        result.operations,
-    )
-    assertEquals(RecommendationKind.NO_CHANGE, calculate(done = current.copy(reps = 15)).kind)
-  }
-
-  @Test
-  fun `unknown equipment produces advice without inventing a weight or waiting for a reply`() {
-    val result = calculate(previous.copy(reps = 5), current.copy(reps = 2), rest = null)
-    assertEquals(RecommendationKind.ADVISE, result.kind)
-    assertTrue(result.operations.isEmpty())
-    assertTrue(result.explanation().contains("снизить вес"))
-    assertTrue(result.explanation().contains("увеличить отдых"))
-    val decision =
-        CoachInitiativePolicy.next(
-            CoachInitiativeState(welcomed = true),
-            0,
-            emptyList(),
-            emptyList(),
-            assessment = result,
-        )!!
-    assertFalse(decision.nextState.pendingInteraction)
-    assertNull(
-        CoachInitiativePolicy.next(
-            decision.nextState,
-            1,
-            emptyList(),
-            emptyList(),
-            assessment = result,
-        )
-    )
-  }
-
-  @Test
-  fun `warmup and interrupted previous sets do not trigger comparison`() {
-    for (before in
-        listOf(
-            previous.copy(setType = "WARMUP"),
-            previous.copy(reportedFeelings = setOf("INTERRUPTED")),
-        )) {
-      assertEquals(RecommendationKind.NO_CHANGE, calculate(before).kind)
-    }
-  }
-
-  @Test
-  fun `planned effort and pain take precedence over rep thresholds`() {
-    assertEquals(
+  fun `stable personal history takes precedence over a general preferred range`() {
+    for (reps in listOf(3, 20)) assertEquals(
         RecommendationKind.NO_CHANGE,
-        calculate(done = current.copy(reps = 2, reportedFeelings = setOf("PLANNED_EFFORT"))).kind,
+        AutoregulationEngine.calculate(
+                input(
+                    reps,
+                    history(reps),
+                    profile = CoachProfile(preferredRepMin = 6, preferredRepMax = 12),
+                )
+            )
+            .kind,
     )
-    val pain = calculate(done = current.copy(reps = 2, reportedFeelings = setOf("PAIN")))
-    assertEquals(RecommendationKind.CLARIFY, pain.kind)
-    assertTrue(pain.operations.isEmpty())
   }
 
   @Test
-  fun `different upcoming load is preserved and a weight step beyond five percent is not invented`() {
-    val input = snapshot(done = current.copy(reps = 16), upcoming = next.copy(weightKg = 40.0))
+  fun `first unfamiliar result outside the preference asks intent without a weight change`() {
     val result =
         AutoregulationEngine.calculate(
-            input,
-            AutoregulationOptions(availableWeightsKg = mapOf("exercise" to listOf(52.5))),
+            input(3, profile = CoachProfile(preferredRepMin = 6, preferredRepMax = 12))
+        )
+    assertEquals(RecommendationKind.CLARIFY, result.kind)
+    assertTrue(result.performanceSignal)
+    assertTrue(result.operations.isEmpty())
+  }
+
+  @Test
+  fun `persistent outside range invites an assessment without prescribing a guessed load`() {
+    val result =
+        AutoregulationEngine.calculate(
+            input(
+                4,
+                previous = 4,
+                profile = CoachProfile(preferredRepMin = 6, preferredRepMax = 12),
+            )
         )
     assertEquals(RecommendationKind.ADVISE, result.kind)
     assertTrue(result.operations.isEmpty())
+  }
+
+  @Test
+  fun `stable eight repetitions against twelve historically creates a meaningful signal`() {
+    val result = AutoregulationEngine.calculate(input(8, history(12), previous = 8))
+    assertEquals(RecommendationKind.ADVISE, result.kind)
+    assertTrue(result.reason.contains("12.0"))
+    assertTrue(result.operations.isEmpty())
+  }
+
+  @Test
+  fun `improvement over comparable history can prompt assessment`() {
     assertEquals(
         RecommendationKind.ADVISE,
-        calculate(done = current.copy(reps = 16), weights = listOf(60.0)).kind,
+        AutoregulationEngine.calculate(input(12, history(8))).kind,
     )
   }
 
   @Test
-  fun `rest increase extends the active timed rest and never shortens a long rest`() {
-    val result =
-        AutoregulationEngine.calculate(snapshot().copy(rest = SnapshotRest("timer", 120, 90, 1000)))
-    assertTrue(WorkoutChangeSet.Operation.Rest(RestAction.EXTEND, "timer", 30) in result.operations)
-    val long = calculate(rest = 360)
-    assertTrue(long.operations.isEmpty())
-    val capped = calculate(rest = 290)
+  fun `known decline at the same set index does not trigger extra rest`() {
     assertEquals(
-        listOf(WorkoutChangeSet.Operation.Rest(RestAction.FUTURE_DURATION, null, 300)),
-        capped.operations,
+        RecommendationKind.NO_CHANGE,
+        AutoregulationEngine.calculate(input(8, history(8), previous = 12)).kind,
     )
   }
 
   @Test
-  fun `actual repetitions override copied plan values and unrelated exercises are not compared`() {
-    val result = calculate(done = current.copy(reps = 8, actualReps = 5))
-    assertEquals(RecommendationKind.ADJUST, result.kind)
-    val input = snapshot()
-    val section = input.exercises.single()
-    val separated =
-        input.copy(
-            exercises =
-                listOf(
-                    section.copy(sets = listOf(current, next)),
-                    section.copy(sectionId = "other", exerciseId = 2, sets = listOf(previous)),
-                )
+  fun `unexplained adjacent decline asks cause instead of extending a timer`() {
+    val result =
+        AutoregulationEngine.calculate(input(8, previous = 12).copy(futureRestSeconds = 120))
+    assertEquals(RecommendationKind.CLARIFY, result.kind)
+    assertTrue(result.operations.isEmpty())
+  }
+
+  @Test
+  fun `different weight index old interrupted and warmup history are not a baseline`() {
+    val candidates =
+        listOf(
+            history(12, 60.0),
+            history(12, index = 0),
+            history(12).map { it.copy(completedAt = -100L * 24 * 60 * 60 * 1000) },
+            history(12).map { it.copy(interrupted = true) },
+            history(12).map { it.copy(setType = "WARMUP") },
+            history(12).take(1),
         )
-    assertEquals(RecommendationKind.NO_CHANGE, AutoregulationEngine.calculate(separated).kind)
+    candidates.forEach {
+      assertEquals(RecommendationKind.NO_CHANGE, AutoregulationEngine.calculate(input(8, it)).kind)
+    }
+  }
+
+  @Test
+  fun `duplicate sections at the same index do not inflate historical confidence`() {
+    val history =
+        history(12).flatMap { listOf(it, it.copy(setSyncId = it.setSyncId + "duplicate")) }
+    assertEquals(
+        RecommendationKind.NO_CHANGE,
+        AutoregulationEngine.calculate(input(8, history)).kind,
+    )
+  }
+
+  @Test
+  fun `stale prefilled targets do not become an expected result`() {
+    val initial = input(8)
+    val changed =
+        initial.copy(
+            exercises =
+                initial.exercises.map { e ->
+                  e.copy(sets = e.sets.map { it.copy(targetReps = 20, originalReps = 20) })
+                }
+        )
+    assertEquals(RecommendationKind.NO_CHANGE, AutoregulationEngine.calculate(changed).kind)
+  }
+
+  @Test
+  fun `explicit planned effort and warmup prevent performance intervention`() {
+    for (set in
+        listOf(
+            done.copy(setType = "WARMUP"),
+            done.copy(reportedFeelings = setOf("PLANNED_EFFORT")),
+        )) {
+      val initial = input(8, history(12))
+      assertEquals(
+          RecommendationKind.NO_CHANGE,
+          AutoregulationEngine.calculate(
+                  initial.copy(
+                      exercises = initial.exercises.map { it.copy(sets = listOf(set, next)) }
+                  )
+              )
+              .kind,
+      )
+    }
+  }
+
+  @Test
+  fun `profile change invalidates previously calculated evidence`() {
+    val input = input()
+    assertNotEquals(
+        AutoregulationEngine.calculate(input).evidenceKey,
+        AutoregulationEngine.calculate(
+                input.copy(profile = CoachProfile(preferredRepMin = 10, preferredRepMax = 15))
+            )
+            .evidenceKey,
+    )
   }
 }

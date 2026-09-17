@@ -22,13 +22,13 @@ class CoachAlertNotificationFactoryTest {
   private val context = ApplicationProvider.getApplicationContext<Application>()
 
   @Test
-  fun `coach channel is quiet private and does not show a badge`() {
+  fun `coach message channel alerts while keeping content private`() {
     val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
     CoachAlertNotificationFactory.createChannel(manager)
     val channel = manager.getNotificationChannel(CoachAlertNotificationFactory.CHANNEL_ID)
-    assertEquals(NotificationManager.IMPORTANCE_LOW, channel.importance)
-    assertNull(channel.sound)
-    assertFalse(channel.shouldVibrate())
+    assertEquals(NotificationManager.IMPORTANCE_HIGH, channel.importance)
+    assertNotNull(channel.sound)
+    assertTrue(channel.shouldVibrate())
     assertFalse(channel.canShowBadge())
     val notification = CoachAlertNotificationFactory.build(context, "workout-one")
     assertEquals(Notification.VISIBILITY_PRIVATE, notification.visibility)
