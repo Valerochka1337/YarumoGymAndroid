@@ -19,12 +19,17 @@ enum class SetEffort(val label: String, val rir: Int? = null) {
       )
 
   companion object {
-    fun labelFor(set: WorkoutSetEntity): String =
+    fun selectedFor(set: WorkoutSetEntity): SetEffort? =
         when {
-          set.setType == "WARMUP" -> WARMUP.label
-          set.actualRirAtLeastFour -> FOUR_PLUS.label
-          set.actualRir == 0 -> FAILURE.label
-          else -> set.actualRir?.toString() ?: "Не указано"
+          set.setType == "WARMUP" -> WARMUP
+          set.actualRirAtLeastFour -> FOUR_PLUS
+          set.actualRir == 0 -> FAILURE
+          set.actualRir == 1 -> ONE
+          set.actualRir == 2 -> TWO
+          set.actualRir == 3 -> THREE
+          else -> null
         }
+
+    fun labelFor(set: WorkoutSetEntity): String = selectedFor(set)?.label ?: "Не указано"
   }
 }

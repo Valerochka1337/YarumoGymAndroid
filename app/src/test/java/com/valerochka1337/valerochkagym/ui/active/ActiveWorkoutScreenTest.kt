@@ -5,6 +5,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertHeightIsAtLeast
 import androidx.compose.ui.test.assertIsDisplayed
@@ -12,6 +13,7 @@ import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.unit.Density
@@ -25,6 +27,7 @@ import com.valerochka1337.valerochkagym.data.db.entity.WorkoutSetEntity
 import com.valerochka1337.valerochkagym.data.db.relation.WorkoutExerciseWithSets
 import com.valerochka1337.valerochkagym.data.db.relation.WorkoutFull
 import com.valerochka1337.valerochkagym.domain.ExercisePersonalHint
+import com.valerochka1337.valerochkagym.domain.SetEffort
 import com.valerochka1337.valerochkagym.service.RestTimerState
 import com.valerochka1337.valerochkagym.service.heartrate.HeartRateConnectionState
 import com.valerochka1337.valerochkagym.service.heartrate.HeartRateReading
@@ -49,22 +52,14 @@ class ActiveWorkoutScreenTest {
   @get:Rule val composeRule = createComposeRule()
 
   @Test
-  fun `effort selector records range warmup and clearing at large font scale`() {
+  fun `effort selector styles every allowed value at large font scale`() {
     val set = mutableStateOf(WorkoutSetEntity(workoutExerciseId = 1, setIndex = 0))
     composeRule.setContent {
       CompositionLocalProvider(LocalDensity provides Density(density = 1f, fontScale = 2f)) {
         GymTheme {
           SetEffortField(
               set.value,
-              onSelect = { effort ->
-                set.value =
-                    effort?.applyTo(set.value)
-                        ?: set.value.copy(
-                            actualRir = null,
-                            actualRirAtLeastFour = false,
-                            setType = "UNKNOWN",
-                        )
-              },
+              onSelect = { effort -> set.value = effort.applyTo(set.value) },
           )
         }
       }
@@ -79,6 +74,7 @@ class ActiveWorkoutScreenTest {
     listOf("Отказ", "1", "2", "3", "4+", "Разминка").forEach {
       composeRule.onNodeWithText(it).assertIsDisplayed()
     }
+    composeRule.onNodeWithText("Не указано").assertDoesNotExist()
     composeRule.onNodeWithText("4+").performClick()
     composeRule.onNodeWithText("4+").assertIsDisplayed()
     assertTrue(set.value.actualRirAtLeastFour)
@@ -87,10 +83,89 @@ class ActiveWorkoutScreenTest {
     composeRule.onNodeWithText("Разминка").performClick()
     assertFalse(set.value.actualRirAtLeastFour)
     assertEquals("WARMUP", set.value.setType)
-    open()
-    composeRule.onNodeWithText("Не указано").performClick()
-    composeRule.onNodeWithText("Не указано").assertIsDisplayed()
-    assertEquals("UNKNOWN", set.value.setType)
+  }
+
+  @Test
+  fun `completing a strength set requires RIR and highlights its selector`() {
+    val workout =
+        mutableStateOf(
+            workoutWithIncompleteExercises().updateSet(FIRST_SET_ID) {
+              it.copy(setType = "UNKNOWN", actualRir = null, actualRirAtLeastFour = false)
+            }
+        )
+    val completedSetIds = mutableListOf<Long>()
+    val actions =
+        noOpSetActions(
+            complete = { completedSetIds += it },
+            setEffort = { setId, effort ->
+              requireNotNull(effort)
+              workout.value = workout.value.updateSet(setId, effort::applyTo)
+            },
+        )
+    renderActiveWorkout(workout, setActions = actions)
+
+    completeFocusedSet()
+
+    assertTrue(completedSetIds.isEmpty())
+    composeRule.onNodeWithText("Выберите RIR").assertDoesNotExist()
+    assertEquals(
+        "Выберите RIR",
+        composeRule
+            .onNodeWithTag("set-effort-$FIRST_SET_ID")
+            .fetchSemanticsNode()
+            .config[SemanticsProperties.Error],
+    )
+
+    composeRule.onNodeWithTag("set-effort-$FIRST_SET_ID").performClick()
+    composeRule.onNodeWithText("2").performClick()
+    completeFocusedSet()
+
+    assertEquals(listOf(FIRST_SET_ID), completedSetIds)
+  }
+
+  @Test
+  fun `RIR keeps the same column in completed and future sets`() {
+    val workout =
+        mutableStateOf(
+            workoutWithIncompleteExercises()
+                .updateSet(FIRST_SET_ID, SetEffort.WARMUP::applyTo)
+                .updateSet(THIRD_SET_ID, SetEffort.ONE::applyTo)
+                .markSetCompleted(FIRST_SET_ID),
+        )
+    renderActiveWorkout(workout)
+    composeRule.onNodeWithContentDescription("Подходы: Жим лёжа").performClick()
+    composeRule.onNodeWithContentDescription("Подходы: Присед").performClick()
+
+    val completedRir =
+        composeRule
+            .onNodeWithTag("set-effort-$FIRST_SET_ID", useUnmergedTree = true)
+            .fetchSemanticsNode()
+            .boundsInRoot
+    val futureRir =
+        composeRule.onNodeWithTag("set-effort-$THIRD_SET_ID").fetchSemanticsNode().boundsInRoot
+
+    assertEquals(futureRir.left, completedRir.left, 0.5f)
+    assertEquals(futureRir.right, completedRir.right, 0.5f)
+    assertEquals(
+        composeRule
+            .onNodeWithText("RIR:1", useUnmergedTree = true)
+            .fetchSemanticsNode()
+            .boundsInRoot
+            .left,
+        composeRule
+            .onNodeWithText("RIR:Разминка", useUnmergedTree = true)
+            .fetchSemanticsNode()
+            .boundsInRoot
+            .left,
+        0.5f,
+    )
+    assertFalse(
+        composeRule
+            .onNodeWithTag("set-effort-$FIRST_SET_ID", useUnmergedTree = true)
+            .fetchSemanticsNode()
+            .config
+            .contains(SemanticsActions.OnClick),
+    )
   }
 
   @Test
@@ -410,6 +485,7 @@ class ActiveWorkoutScreenTest {
             setId = FIRST_SET_ID,
             type = ExerciseType.STRENGTH,
             token = 1L,
+            effort = SetEffort.TWO,
             weightKg = "72.5",
             reps = "8",
         ),
@@ -419,6 +495,26 @@ class ActiveWorkoutScreenTest {
     composeRule.onNodeWithText("Повторы").assertIsDisplayed()
     composeRule.onNodeWithText("72.5").assertIsDisplayed()
     composeRule.onNodeWithText("8").assertIsDisplayed()
+  }
+
+  @Test
+  fun `strength edit fields change RIR together with completed values`() {
+    var selected: SetEffort? = null
+    renderCompletedEditFields(
+        draft =
+            CompletedSetEditDraft(
+                setId = FIRST_SET_ID,
+                type = ExerciseType.STRENGTH,
+                token = 1L,
+                effort = SetEffort.TWO,
+            ),
+        onEffortChange = { selected = it },
+    )
+
+    composeRule.onNodeWithTag("completed-set-effort").performClick()
+    composeRule.onNodeWithText("Разминка").performClick()
+
+    assertEquals(SetEffort.WARMUP, selected)
   }
 
   @Test
@@ -593,7 +689,10 @@ class ActiveWorkoutScreenTest {
     composeRule.waitForIdle()
   }
 
-  private fun renderCompletedEditFields(draft: CompletedSetEditDraft) {
+  private fun renderCompletedEditFields(
+      draft: CompletedSetEditDraft,
+      onEffortChange: (SetEffort) -> Unit = {},
+  ) {
     composeRule.setContent {
       GymTheme {
         CompletedSetEditFields(
@@ -603,6 +702,7 @@ class ActiveWorkoutScreenTest {
             onDurationChange = {},
             onSpeedChange = {},
             onInclineChange = {},
+            onEffortChange = onEffortChange,
         )
       }
     }
@@ -648,6 +748,8 @@ class ActiveWorkoutScreenTest {
       editNote: (Long) -> Unit = {},
       editPersonalHint: (Long) -> Unit = {},
       unpinPersonalHint: (Long) -> Unit = {},
+      complete: (Long) -> Unit = {},
+      setEffort: (Long, SetEffort?) -> Unit = { _, _ -> },
   ) =
       SetActions(
           stepWeight = { _, _ -> },
@@ -660,10 +762,11 @@ class ActiveWorkoutScreenTest {
           setDuration = { _, _ -> },
           setSpeed = { _, _ -> },
           setIncline = { _, _ -> },
-          complete = { _ -> },
+          complete = complete,
           uncomplete = { _ -> },
           addSet = { _ -> },
           deleteSet = { _ -> },
+          setEffort = setEffort,
           editNote = editNote,
           editPersonalHint = editPersonalHint,
           unpinPersonalHint = unpinPersonalHint,
@@ -737,6 +840,8 @@ class ActiveWorkoutScreenTest {
                       setIndex = 0,
                       weightKg = 60.0,
                       reps = 8,
+                      setType = "WORK",
+                      actualRir = 2,
                   ),
               ),
       )
@@ -750,6 +855,20 @@ class ActiveWorkoutScreenTest {
                         exercise.sets.map { set ->
                           if (set.id == setId) set.copy(isCompleted = true) else set
                         },
+                )
+              },
+      )
+
+  private fun WorkoutFull.updateSet(
+      setId: Long,
+      transform: (WorkoutSetEntity) -> WorkoutSetEntity,
+  ): WorkoutFull =
+      copy(
+          exercises =
+              exercises.map { exercise ->
+                exercise.copy(
+                    sets =
+                        exercise.sets.map { set -> if (set.id == setId) transform(set) else set },
                 )
               },
       )
