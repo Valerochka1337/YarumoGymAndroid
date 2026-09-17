@@ -16,6 +16,17 @@ object LocalWorkoutCommandParser {
     }
     val normalized = normalize(text)
     val all = snapshot.exercises.flatMap { it.sets }.associateBy { it.syncId }
+    Regex("прошлый подход rir (10|[0-9])").matchEntire(normalized)?.let { match ->
+      val previous = all[anchors.previousSetId]?.takeIf { it.completed } ?: return null
+      return grant(
+          WorkoutChangeSet.Operation.EditSet(
+              previous.syncId,
+              actualRir = match.groupValues[1].toInt(),
+              setType = "WORK",
+          ),
+          anchors,
+      )
+    }
     // "Instead of" is only unambiguous if one anchored candidate has that stated reference.
     val result = Regex("сделал (\\d+) вместо (\\d+)").matchEntire(normalized) ?: return null
     val reps = result.groupValues[1].toIntOrNull()?.takeIf { it in 0..10000 } ?: return null

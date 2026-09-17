@@ -3,6 +3,7 @@ package com.valerochka1337.valerochkagym.domain
 import com.valerochka1337.valerochkagym.data.backend.BackendSessionStore
 import com.valerochka1337.valerochkagym.data.db.GymDatabase
 import com.valerochka1337.valerochkagym.data.db.dao.CoachHistorySet
+import com.valerochka1337.valerochkagym.diagnostics.CoachDiagnostics
 import com.valerochka1337.valerochkagym.service.RestTimerEngine
 import com.valerochka1337.valerochkagym.service.RestTimerState
 import com.valerochka1337.valerochkagym.service.heartrate.HeartRateMonitor
@@ -26,6 +27,23 @@ constructor(
       accountId: String,
       workoutId: String,
       expectedSessionEpoch: Long? = null,
+  ): WorkoutSnapshot? =
+      CoachDiagnostics.trace("context.snapshot") {
+        readSnapshot(accountId, workoutId, expectedSessionEpoch).also {
+          CoachDiagnostics.event(
+              "context.snapshot.result",
+              "available" to (it != null),
+              "revision" to it?.revision,
+              "exercises" to it?.exercises?.size,
+              "sets" to it?.exercises?.sumOf { exercise -> exercise.sets.size },
+          )
+        }
+      }
+
+  private suspend fun readSnapshot(
+      accountId: String,
+      workoutId: String,
+      expectedSessionEpoch: Long?,
   ): WorkoutSnapshot? {
     if (!belongsToLiveAccount(accountId, expectedSessionEpoch)) return null
     val full = database.workoutDao().getWorkoutFull(workoutId) ?: return null
@@ -83,14 +101,16 @@ constructor(
                                 actualSpeedKmh = set.actualSpeedKmh,
                                 actualInclinePct = set.actualInclinePct,
                                 reportedFeelings = set.reportedFeelingsJson.decodeStrings(),
+                                actualRir = set.actualRir,
+                                actualRirAtLeastFour = set.actualRirAtLeastFour,
                             )
                           },
                   history =
-                      database.workoutDao().lastCompletedSetsForExercise(exercise.id).mapNotNull {
-                          set ->
-                        set.completedAt?.let { completedAt ->
+                      database.coachDao().exerciseHistory(exercise.id, 3).map { historical ->
+                        val set = historical.set
+                        run {
                           SnapshotHistory(
-                              completedAt,
+                              set.completedAt ?: historical.historyWorkoutFinishedAt,
                               set.setIndex,
                               set.weightKg,
                               set.reps,
@@ -98,6 +118,12 @@ constructor(
                               set.speedKmh,
                               set.inclinePct,
                               set.setType,
+                              workoutId = historical.historyWorkoutId,
+                              setSyncId = set.syncId,
+                              actualRir = set.actualRir,
+                              actualRirAtLeastFour = set.actualRirAtLeastFour,
+                              interrupted =
+                                  "INTERRUPTED" in set.reportedFeelingsJson.decodeStrings(),
                           )
                         }
                       },
@@ -140,6 +166,18 @@ constructor(
             } ?: context?.availableTimeMinutes,
         excludedExerciseIds = context?.excludedExerciseIdsJson?.decodeLongs().orEmpty(),
         feelings = allSets.flatMap { it.reportedFeelings }.toSet(),
+        futureRestSeconds = context?.futureRestSeconds,
+        autoregulationOptions =
+            runCatching {
+                  json.decodeFromString<
+                      com.valerochka1337.valerochkagym.domain.autoregulation.AutoregulationOptions
+                  >(
+                      context?.autoregulationOptionsJson ?: "{}"
+                  )
+                }
+                .getOrDefault(
+                    com.valerochka1337.valerochkagym.domain.autoregulation.AutoregulationOptions()
+                ),
         pulse =
             heartRateMonitor?.reading?.value?.freshAt(System.currentTimeMillis())?.let {
               SnapshotPulse(it.bpm, it.updatedAtMillis)

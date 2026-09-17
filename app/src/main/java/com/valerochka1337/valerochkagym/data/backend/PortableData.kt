@@ -17,7 +17,13 @@ class PortableData(private val db: SupportSQLiteDatabase) {
     encodeDefaults = true
   }
   private val booleans =
-      setOf("isCustom", "needsMuscleMapReview", "inventoryConfigured", "isCompleted")
+      setOf(
+          "isCustom",
+          "needsMuscleMapReview",
+          "inventoryConfigured",
+          "isCompleted",
+          "actualRirAtLeastFour",
+      )
   private val localFields =
       setOf("id", "syncId", "uploadStatus", "uploadError", "origin", "archived")
 
@@ -41,6 +47,9 @@ class PortableData(private val db: SupportSQLiteDatabase) {
           "reportedFeelingsJson",
           "restSnapshotJson",
           "coachMutationRevision",
+          "actualRir",
+          "targetRir", // Legacy history only; not exposed to the coach.
+          "actualRirAtLeastFour",
       ) +
           listOf("original", "target", "actual").flatMap { prefix ->
             loadFields.map { prefix + it }
@@ -710,6 +719,33 @@ class PortableData(private val db: SupportSQLiteDatabase) {
                     JsonPrimitive(section),
                     e.getValue("sets").jsonArray.map { item ->
                       val incoming = item.jsonObject
+                      for (field in listOf("actualRir", "targetRir")) {
+                        val value = incoming[field]
+                        require(
+                            value == null ||
+                                value == JsonNull ||
+                                (value is JsonPrimitive &&
+                                    !value.isString &&
+                                    value.intOrNull in 0..10)
+                        ) {
+                          "Invalid RIR"
+                        }
+                      }
+                      val range = incoming["actualRirAtLeastFour"]
+                      require(
+                          range == null ||
+                              (range is JsonPrimitive &&
+                                  !range.isString &&
+                                  range.booleanOrNull != null)
+                      ) {
+                        "Invalid RIR range"
+                      }
+                      require(
+                          range?.jsonPrimitive?.booleanOrNull != true ||
+                              incoming["actualRir"].let { it == null || it == JsonNull }
+                      ) {
+                        "RIR range conflicts with exact RIR"
+                      }
                       // Old snapshots contain no goals or sensations. Do not invent them from
                       // results.
                       val defaults =
@@ -721,6 +757,9 @@ class PortableData(private val db: SupportSQLiteDatabase) {
                                   "setType" to JsonPrimitive("UNKNOWN"),
                                   "reportedFeelingsJson" to JsonPrimitive("[]"),
                                   "restSnapshotJson" to JsonNull,
+                                  "actualRir" to JsonNull,
+                                  "targetRir" to JsonNull,
+                                  "actualRirAtLeastFour" to JsonPrimitive(false),
                                   "coachMutationRevision" to JsonPrimitive(0),
                                   "syncId" to
                                       (previousSets[incoming.s("setIndex")]?.get("syncId")

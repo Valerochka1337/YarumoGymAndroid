@@ -21,4 +21,5 @@ data class AnalyticsSetRow(
     val speedKmh: Double?,
     val inclinePct: Double?,
     val completedAt: Long,
+    val setType: String = "UNKNOWN",
 )

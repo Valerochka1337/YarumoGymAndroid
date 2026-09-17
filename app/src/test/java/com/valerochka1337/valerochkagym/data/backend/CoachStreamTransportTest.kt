@@ -20,6 +20,43 @@ import org.junit.Test
 
 class CoachStreamTransportTest {
   @Test
+  fun `stream recovers after HTTP errors and emits each event once`() = runBlocking {
+    var calls = 0
+    val waits = mutableListOf<Long>()
+    val bodies = mutableListOf<String>()
+    val client =
+        OkHttpClient.Builder()
+            .addInterceptor { chain ->
+              calls++
+              bodies += okio.Buffer().also { chain.request().body!!.writeTo(it) }.readUtf8()
+              response(
+                  chain.request(),
+                  if (calls < 3) 503 else 200,
+                  if (calls < 3) "{}"
+                  else "event:text_delta\ndata:x\n\nevent:completed\ndata:{}\n\n",
+              )
+            }
+            .build()
+    try {
+      val events =
+          BackendApi(Store(), client, "https://test.invalid/") { waits += it }
+              .authorizedEventStream(
+                  "/ai/coach-turn/stream",
+                  """{"requestId":"stable"}""".encodeToByteArray(),
+                  "owner",
+                  0,
+              )
+              .toList()
+      assertEquals(3, calls)
+      assertEquals(listOf(1000L, 2000L), waits)
+      assertEquals(1, bodies.distinct().size)
+      assertEquals(listOf("text_delta", "completed"), events.map { it.event })
+    } finally {
+      client.dispatcher.executorService.shutdown()
+    }
+  }
+
+  @Test
   fun `stream sends one pinned post and surfaces deltas and terminal event`() = runBlocking {
     var count = 0
     val client =
@@ -54,39 +91,45 @@ class CoachStreamTransportTest {
   }
 
   @Test
-  fun `http errors network failure and premature eof never repeat the post`() = runBlocking {
-    for (status in listOf(401, 403, 404, 429, 503, 200, -1)) {
-      var count = 0
-      val client =
-          OkHttpClient.Builder()
-              .retryOnConnectionFailure(true)
-              .addInterceptor { chain ->
-                count++
-                if (status == -1) throw IOException("broken network")
-                response(
-                    chain.request(),
-                    status,
-                    if (status == 200) "event:text_delta\ndata:x\n\n"
-                    else "{\"code\":\"test_error\"}",
-                )
-              }
-              .build()
-      try {
-        val failure =
-            runCatching {
-                  BackendApi(Store(), client, "https://test.invalid/")
-                      .authorizedEventStream("/ai/coach-turn/stream", byteArrayOf(), "owner", 0)
-                      .collect()
-                }
-                .exceptionOrNull()
-        assertNotNull(failure)
-        if (status > 200) assertEquals(status, (failure as BackendException).status)
-        assertEquals(1, count)
-      } finally {
-        client.dispatcher.executorService.shutdown()
+  fun `http errors retry three times while network failure and premature eof never replay`() =
+      runBlocking {
+        for (status in listOf(401, 403, 404, 429, 503, 200, -1)) {
+          val waits = mutableListOf<Long>()
+          var count = 0
+          val client =
+              OkHttpClient.Builder()
+                  .retryOnConnectionFailure(true)
+                  .addInterceptor { chain ->
+                    count++
+                    if (status == -1) throw IOException("broken network")
+                    response(
+                        chain.request(),
+                        status,
+                        if (status == 200) "event:text_delta\ndata:x\n\n"
+                        else "{\"code\":\"test_error\"}",
+                    )
+                  }
+                  .build()
+          try {
+            val failure =
+                runCatching {
+                      BackendApi(Store(), client, "https://test.invalid/") { waits += it }
+                          .authorizedEventStream("/ai/coach-turn/stream", byteArrayOf(), "owner", 0)
+                          .collect()
+                    }
+                    .exceptionOrNull()
+            assertNotNull(failure)
+            if (status > 200) assertEquals(status, (failure as BackendException).status)
+            assertEquals(if (status > 200) 4 else 1, count)
+            assertEquals(
+                if (status > 200) listOf(1000L, 2000L, 4000L) else emptyList<Long>(),
+                waits,
+            )
+          } finally {
+            client.dispatcher.executorService.shutdown()
+          }
+        }
       }
-    }
-  }
 
   @Test
   fun `cancellation and account change cancel a pending call`() = runBlocking {

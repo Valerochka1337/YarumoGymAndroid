@@ -221,6 +221,9 @@ internal object MigrationRecoveryFixtures {
             "reportedFeelingsJson",
             "restSnapshotJson",
             "coachMutationRevision",
+            "targetRir",
+            "actualRir",
+            "actualRirAtLeastFour",
         )) db.execSQL("ALTER TABLE workout_sets DROP COLUMN $column")
   }
 

@@ -4,6 +4,8 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.AtomicFile
+import com.valerochka1337.valerochkagym.diagnostics.CoachDiagnostics
+import com.valerochka1337.valerochkagym.diagnostics.coachHttpFailureReason
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.security.KeyStore
@@ -17,10 +19,15 @@ import javax.inject.Singleton
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.channels.trySendBlocking
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.buffer
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.retryWhen
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -233,7 +240,9 @@ class BackendApi @Inject constructor(private val tokens: BackendSessionStore) : 
       tokens: BackendSessionStore,
       client: OkHttpClient,
       baseUrl: String,
+      retryDelay: suspend (Long) -> Unit = { delay(it) },
   ) : this(tokens) {
+    this.retryDelay = retryDelay
     this.client = client
     this.baseUrl = baseUrl.toHttpUrl().toString().ensureTrailingSlash()
   }
@@ -246,6 +255,42 @@ class BackendApi @Inject constructor(private val tokens: BackendSessionStore) : 
   private var client = defaultClient()
   private var baseUrl = DEFAULT_BASE_URL
   private val refreshMutex = Mutex()
+  private var retryDelay: suspend (Long) -> Unit = { delay(it) }
+
+  private suspend fun waitBeforeAiRetry(path: String, failure: BackendException, retry: Int) {
+    val waitMillis = 1000L shl retry
+    if (path.startsWith("/ai/coach")) {
+      CoachDiagnostics.event(
+          "network.http.retry",
+          "http_status" to failure.status,
+          "reason" to coachHttpFailureReason(failure),
+          "retry" to retry + 1,
+          "wait_ms" to waitMillis,
+      )
+    }
+    retryDelay(waitMillis)
+  }
+
+  private suspend fun <T> retryAiHttp(path: String, block: suspend () -> T): T {
+    val login = tokens.snapshot()
+    var retries = 0
+    while (true) {
+      kotlinx.coroutines.currentCoroutineContext().ensureActive()
+      val current = tokens.snapshot()
+      if (
+          retries > 0 &&
+              (current?.epoch != login?.epoch || current?.tokens?.userId != login?.tokens?.userId)
+      ) {
+        throw BackendException(401, "owner_changed", "Аккаунт изменился")
+      }
+      try {
+        return block()
+      } catch (failure: BackendException) {
+        if (!path.startsWith("/ai/") || !failure.fromHttpResponse || retries == 3) throw failure
+        waitBeforeAiRetry(path, failure, retries++)
+      }
+    }
+  }
 
   private suspend fun execute(
       method: String,
@@ -292,8 +337,14 @@ class BackendApi @Inject constructor(private val tokens: BackendSessionStore) : 
         .forEach { (name, value) -> request.header(name, value) }
     // A longer call deadline does not extend OkHttp's separate socket read timeout.
     val requestClient =
-        if (path == "/ai/coach-turn") {
-          client.newBuilder().readTimeout(60, TimeUnit.SECONDS).build()
+        if (path.startsWith("/ai/")) {
+          client
+              .newBuilder()
+              .retryOnConnectionFailure(false)
+              .followRedirects(false)
+              .followSslRedirects(false)
+              .apply { if (path == "/ai/coach-turn") readTimeout(60, TimeUnit.SECONDS) }
+              .build()
         } else client
     val call = requestClient.newCall(request.build())
     if (path == "/ai/coach-turn" || path == "/ai/coach-models") {
@@ -359,6 +410,7 @@ class BackendApi @Inject constructor(private val tokens: BackendSessionStore) : 
           response.code,
           error?.get("code")?.jsonPrimitive?.content ?: "http_error",
           error?.get("message")?.jsonPrimitive?.content ?: "Сервер недоступен. Повторите позже",
+          fromHttpResponse = true,
       )
     }
     return BackendResponse(parsed, bytes, accepted, owner, sessionEpoch)
@@ -366,7 +418,9 @@ class BackendApi @Inject constructor(private val tokens: BackendSessionStore) : 
 
   override suspend fun public(method: String, path: String, body: JsonElement?): JsonElement =
       withContext(Dispatchers.IO) {
-        execute(method, path, body?.toString()?.encodeToByteArray(), null).body
+        retryAiHttp(path) {
+          execute(method, path, body?.toString()?.encodeToByteArray(), null).body
+        }
       }
 
   override suspend fun authorized(method: String, path: String, body: JsonElement?): JsonElement =
@@ -405,87 +459,112 @@ class BackendApi @Inject constructor(private val tokens: BackendSessionStore) : 
       maxResponseBytes: Int?,
   ): BackendResponse =
       withContext(Dispatchers.IO) {
-        val dispatch =
-            tokens.snapshot() ?: throw BackendException(401, "unauthorized", "Войдите в аккаунт")
-        val session = dispatch.tokens
-        val epoch = dispatch.epoch
-        if (
-            (expectedOwner != null && session.userId != expectedOwner) ||
-                (expectedSessionEpoch != null && epoch != expectedSessionEpoch)
-        )
-            throw BackendException(401, "owner_changed", "Аккаунт изменился")
-        if (tokens.snapshot() != dispatch) {
-          throw BackendException(401, "owner_changed", "Аккаунт изменился")
-        }
-        try {
-          execute(
-              method,
-              path,
-              rawBody,
-              session.accessToken,
-              headers,
-              session.userId,
-              epoch,
-              maxResponseBytes ?: DEFAULT_MAX_RESPONSE_BYTES,
+        retryAiHttp(path) {
+          val dispatch =
+              tokens.snapshot() ?: throw BackendException(401, "unauthorized", "Войдите в аккаунт")
+          val session = dispatch.tokens
+          val epoch = dispatch.epoch
+          if (
+              (expectedOwner != null && session.userId != expectedOwner) ||
+                  (expectedSessionEpoch != null && epoch != expectedSessionEpoch)
           )
-        } catch (e: BackendException) {
-          if (e.status != 401 || !retryOnUnauthorized) throw e
-          refreshMutex.withLock {
-            val currentSnapshot = tokens.snapshot() ?: throw e
-            val current = currentSnapshot.tokens
-            if (current.userId != session.userId || currentSnapshot.epoch != epoch) throw e
-            if (current.accessToken == session.accessToken) {
-              try {
-                val updated =
-                    json.decodeFromJsonElement<BackendTokens>(
-                        execute(
-                                "POST",
-                                "/auth/refresh",
-                                buildJsonObject { put("refreshToken", current.refreshToken) }
-                                    .toString()
-                                    .encodeToByteArray(),
-                                null,
-                            )
-                            .body
-                    )
-                // Never restore a session which the user logged out of while the request was in
-                // flight.
-                if (updated.userId != current.userId)
-                    throw BackendException(
-                        502,
-                        "invalid_refresh",
-                        "Некорректный ответ обновления сессии",
-                    )
-                if (!tokens.refreshIfCurrent(currentSnapshot, updated)) throw e
-              } catch (failure: BackendException) {
-                if (failure.status == 401) tokens.refreshIfCurrent(currentSnapshot, null)
-                throw failure
+              throw BackendException(401, "owner_changed", "Аккаунт изменился")
+          if (tokens.snapshot() != dispatch) {
+            throw BackendException(401, "owner_changed", "Аккаунт изменился")
+          }
+          try {
+            execute(
+                method,
+                path,
+                rawBody,
+                session.accessToken,
+                headers,
+                session.userId,
+                epoch,
+                maxResponseBytes ?: DEFAULT_MAX_RESPONSE_BYTES,
+            )
+          } catch (e: BackendException) {
+            if (e.status != 401 || !retryOnUnauthorized) throw e
+            refreshMutex.withLock {
+              val currentSnapshot = tokens.snapshot() ?: throw e
+              val current = currentSnapshot.tokens
+              if (current.userId != session.userId || currentSnapshot.epoch != epoch) throw e
+              if (current.accessToken == session.accessToken) {
+                try {
+                  val updated =
+                      json.decodeFromJsonElement<BackendTokens>(
+                          execute(
+                                  "POST",
+                                  "/auth/refresh",
+                                  buildJsonObject { put("refreshToken", current.refreshToken) }
+                                      .toString()
+                                      .encodeToByteArray(),
+                                  null,
+                              )
+                              .body
+                      )
+                  // Never restore a session which the user logged out of while the request was in
+                  // flight.
+                  if (updated.userId != current.userId)
+                      throw BackendException(
+                          502,
+                          "invalid_refresh",
+                          "Некорректный ответ обновления сессии",
+                      )
+                  if (!tokens.refreshIfCurrent(currentSnapshot, updated)) throw e
+                } catch (failure: BackendException) {
+                  if (failure.status == 401) tokens.refreshIfCurrent(currentSnapshot, null)
+                  throw failure
+                }
               }
             }
+            val refreshedDispatch = tokens.snapshot() ?: throw e
+            val refreshed =
+                refreshedDispatch.tokens.takeIf { it.userId == session.userId } ?: throw e
+            val refreshedEpoch = refreshedDispatch.epoch
+            if (
+                (expectedOwner != null && refreshed.userId != expectedOwner) ||
+                    (expectedSessionEpoch != null && refreshedEpoch != expectedSessionEpoch)
+            )
+                throw e
+            if (tokens.snapshot() != refreshedDispatch) throw e
+            execute(
+                method,
+                path,
+                rawBody,
+                refreshed.accessToken,
+                headers,
+                refreshed.userId,
+                refreshedEpoch,
+                maxResponseBytes ?: DEFAULT_MAX_RESPONSE_BYTES,
+            )
           }
-          val refreshedDispatch = tokens.snapshot() ?: throw e
-          val refreshed = refreshedDispatch.tokens.takeIf { it.userId == session.userId } ?: throw e
-          val refreshedEpoch = refreshedDispatch.epoch
-          if (
-              (expectedOwner != null && refreshed.userId != expectedOwner) ||
-                  (expectedSessionEpoch != null && refreshedEpoch != expectedSessionEpoch)
-          )
-              throw e
-          if (tokens.snapshot() != refreshedDispatch) throw e
-          execute(
-              method,
-              path,
-              rawBody,
-              refreshed.accessToken,
-              headers,
-              refreshed.userId,
-              refreshedEpoch,
-              maxResponseBytes ?: DEFAULT_MAX_RESPONSE_BYTES,
-          )
         }
       }
 
   override fun authorizedEventStream(
+      path: String,
+      rawBody: ByteArray,
+      expectedOwner: String,
+      expectedSessionEpoch: Long?,
+  ): kotlinx.coroutines.flow.Flow<BackendStreamEvent> = flow {
+    val epoch = expectedSessionEpoch ?: tokens.snapshot()?.epoch
+    emitAll(
+        eventStreamAttempt(path, rawBody, expectedOwner, epoch).retryWhen { failure, attempt ->
+          if (
+              path.startsWith("/ai/") &&
+                  failure is BackendException &&
+                  failure.fromHttpResponse &&
+                  attempt < 3
+          ) {
+            waitBeforeAiRetry(path, failure, attempt.toInt())
+            true
+          } else false
+        }
+    )
+  }
+
+  private fun eventStreamAttempt(
       path: String,
       rawBody: ByteArray,
       expectedOwner: String,
@@ -508,7 +587,7 @@ class BackendApi @Inject constructor(private val tokens: BackendSessionStore) : 
               }
             }
             pin()
-            // A coach POST is never replayable, including HTTP follow-ups inside OkHttp.
+            // Only our explicit HTTP-error retry may replay this POST; disable hidden follow-ups.
             val streamBody =
                 object : okhttp3.RequestBody() {
                   override fun contentType() = "application/json".toMediaType()

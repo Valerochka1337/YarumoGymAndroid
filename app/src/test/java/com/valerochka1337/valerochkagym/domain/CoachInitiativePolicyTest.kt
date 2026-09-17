@@ -7,21 +7,15 @@ class CoachInitiativePolicyTest {
   private val ready = CoachInitiativeState(welcomed = true)
 
   @Test
-  fun `enabling coach produces one welcome and consumes one message`() {
-    val decision =
-        CoachInitiativePolicy.next(CoachInitiativeState(), 1000, emptyList(), emptyList())!!
-    assertEquals(CoachInitiativeKind.WELCOME, decision.kind)
-    assertTrue(decision.nextState.welcomed)
-    assertEquals(1, decision.nextState.automaticCount)
-    assertNull(CoachInitiativePolicy.next(decision.nextState, 1001, emptyList(), emptyList()))
+  fun `enabling coach stays silent until a meaningful event`() {
+    assertNull(CoachInitiativePolicy.next(CoachInitiativeState(), 1000, emptyList(), emptyList()))
   }
 
   @Test
-  fun `disabled pending and exhausted states suppress every initiative`() {
+  fun `disabled and pending states suppress every initiative`() {
     listOf(
             ready.copy(enabled = false),
             ready.copy(pendingInteraction = true),
-            ready.copy(automaticCount = 3),
         )
         .forEach {
           assertNull(CoachInitiativePolicy.next(it, 1_000_000, drops(), history(), 1_000_000))
@@ -29,11 +23,64 @@ class CoachInitiativePolicyTest {
   }
 
   @Test
-  fun `ten minute interval is enforced at the exact boundary`() {
-    val state = ready.copy(lastAutomaticAtMillis = 1000)
-    assertNull(CoachInitiativePolicy.next(state, 600_999, drops(), history()))
-    assertNotNull(CoachInitiativePolicy.next(state, 601_000, drops(), history()))
-    assertNull(CoachInitiativePolicy.next(state, 999, drops(), history()))
+  fun `recent messages and persisted counts do not suppress a new initiative`() {
+    val state = ready.copy(automaticCount = 9, lastAutomaticAtMillis = 1000)
+    for (now in listOf(999L, 1000L, 1001L)) {
+      val decision = CoachInitiativePolicy.next(state, now, drops(), history())!!
+      assertEquals(CoachInitiativeKind.PERFORMANCE_QUESTION, decision.kind)
+      assertEquals(10, decision.nextState.automaticCount)
+      assertEquals(now, decision.nextState.lastAutomaticAtMillis)
+    }
+  }
+
+  @Test
+  fun `new calculation evidence permits more than three immediate interventions without repeats`() {
+    var state = ready
+    repeat(5) { index ->
+      val assessment =
+          com.valerochka1337.valerochkagym.domain.autoregulation.AutoregulationRecommendation(
+              accountId = "user",
+              workoutId = "workout",
+              baseRevision = index.toLong(),
+              kind =
+                  com.valerochka1337.valerochkagym.domain.autoregulation.RecommendationKind.CLARIFY,
+              observation = "Рабочий подход выполнен",
+              reason = "Уточните RIR",
+              expectedEffect = "",
+              evidenceKey = "evidence-$index",
+              options =
+                  com.valerochka1337.valerochkagym.domain.autoregulation.AutoregulationOptions(),
+          )
+      val decision =
+          CoachInitiativePolicy.next(
+              state,
+              1000L + index,
+              emptyList(),
+              emptyList(),
+              assessment = assessment,
+          )!!
+      assertEquals(CoachInitiativeKind.AUTOREGULATION, decision.kind)
+      assertEquals(index + 1, decision.nextState.automaticCount)
+      assertNull(
+          CoachInitiativePolicy.next(
+              decision.nextState,
+              1000L + index,
+              emptyList(),
+              emptyList(),
+              assessment = assessment,
+          )
+      )
+      state = decision.nextState.copy(pendingInteraction = false)
+      assertNull(
+          CoachInitiativePolicy.next(
+              state,
+              1000L + index,
+              emptyList(),
+              emptyList(),
+              assessment = assessment,
+          )
+      )
+    }
   }
 
   @Test

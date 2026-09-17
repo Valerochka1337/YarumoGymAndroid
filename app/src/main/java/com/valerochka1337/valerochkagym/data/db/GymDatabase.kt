@@ -145,7 +145,7 @@ import kotlinx.serialization.json.JsonPrimitive
             CoachSessionContextEntity::class,
             CoachSyncStateEntity::class,
         ],
-    version = 30,
+    version = 32,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -1086,6 +1086,34 @@ abstract class GymDatabase : RoomDatabase() {
           }
         }
 
+    val MIGRATION_31_32: Migration =
+        object : Migration(31, 32) {
+          override fun migrate(db: SupportSQLiteDatabase) {
+            addColumnIfMissing(
+                db,
+                "workout_sets",
+                "actualRirAtLeastFour INTEGER NOT NULL DEFAULT 0",
+            )
+          }
+        }
+
+    /** v30 → v31: add nullable RIR and persisted autoregulation options. */
+    val MIGRATION_30_31: Migration =
+        object : Migration(30, 31) {
+          override fun migrate(db: SupportSQLiteDatabase) {
+            addColumnIfMissing(db, "workout_sets", "targetRir INTEGER")
+            addColumnIfMissing(db, "workout_sets", "actualRir INTEGER")
+            addColumnIfMissing(
+                db,
+                "coach_session_context",
+                "autoregulationOptionsJson TEXT NOT NULL DEFAULT '{}'",
+            )
+            // Local autoregulation builds also used v30 before personalization reached main.
+            // Its tables and sync triggers must exist for either v30 schema.
+            MIGRATION_29_30.migrate(db)
+          }
+        }
+
     /** v28 → v29: remove the retired inter-account relation queue and its cached proposals. */
     val MIGRATION_28_29: Migration =
         object : Migration(28, 29) {
@@ -1463,6 +1491,8 @@ abstract class GymDatabase : RoomDatabase() {
             MIGRATION_27_28,
             MIGRATION_28_29,
             MIGRATION_29_30,
+            MIGRATION_30_31,
+            MIGRATION_31_32,
         )
 
     private val legacyCoachJson = Json {

@@ -100,6 +100,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.valerochka1337.valerochkagym.data.db.entity.ExerciseType
 import com.valerochka1337.valerochkagym.data.db.entity.WorkoutSetEntity
 import com.valerochka1337.valerochkagym.data.db.relation.WorkoutExerciseWithSets
+import com.valerochka1337.valerochkagym.domain.SetEffort
 import com.valerochka1337.valerochkagym.domain.currentFocus
 import com.valerochka1337.valerochkagym.service.RestTimerState
 import com.valerochka1337.valerochkagym.service.heartrate.HeartRateConnectionState
@@ -196,6 +197,7 @@ fun ActiveWorkoutScreen(
             stepSpeed = viewModel::stepSpeed,
             stepIncline = viewModel::stepIncline,
             setWeight = viewModel::setWeight,
+            setEffort = viewModel::setEffort,
             setReps = viewModel::setReps,
             setDuration = viewModel::setDuration,
             setSpeed = viewModel::setSpeed,
@@ -307,6 +309,7 @@ internal class SetActions(
     val uncomplete: (Long) -> Unit,
     val addSet: (Long) -> Unit,
     val deleteSet: (Long) -> Unit,
+    val setEffort: (Long, SetEffort?) -> Unit = { _, _ -> },
     val editCompleted: (Long, ExerciseType) -> Unit = { _, _ -> },
     val updateCompletedWeight: (String) -> Unit = {},
     val updateCompletedReps: (String) -> Unit = {},
@@ -1152,6 +1155,7 @@ private fun ExerciseSection(
             CompletedSetPill(
                 set = set,
                 type = type,
+                onEffortSelect = { actions.setEffort(set.id, it) },
                 onClick = {
                   haptics.step()
                   actions.editCompleted(set.id, type)
@@ -1159,7 +1163,12 @@ private fun ExerciseSection(
             )
           }
 
-          else -> FutureSetPill(set = set, type = type)
+          else ->
+              FutureSetPill(
+                  set = set,
+                  type = type,
+                  onEffortSelect = { actions.setEffort(set.id, it) },
+              )
         }
         if (set.note.isNotBlank()) {
           Text(
@@ -1252,6 +1261,8 @@ private fun CurrentSetCard(
             onStepDown = { actions.stepReps(set.id, -REPS_STEP) },
             onStepUp = { actions.stepReps(set.id, REPS_STEP) },
         )
+        Spacer(Modifier.height(10.dp))
+        SetEffortField(set = set, onSelect = { actions.setEffort(set.id, it) })
       }
 
       ExerciseType.TIMED -> {
@@ -1408,6 +1419,7 @@ private fun StepButton(
 private fun CompletedSetPill(
     set: WorkoutSetEntity,
     type: ExerciseType,
+    onEffortSelect: (SetEffort?) -> Unit,
     onClick: () -> Unit,
 ) {
   // Короткий scale-панч на галочке при появлении пилюли (подход только что отмечен выполненным).
@@ -1417,6 +1429,7 @@ private fun CompletedSetPill(
   SetPill(
       set = set,
       values = formatSetValues(set, type),
+      onEffortSelect = onEffortSelect.takeIf { type == ExerciseType.STRENGTH },
       containerColor = MaterialTheme.colorScheme.primaryContainer,
       contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
       onClick = onClick,
@@ -1581,10 +1594,12 @@ internal fun CompletedSetEditDraft.isValidNumericInput(): Boolean {
 private fun FutureSetPill(
     set: WorkoutSetEntity,
     type: ExerciseType,
+    onEffortSelect: (SetEffort?) -> Unit,
 ) {
   SetPill(
       set = set,
       values = formatSetValues(set, type),
+      onEffortSelect = onEffortSelect.takeIf { type == ExerciseType.STRENGTH },
       containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
       contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
       onClick = null,
@@ -1600,6 +1615,7 @@ private fun SetPill(
     contentColor: Color,
     onClick: (() -> Unit)?,
     trailing: (@Composable () -> Unit)?,
+    onEffortSelect: ((SetEffort?) -> Unit)?,
 ) {
   val clickable = if (onClick != null) Modifier.combinedClickable(onClick = onClick) else Modifier
   Row(
@@ -1627,6 +1643,16 @@ private fun SetPill(
     )
     if (trailing != null) {
       trailing()
+    }
+    if (onEffortSelect != null) {
+      Spacer(Modifier.width(8.dp))
+      SetEffortField(
+          set = set,
+          onSelect = onEffortSelect,
+          compact = true,
+          modifier = Modifier.weight(1f),
+          contentColor = contentColor,
+      )
     }
   }
 }
@@ -1874,4 +1900,76 @@ private fun ActivePersonalHintEditDialog(
         TextButton(onClick = onCancel, enabled = !draft.isSubmitting) { Text("Отмена") }
       },
   )
+}
+
+@Composable
+internal fun SetEffortField(
+    set: WorkoutSetEntity,
+    onSelect: (SetEffort?) -> Unit,
+    modifier: Modifier = Modifier,
+    compact: Boolean = false,
+    contentColor: Color = MaterialTheme.colorScheme.onSurface,
+) {
+  var expanded by remember(set.id) { mutableStateOf(false) }
+  val haptics = gymHaptics()
+  val label = SetEffort.labelFor(set)
+  val openMenu = {
+    haptics.tap()
+    expanded = true
+  }
+  Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
+    if (!compact) {
+      Text("RIR:", style = MaterialTheme.typography.bodyMedium, color = contentColor)
+      Spacer(Modifier.width(12.dp))
+    }
+    Box(modifier = if (compact) Modifier.fillMaxWidth() else Modifier.weight(1f)) {
+      val anchor =
+          Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics {
+            contentDescription = "Запас повторений, подход ${set.setIndex + 1}"
+            stateDescription = label
+          }
+      if (compact) {
+        Box(
+            modifier = anchor.clickable(role = Role.Button, onClick = openMenu),
+            contentAlignment = Alignment.CenterEnd,
+        ) {
+          Text(
+              text = "RIR:${if (label == "Не указано") "—" else label}",
+              style = MaterialTheme.typography.bodyMedium,
+              fontWeight = FontWeight.SemiBold,
+              color = contentColor,
+              textAlign = androidx.compose.ui.text.style.TextAlign.End,
+          )
+        }
+      } else {
+        androidx.compose.material3.OutlinedButton(onClick = openMenu, modifier = anchor) {
+          Text(label, modifier = Modifier.weight(1f))
+          Icon(Icons.Default.ExpandMore, contentDescription = null)
+        }
+      }
+      androidx.compose.material3.DropdownMenu(
+          expanded = expanded,
+          onDismissRequest = { expanded = false },
+      ) {
+        SetEffort.entries.forEach { effort ->
+          androidx.compose.material3.DropdownMenuItem(
+              text = { Text(effort.label) },
+              onClick = {
+                haptics.step()
+                onSelect(effort)
+                expanded = false
+              },
+          )
+        }
+        androidx.compose.material3.DropdownMenuItem(
+            text = { Text("Не указано") },
+            onClick = {
+              haptics.step()
+              onSelect(null)
+              expanded = false
+            },
+        )
+      }
+    }
+  }
 }

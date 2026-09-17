@@ -244,6 +244,20 @@ object WorkoutApprovalFormatter {
               }
               field("Вес", set.weightKg, new.weightKg, " кг")
               field("Повторения", set.reps, new.reps)
+              field(
+                  "Фактический запас повторений (RIR)",
+                  if (set.actualRirAtLeastFour) "4+" else set.actualRir,
+                  if (new.actualRirAtLeastFour) "4+" else new.actualRir,
+              )
+              fun typeLabel(value: String) =
+                  when (value) {
+                    "WORK" -> "рабочий"
+                    "WARMUP" -> "разминочный"
+                    "DROP" -> "дроп-сет"
+                    "AMRAP" -> "максимум повторений"
+                    else -> "не указан"
+                  }
+              field("Тип подхода", typeLabel(set.setType), typeLabel(new.setType))
               field("Длительность", set.durationSec, new.durationSec, " с")
               field("Скорость", set.speedKmh, new.speedKmh, " км/ч")
               field("Наклон", set.inclinePct, new.inclinePct, "%")
@@ -372,6 +386,8 @@ object WorkoutApprovalFormatter {
               "FATIGUE" -> "усталость"
               "TECHNIQUE_BREAKDOWN" -> "нарушение техники"
               "INTERRUPTED" -> "подход прерван"
+              "PLANNED_EFFORT" -> "усилие было запланировано"
+              "HARDER_THAN_EXPECTED" -> "стало тяжелее ожидаемого"
               else -> it
             }
           }

@@ -22,6 +22,123 @@ import org.junit.Test
 
 class BackendApiTest {
   @Test
+  fun `account change and cancellation during backoff prevent the next request`() = runTest {
+    for (cancel in listOf(false, true)) {
+      val store = Store()
+      var calls = 0
+      val client =
+          OkHttpClient.Builder()
+              .addInterceptor { chain ->
+                calls++
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(503)
+                    .message("Test")
+                    .body("{}".toResponseBody())
+                    .build()
+              }
+              .build()
+      try {
+        val failure =
+            runCatching {
+                  BackendApi(store, client, "https://test.invalid/") {
+                        if (cancel) throw kotlinx.coroutines.CancellationException("Cancelled")
+                        store.save(null)
+                      }
+                      .authorizedRawResponse("POST", "/ai/exercise-drafts", byteArrayOf())
+                }
+                .exceptionOrNull()
+        assertEquals(1, calls)
+        if (cancel) assertTrue(failure is kotlinx.coroutines.CancellationException)
+        else assertEquals("owner_changed", (failure as BackendException).code)
+      } finally {
+        client.dispatcher.executorService.shutdown()
+      }
+    }
+  }
+
+  @Test
+  fun `accepted asynchronous AI jobs are not submitted again`() = runTest {
+    var calls = 0
+    val client =
+        OkHttpClient.Builder()
+            .addInterceptor { chain ->
+              calls++
+              Response.Builder()
+                  .request(chain.request())
+                  .protocol(Protocol.HTTP_1_1)
+                  .code(202)
+                  .message("Accepted")
+                  .body("{}".toResponseBody())
+                  .build()
+            }
+            .build()
+    try {
+      BackendApi(Store(), client, "https://test.invalid/") { fail("Unexpected backoff") }
+          .authorizedRawResponse("POST", "/ai/calendar-draft-jobs", byteArrayOf())
+      assertEquals(1, calls)
+    } finally {
+      client.dispatcher.executorService.shutdown()
+    }
+  }
+
+  @Test
+  fun `AI retries preserve request bytes and stop on success while sync does not retry`() =
+      runTest {
+        for (path in
+            listOf(
+                "/ai/calendar-drafts",
+                "/ai/calendar-draft-jobs",
+                "/ai/exercise-drafts",
+                "/ai/inbody-drafts",
+                "/ai/coach-turn",
+                "/ai/coach-models",
+                "/sync",
+            )) {
+          val bodies = mutableListOf<String>()
+          val waits = mutableListOf<Long>()
+          var calls = 0
+          val client =
+              OkHttpClient.Builder()
+                  .addInterceptor { chain ->
+                    calls++
+                    bodies += Buffer().also { chain.request().body?.writeTo(it) }.readUtf8()
+                    Response.Builder()
+                        .request(chain.request())
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(if (calls < 4) 503 else 200)
+                        .message("Test")
+                        .body("{}".toResponseBody())
+                        .build()
+                  }
+                  .build()
+          try {
+            val result = runCatching {
+              BackendApi(Store(), client, "https://test.invalid/") { waits += it }
+                  .authorizedRawResponse(
+                      "POST",
+                      path,
+                      """{"requestId":"stable"}""".encodeToByteArray(),
+                  )
+            }
+            if (path.startsWith("/ai/")) {
+              assertTrue(result.isSuccess)
+              assertEquals(4, calls)
+              assertEquals(listOf(1000L, 2000L, 4000L), waits)
+              assertEquals(1, bodies.distinct().size)
+            } else {
+              assertTrue(result.isFailure)
+              assertEquals(1, calls)
+              assertTrue(waits.isEmpty())
+            }
+          } finally {
+            client.dispatcher.executorService.shutdown()
+          }
+        }
+      }
+
+  @Test
   fun `coach turn extends socket read timeout without changing other backend requests`() = runTest {
     val timeouts = mutableListOf<Int>()
     val client =
@@ -250,7 +367,7 @@ class BackendApiTest {
   }
 
   @Test
-  fun `AI draft POSTs do not refresh or replay after unauthorized`() = runTest {
+  fun `AI draft POSTs retry unauthorized three times without refreshing`() = runTest {
     val paths = mutableListOf<String>()
     val client =
         OkHttpClient.Builder()
@@ -267,7 +384,8 @@ class BackendApiTest {
                 }
             )
             .build()
-    val api = BackendApi(Store(), client, "https://test.invalid/")
+    val waits = mutableListOf<Long>()
+    val api = BackendApi(Store(), client, "https://test.invalid/") { waits += it }
 
     listOf("/ai/exercise-drafts", "/ai/inbody-drafts").forEach { path ->
       try {
@@ -283,7 +401,9 @@ class BackendApiTest {
       }
     }
 
-    assertEquals(listOf("/v1/ai/exercise-drafts", "/v1/ai/inbody-drafts"), paths)
+    assertEquals(List(4) { "/v1/ai/exercise-drafts" } + List(4) { "/v1/ai/inbody-drafts" }, paths)
+    assertEquals(listOf(1000L, 2000L, 4000L, 1000L, 2000L, 4000L), waits)
+    client.dispatcher.executorService.shutdown()
   }
 
   @Test

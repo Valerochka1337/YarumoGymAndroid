@@ -1,3 +1,5 @@
+@file:OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+
 package com.valerochka1337.valerochkagym.domain
 
 import androidx.room.withTransaction
@@ -17,6 +19,7 @@ import com.valerochka1337.valerochkagym.data.db.entity.ExerciseType
 import com.valerochka1337.valerochkagym.data.db.entity.WorkoutExerciseEntity
 import com.valerochka1337.valerochkagym.data.db.entity.WorkoutSetEntity
 import com.valerochka1337.valerochkagym.data.settings.SettingsRepository
+import com.valerochka1337.valerochkagym.diagnostics.CoachDiagnostics
 import com.valerochka1337.valerochkagym.service.RestTimerEngine
 import com.valerochka1337.valerochkagym.service.RestTimerState
 import java.nio.charset.StandardCharsets
@@ -31,7 +34,15 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
 private val SET_VALUE_FIELDS =
-    setOf("weight_kg", "reps", "duration_sec", "speed_kmh", "incline_pct")
+    setOf(
+        "weight_kg",
+        "reps",
+        "duration_sec",
+        "speed_kmh",
+        "incline_pct",
+        "actual_rir",
+        "set_type",
+    )
 
 sealed interface ModelProposalSaveResult {
   data class Saved(val proposal: WorkoutProposal) : ModelProposalSaveResult
@@ -172,14 +183,52 @@ constructor(
                 }
                 .getOrElse { error ->
                   if (error is CancellationException) throw error
+                  CoachDiagnostics.failure("editor.command.failed", error)
                   failureReceipt(accountId, workoutId, operationId, error)
                 }
         applied.applyRestAfterCommit()
-        applied.receipt
+        applied.receipt.also {
+          CoachDiagnostics.event(
+              "editor.command.result",
+              "result" to it.result,
+              "revision" to it.revision,
+          )
+        }
       }
 
   /** Saved proposals are app-owned data; confirmation never restores model-supplied authority. */
   suspend fun saveModelProposalResult(
+      accountId: String,
+      workoutId: String,
+      baseRevision: Long,
+      intents: List<CoachChangeIntent>,
+      expiresAt: Long,
+      expectedSessionEpoch: Long? = null,
+      isCurrent: () -> Boolean = { true },
+  ): ModelProposalSaveResult =
+      CoachDiagnostics.trace(
+          "editor.model_proposal",
+          "revision" to baseRevision,
+          "intents" to intents.joinToString(",") { it.javaClass.simpleName },
+      ) {
+        saveModelProposalResultLogged(
+                accountId,
+                workoutId,
+                baseRevision,
+                intents,
+                expiresAt,
+                expectedSessionEpoch,
+                isCurrent,
+            )
+            .also {
+              CoachDiagnostics.event(
+                  "editor.model_proposal.result",
+                  "result" to it.javaClass.simpleName,
+              )
+            }
+      }
+
+  private suspend fun saveModelProposalResultLogged(
       accountId: String,
       workoutId: String,
       baseRevision: Long,
@@ -198,6 +247,29 @@ constructor(
     }
     if (full.workout.finishedAt != null) return ModelProposalSaveResult.Unavailable
     if (full.workout.coachRevision != baseRevision) return ModelProposalSaveResult.Stale
+    val autoregulate = intents.filterIsInstance<CoachChangeIntent.Autoregulate>().singleOrNull()
+    if (autoregulate != null) {
+      if (intents.size != 1) return ModelProposalSaveResult.Invalid
+      val current =
+          CoachWorkoutReader(database, restTimer, sessions)
+              .snapshot(accountId, workoutId, expectedSessionEpoch)
+              ?: return ModelProposalSaveResult.Unavailable
+      val recommendation =
+          com.valerochka1337.valerochkagym.domain.autoregulation.AutoregulationEngine.calculate(
+              current,
+              autoregulate.options ?: current.autoregulationOptions,
+          )
+      val calculatedPacket = recommendation.packet() ?: return ModelProposalSaveResult.Invalid
+      return saveProposalResult(
+          accountId,
+          workoutId,
+          calculatedPacket,
+          baseRevision,
+          expiresAt,
+          expectedSessionEpoch,
+          isCurrent,
+      )
+    }
     val snapshot =
         WorkoutSnapshot(
             accountId,
@@ -212,11 +284,13 @@ constructor(
               )
             },
         )
-    val packet = mapIntents(snapshot, intents)
+    var packet = mapIntents(snapshot, intents)
     if (!belongsToLiveAccount(accountId, expectedSessionEpoch) || !isCurrent()) {
       return ModelProposalSaveResult.Unavailable
     }
     if (packet == null) return ModelProposalSaveResult.Invalid
+    // Model recommendations are proposals, never direct writes. Keep the normal revision,
+    // account, value, completed-result and confirmation checks; do not require a fixed local step.
     return try {
       saveProposalResult(
           accountId,
@@ -229,9 +303,15 @@ constructor(
       )
     } catch (_: InvalidExerciseOrder) {
       ModelProposalSaveResult.InvalidOrder
-    } catch (_: IllegalArgumentException) {
+    } catch (error: IllegalArgumentException) {
+      CoachDiagnostics.failure("editor.model_proposal.invalid", error, "phase" to "validate")
       ModelProposalSaveResult.Invalid
-    } catch (_: NoSuchElementException) {
+    } catch (error: NoSuchElementException) {
+      CoachDiagnostics.failure(
+          "editor.model_proposal.invalid",
+          error,
+          "phase" to "resolve_reference",
+      )
       ModelProposalSaveResult.Invalid
     }
   }
@@ -260,6 +340,10 @@ constructor(
             if (workout.finishedAt != null)
                 return@withTransaction ModelProposalSaveResult.Unavailable
             if (workout.coachRevision != expectedRevision)
+                return@withTransaction ModelProposalSaveResult.Stale
+            if (coachDao.pendingProposal(workoutId) != null)
+                return@withTransaction ModelProposalSaveResult.Unavailable
+            if (!validAutoregulation(accountId, workoutId, packet, expectedSessionEpoch))
                 return@withTransaction ModelProposalSaveResult.Stale
             val calculated = calculate(accountId, workoutId, packet)
             val summary =
@@ -397,14 +481,31 @@ constructor(
                             proposal.packetJson,
                         )
                     val accepted =
-                        applyAccepted(
-                            accountId,
-                            proposal.workoutId,
-                            operationId,
-                            workout.coachRevision,
-                            packet,
-                        )
+                        if (
+                            !validAutoregulation(
+                                accountId,
+                                proposal.workoutId,
+                                packet,
+                                expectedSessionEpoch,
+                            )
+                        ) {
+                          coachDao.setProposalState(proposalId, "STALE")
+                          return@withTransaction Applied(
+                              stale(operationId, proposal.workoutId),
+                              null,
+                          )
+                        } else
+                            applyAccepted(
+                                accountId,
+                                proposal.workoutId,
+                                operationId,
+                                workout.coachRevision,
+                                packet,
+                            )
                     coachDao.setProposalState(proposalId, "CONFIRMED")
+                    updateContext(accountId, proposal.workoutId) {
+                      it.copy(initiativePendingInteraction = false)
+                    }
                     saveJournal(
                         journalId("$operationId:confirmed"),
                         accountId,
@@ -419,10 +520,17 @@ constructor(
                 }
                 .getOrElse { error ->
                   if (error is CancellationException) throw error
+                  CoachDiagnostics.failure("editor.command.failed", error)
                   failureReceipt(accountId, null, operationId, error)
                 }
         applied.applyRestAfterCommit()
-        applied.receipt
+        applied.receipt.also {
+          CoachDiagnostics.event(
+              "editor.command.result",
+              "result" to it.result,
+              "revision" to it.revision,
+          )
+        }
       }
 
   suspend fun cancelProposal(
@@ -436,6 +544,15 @@ constructor(
           val proposal = coachDao.pendingProposalForId(proposalId) ?: return@withTransaction false
           if (proposal.accountId != accountId) return@withTransaction false
           coachDao.setProposalState(proposalId, "CANCELLED")
+          json
+              .decodeFromString(WorkoutChangeSet.Packet.serializer(), proposal.packetJson)
+              .autoregulation
+              ?.let { proof ->
+                rememberAutoregulation(accountId, proposal.workoutId, proof.interventionKey)
+              }
+          updateContext(accountId, proposal.workoutId) {
+            it.copy(initiativePendingInteraction = false)
+          }
           saveJournal(
               journalId("$proposalId:cancelled"),
               accountId,
@@ -458,9 +575,17 @@ constructor(
     val undo = captureRestorePacket(workoutId)
     val contextBefore = coachDao.context(workoutId)
     val calculated = calculate(accountId, workoutId, packet)
+    packet.autoregulation?.let { proof ->
+      calculated.context =
+          calculated.context.copy(
+              autoregulationOptionsJson =
+                  json.encodeToString(proof.options.copy(observedRestSeconds = null))
+          )
+    }
     val revision = priorRevision + 1
     persist(workoutId, calculated.sections, revision)
     coachDao.saveContext(calculated.context)
+    packet.autoregulation?.let { rememberAutoregulation(accountId, workoutId, it.interventionKey) }
     database.openHelper.writableDatabase.execSQL(
         "UPDATE workouts SET coachRevision=? WHERE id=?",
         arrayOf<Any?>(revision, workoutId),
@@ -541,6 +666,9 @@ constructor(
                                 set.completedAt,
                                 set.speedKmh,
                                 set.inclinePct,
+                                actualRir = set.actualRir,
+                                actualRirAtLeastFour = set.actualRirAtLeastFour,
+                                setType = set.setType,
                                 reportedFeelings =
                                     Json.decodeFromString<Set<String>>(set.reportedFeelingsJson),
                             )
@@ -644,6 +772,7 @@ constructor(
                     availableTimeEndsAtMillis = saved.availableTimeEndsAtMillis,
                     futureRestSeconds = saved.futureRestSeconds,
                     excludedExerciseIdsJson = saved.excludedExerciseIdsJson,
+                    autoregulationOptionsJson = saved.autoregulationOptionsJson,
                 )
           }
         }
@@ -662,6 +791,16 @@ constructor(
     val changesTarget = !set.isCompleted && !op.recordResult
     val edited =
         set.copy(
+            setType = op.setType ?: if (op.actualRir != null) "WORK" else set.setType,
+            actualRir =
+                if ("actual_rir" in op.clearFields || op.setType == "WARMUP") null
+                else op.actualRir ?: set.actualRir,
+            actualRirAtLeastFour =
+                if (
+                    op.actualRir != null || "actual_rir" in op.clearFields || op.setType == "WARMUP"
+                )
+                    false
+                else set.actualRirAtLeastFour,
             weightKg = if ("weight_kg" in op.clearFields) null else op.weightKg ?: set.weightKg,
             reps = if ("reps" in op.clearFields) null else op.reps ?: set.reps,
             durationSec =
@@ -703,8 +842,10 @@ constructor(
                   actualDurationSec = null,
                   actualSpeedKmh = null,
                   actualInclinePct = null,
+                  actualRir = if (set.isCompleted) null else edited.actualRir,
+                  actualRirAtLeastFour = !set.isCompleted && edited.actualRirAtLeastFour,
               )
-          becameCompleted || op.recordResult ->
+          becameCompleted || op.recordResult || edited.isCompleted ->
               edited.copy(
                   actualWeightKg = edited.weightKg,
                   actualReps = edited.reps,
@@ -729,6 +870,7 @@ constructor(
       if (op.durationSec != null) add("duration_sec")
       if (op.speedKmh != null) add("speed_kmh")
       if (op.inclinePct != null) add("incline_pct")
+      if (op.actualRir != null) add("actual_rir")
       addAll(op.clearFields)
     }
     require(op.clearFields.all { it in SET_VALUE_FIELDS })
@@ -740,7 +882,7 @@ constructor(
             .type
     val allowed =
         when (type) {
-          ExerciseType.STRENGTH -> setOf("weight_kg", "reps")
+          ExerciseType.STRENGTH -> setOf("weight_kg", "reps", "actual_rir")
           ExerciseType.TIMED -> setOf("duration_sec")
           ExerciseType.CARDIO -> setOf("duration_sec", "speed_kmh", "incline_pct")
         }
@@ -751,6 +893,14 @@ constructor(
     require(op.speedKmh == null || op.speedKmh > 0)
     // A flat treadmill is a valid cardio result; only negative incline is impossible.
     require(op.inclinePct == null || op.inclinePct >= 0)
+    require(op.actualRir == null || op.actualRir in 0..10)
+    require(
+        op.actualRir == null ||
+            state.set(setSyncId).isCompleted ||
+            op.recordResult ||
+            op.completed == true
+    )
+    require(op.setType == null || op.setType in setOf("WORK", "WARMUP", "UNKNOWN", "DROP", "AMRAP"))
   }
 
   private fun addSet(state: EditState, sectionId: String) {
@@ -924,8 +1074,19 @@ constructor(
       op: WorkoutChangeSet.Operation.ReportFeelings,
   ) {
     require(
-        op.feelings.all { it in setOf("PAIN", "FATIGUE", "TECHNIQUE_BREAKDOWN", "INTERRUPTED") }
+        op.feelings.all {
+          it in
+              setOf(
+                  "PAIN",
+                  "FATIGUE",
+                  "TECHNIQUE_BREAKDOWN",
+                  "INTERRUPTED",
+                  "PLANNED_EFFORT",
+                  "HARDER_THAN_EXPECTED",
+              )
+        }
     )
+    require(!op.feelings.containsAll(setOf("PLANNED_EFFORT", "HARDER_THAN_EXPECTED")))
     val set = state.set(op.setSyncId)
     state.putSet(set.copy(reportedFeelingsJson = json.encodeToString(op.feelings.sorted())))
   }
@@ -1007,6 +1168,9 @@ constructor(
           set.restSnapshotJson,
           set.coachMutationRevision,
           set.note,
+          set.actualRir,
+          set.actualRirAtLeastFour,
+          set.legacyTargetRir,
       )
 
   private suspend fun persist(workoutId: String, sections: List<RestoreSection>, revision: Long) {
@@ -1083,6 +1247,9 @@ constructor(
           reportedFeelingsJson = reportedFeelingsJson,
           restSnapshotJson = restSnapshotJson,
           coachMutationRevision = coachMutationRevision,
+          actualRir = actualRir,
+          actualRirAtLeastFour = actualRirAtLeastFour,
+          legacyTargetRir = targetRir,
       )
 
   private suspend fun updateContext(
@@ -1101,6 +1268,7 @@ constructor(
           availableTimeEndsAtMillis,
           futureRestSeconds,
           excludedExerciseIdsJson,
+          autoregulationOptionsJson,
       )
 
   private fun WorkoutChangeSet.Packet.hasIrreversibleRest() =
@@ -1268,6 +1436,8 @@ constructor(
       val availableTimeEndsAtMillis: Long?,
       val futureRestSeconds: Int?,
       val excludedExerciseIdsJson: String,
+      @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+      val autoregulationOptionsJson: String = "{}",
   )
 
   private suspend fun mapIntents(
@@ -1291,6 +1461,8 @@ constructor(
             val operations =
                 intents.map { intent ->
                   when (intent) {
+                    is CoachChangeIntent.Autoregulate ->
+                        error("Autoregulation must be the only intent")
                     is CoachChangeIntent.AddExercise ->
                         WorkoutChangeSet.Operation.AddExercise(
                             byExerciseSync.getValue(intent.exerciseId).id,
@@ -1386,7 +1558,11 @@ constructor(
                 }
             WorkoutChangeSet.Packet(operations)
           }
-          .getOrElse { if (it is CancellationException) throw it else null }
+          .getOrElse {
+            if (it is CancellationException) throw it
+            CoachDiagnostics.failure("editor.model_proposal.invalid", it, "phase" to "map_intents")
+            null
+          }
 
   private fun editOperation(setId: String, values: CoachSetValues, recordResult: Boolean) =
       WorkoutChangeSet.Operation.EditSet(
@@ -1396,6 +1572,8 @@ constructor(
           durationSec = values.durationSec,
           speedKmh = values.speedKmh,
           inclinePct = values.inclinePct,
+          actualRir = values.actualRir,
+          setType = values.setType,
           clearFields =
               values.supplied
                   .filter { field ->
@@ -1405,6 +1583,7 @@ constructor(
                       "duration_sec" -> values.durationSec == null
                       "speed_kmh" -> values.speedKmh == null
                       "incline_pct" -> values.inclinePct == null
+                      "actual_rir" -> values.actualRir == null
                       else -> false
                     }
                   }
@@ -1418,6 +1597,109 @@ constructor(
         CoachRestAction.EXTEND -> RestAction.EXTEND
         CoachRestAction.SKIP -> RestAction.SKIP
         CoachRestAction.FUTURE_DURATION -> RestAction.FUTURE_DURATION
+      }
+
+  private suspend fun validAutoregulation(
+      accountId: String,
+      workoutId: String,
+      packet: WorkoutChangeSet.Packet,
+      epoch: Long?,
+  ): Boolean {
+    val proof = packet.autoregulation ?: return true
+    val current =
+        CoachWorkoutReader(database, restTimer, sessions).snapshot(accountId, workoutId, epoch)
+            ?: return false
+    val recommendation =
+        com.valerochka1337.valerochkagym.domain.autoregulation.AutoregulationEngine.calculate(
+            current,
+            proof.options,
+        )
+    return (recommendation.packet() == packet).also {
+      CoachDiagnostics.event(
+          "editor.autoregulation.revalidated",
+          "matches" to it,
+          "revision" to current.revision,
+      )
+    }
+  }
+
+  private suspend fun rememberAutoregulation(accountId: String, workoutId: String, key: String) {
+    updateContext(accountId, workoutId) { context ->
+      val previous = json.decodeFromString<Set<String>>(context.initiativeAskedExerciseIdsJson)
+      context.copy(
+          initiativeAskedExerciseIdsJson =
+              json.encodeToString((previous + "autoregulation:$key").sorted())
+      )
+    }
+  }
+
+  /**
+   * Replaces stale calculations under the same write queue. A new ID requires a new confirmation.
+   */
+  suspend fun refreshAutoregulationProposal(accountId: String, workoutId: String, epoch: Long?) =
+      writes.write {
+        database.withTransaction {
+          if (!belongsToLiveAccount(accountId, epoch)) return@withTransaction
+          val old = coachDao.pendingProposal(workoutId) ?: return@withTransaction
+          if (old.accountId != accountId) return@withTransaction
+          val packet = json.decodeFromString(WorkoutChangeSet.Packet.serializer(), old.packetJson)
+          val proof = packet.autoregulation ?: return@withTransaction
+          if (old.expiresAt < System.currentTimeMillis()) {
+            CoachDiagnostics.event("editor.proposal.refresh", "decision" to "expire")
+            coachDao.setProposalState(old.id, "EXPIRED")
+            updateContext(accountId, workoutId) { it.copy(initiativePendingInteraction = false) }
+            return@withTransaction
+          }
+          val current =
+              CoachWorkoutReader(database, restTimer, sessions)
+                  .snapshot(accountId, workoutId, epoch) ?: return@withTransaction
+          val result =
+              com.valerochka1337.valerochkagym.domain.autoregulation.AutoregulationEngine.calculate(
+                  current,
+                  proof.options,
+              )
+          if (old.baseRevision == current.revision && packet == result.packet())
+              return@withTransaction
+          CoachDiagnostics.event(
+              "editor.proposal.refresh",
+              "decision" to "replace_stale",
+              "revision" to current.revision,
+              "recommendation" to result.kind,
+          )
+          coachDao.setProposalState(old.id, "STALE")
+          val replacement = result.packet()
+          if (replacement == null) {
+            updateContext(accountId, workoutId) { it.copy(initiativePendingInteraction = false) }
+            return@withTransaction
+          }
+          val calculated = calculate(accountId, workoutId, replacement)
+          val names = calculated.catalogue.mapValues { it.value.name }
+          val preview = WorkoutApprovalFormatter.describe(calculated.steps, names)
+          val summary = WorkoutChangeSummary.describe(calculated.steps, names)
+          val proposal =
+              WorkoutProposal(
+                  accountId = accountId,
+                  workoutId = workoutId,
+                  baseRevision = current.revision,
+                  beforeSummary = summary.before,
+                  afterSummary = preview.text(),
+                  packet = replacement,
+                  expiresAt = old.expiresAt,
+              )
+          coachDao.saveProposal(
+              old.copy(
+                  id = proposal.id,
+                  baseRevision = current.revision,
+                  beforeSummary = summary.before,
+                  afterSummary = preview.text(),
+                  previewJson = json.encodeToString(WorkoutApprovalPreview.serializer(), preview),
+                  packetJson =
+                      json.encodeToString(WorkoutChangeSet.Packet.serializer(), replacement),
+              )
+          )
+          saveProposalJournal(proposal, replacement)
+          check(belongsToLiveAccount(accountId, epoch))
+        }
       }
 
   private fun restSnapshot(): SnapshotRest? =

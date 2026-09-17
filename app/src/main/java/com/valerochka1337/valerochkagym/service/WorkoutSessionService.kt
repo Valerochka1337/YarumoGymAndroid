@@ -25,6 +25,7 @@ import com.valerochka1337.valerochkagym.R
 import com.valerochka1337.valerochkagym.data.db.entity.ExerciseType
 import com.valerochka1337.valerochkagym.data.db.relation.WorkoutFull
 import com.valerochka1337.valerochkagym.data.settings.SettingsRepository
+import com.valerochka1337.valerochkagym.diagnostics.CoachDiagnostics
 import com.valerochka1337.valerochkagym.domain.ActiveWorkoutRepository
 import com.valerochka1337.valerochkagym.domain.SessionFocus
 import com.valerochka1337.valerochkagym.domain.WorkoutEditor
@@ -172,6 +173,16 @@ class WorkoutSessionService : LifecycleService() {
   }
 
   private fun observeState() {
+    val coachTrigger = CoachInitiativeTrigger()
+    lifecycleScope.launch {
+      while (true) {
+        kotlinx.coroutines.delay(60_000)
+        currentWorkout?.workout?.id?.let {
+          CoachDiagnostics.event("initiative.trigger", "source" to "minute_timer")
+          coachConversation.considerInitiative(it)
+        }
+      }
+    }
     // Один collect на все источники уведомления: combine конфлейтит одновременные изменения
     // (закрытие подхода сразу запускает отдых), и уведомление пересобирается один раз, а не
     // по разу на каждый затронутый поток.
@@ -184,6 +195,7 @@ class WorkoutSessionService : LifecycleService() {
             Triple(workout, rest, accentValue)
           }
           .collect { (workout, rest, accentValue) ->
+            val coachInputsChanged = coachTrigger.changed(workout, rest)
             currentRest = rest
             accent = accentValue
             if (workout == null) {
@@ -195,7 +207,12 @@ class WorkoutSessionService : LifecycleService() {
             }
             currentWorkout = workout
             xiaomiWearWorkoutBridge.publish(workout, rest)
-            lifecycleScope.launch { coachConversation.considerInitiative(workout.workout.id) }
+            if (coachInputsChanged) {
+              lifecycleScope.launch {
+                CoachDiagnostics.event("initiative.trigger", "source" to "workout_or_rest_changed")
+                coachConversation.considerInitiative(workout.workout.id)
+              }
+            }
             // Обновляем и во время отдыха: там подписан только что закрытый подход, а его
             // правят кнопкой «Изменить» прямо из этого уведомления.
             updateForegroundNotification()

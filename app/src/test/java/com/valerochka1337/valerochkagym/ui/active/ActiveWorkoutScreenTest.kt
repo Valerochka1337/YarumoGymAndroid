@@ -49,6 +49,51 @@ class ActiveWorkoutScreenTest {
   @get:Rule val composeRule = createComposeRule()
 
   @Test
+  fun `effort selector records range warmup and clearing at large font scale`() {
+    val set = mutableStateOf(WorkoutSetEntity(workoutExerciseId = 1, setIndex = 0))
+    composeRule.setContent {
+      CompositionLocalProvider(LocalDensity provides Density(density = 1f, fontScale = 2f)) {
+        GymTheme {
+          SetEffortField(
+              set.value,
+              onSelect = { effort ->
+                set.value =
+                    effort?.applyTo(set.value)
+                        ?: set.value.copy(
+                            actualRir = null,
+                            actualRirAtLeastFour = false,
+                            setType = "UNKNOWN",
+                        )
+              },
+          )
+        }
+      }
+    }
+    fun open() {
+      composeRule
+          .onNodeWithContentDescription("Запас повторений, подход 1")
+          .assertHeightIsAtLeast(48.dp)
+          .performClick()
+    }
+    open()
+    listOf("Отказ", "1", "2", "3", "4+", "Разминка").forEach {
+      composeRule.onNodeWithText(it).assertIsDisplayed()
+    }
+    composeRule.onNodeWithText("4+").performClick()
+    composeRule.onNodeWithText("4+").assertIsDisplayed()
+    assertTrue(set.value.actualRirAtLeastFour)
+    assertEquals("WORK", set.value.setType)
+    open()
+    composeRule.onNodeWithText("Разминка").performClick()
+    assertFalse(set.value.actualRirAtLeastFour)
+    assertEquals("WARMUP", set.value.setType)
+    open()
+    composeRule.onNodeWithText("Не указано").performClick()
+    composeRule.onNodeWithText("Не указано").assertIsDisplayed()
+    assertEquals("UNKNOWN", set.value.setType)
+  }
+
+  @Test
   fun `active screen exposes a set note and its edit action`() {
     val workout =
         workoutWithIncompleteExercises()

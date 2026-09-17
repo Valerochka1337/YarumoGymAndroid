@@ -16,6 +16,7 @@ import com.valerochka1337.valerochkagym.domain.HintEditTarget
 import com.valerochka1337.valerochkagym.domain.NoteSaveResult
 import com.valerochka1337.valerochkagym.domain.PreviousSetsUseCase
 import com.valerochka1337.valerochkagym.domain.RoutineGymConflictException
+import com.valerochka1337.valerochkagym.domain.SetEffort
 import com.valerochka1337.valerochkagym.domain.WorkoutEditor
 import com.valerochka1337.valerochkagym.domain.WorkoutSetMutator
 import com.valerochka1337.valerochkagym.domain.currentFocus
@@ -331,6 +332,12 @@ constructor(
   fun stepIncline(setId: Long, delta: Double) = setMutator.stepIncline(setId, delta)
 
   // --- Клавиатурный ввод (NumberField): правит одно поле поверх свежего состояния подхода. ---
+
+  fun setEffort(setId: Long, effort: SetEffort?) =
+      setMutator.edit(setId) { set ->
+        effort?.applyTo(set)
+            ?: set.copy(actualRir = null, actualRirAtLeastFour = false, setType = "UNKNOWN")
+      }
 
   fun setWeight(setId: Long, raw: String) = setMutator.setWeight(setId, raw)
 

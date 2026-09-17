@@ -1,9 +1,12 @@
 package com.valerochka1337.valerochkagym.domain
 
+import com.valerochka1337.valerochkagym.diagnostics.CoachDiagnostics
+
 /** Durable values belong to the workout, not the process. Update only with the saved message. */
 data class CoachInitiativeState(
     val enabled: Boolean = true,
     val welcomed: Boolean = false,
+    /** Persisted diagnostics only; count and timestamp do not gate initiative. */
     val automaticCount: Int = 0,
     val lastAutomaticAtMillis: Long? = null,
     val askedExerciseIds: Set<String> = emptySet(),
@@ -35,6 +38,7 @@ data class CoachPerformanceSet(
 }
 
 enum class CoachInitiativeKind {
+  AUTOREGULATION,
   WELCOME,
   PERFORMANCE_QUESTION,
   END_REMINDER,
@@ -49,43 +53,73 @@ data class CoachInitiativeDecision(
 
 /** A product heuristic for asking a question; it never changes a load or assesses health. */
 object CoachInitiativePolicy {
-  const val MAX_MESSAGES = 3
-  const val MIN_INTERVAL_MILLIS = 10 * 60_000L
-
   fun next(
       state: CoachInitiativeState,
       nowMillis: Long,
       completedSets: List<CoachPerformanceSet>,
       history: List<CoachPerformanceSet>,
       endsAtMillis: Long? = null,
+      assessment:
+          com.valerochka1337.valerochkagym.domain.autoregulation.AutoregulationRecommendation? =
+          null,
   ): CoachInitiativeDecision? {
-    if (!state.enabled || state.pendingInteraction || state.automaticCount >= MAX_MESSAGES)
-        return null
-    val previousAt = state.lastAutomaticAtMillis
-    if (previousAt != null && nowMillis - previousAt < MIN_INTERVAL_MILLIS) return null
+    fun skip(reason: String): CoachInitiativeDecision? {
+      CoachDiagnostics.event(
+          "initiative.skipped",
+          "reason" to reason,
+          "automatic_count" to state.automaticCount,
+      )
+      return null
+    }
+    if (!state.enabled) return skip("disabled")
+    if (state.pendingInteraction) return skip("pending_interaction")
     fun decision(
         kind: CoachInitiativeKind,
         text: String,
         exerciseId: String? = null,
     ): CoachInitiativeDecision =
         CoachInitiativeDecision(
-            kind,
-            text,
-            state.copy(
-                welcomed = state.welcomed || kind == CoachInitiativeKind.WELCOME,
-                automaticCount = state.automaticCount + 1,
-                lastAutomaticAtMillis = nowMillis,
-                askedExerciseIds = state.askedExerciseIds + listOfNotNull(exerciseId),
-                endReminderSent = state.endReminderSent || kind == CoachInitiativeKind.END_REMINDER,
-                pendingInteraction = kind == CoachInitiativeKind.PERFORMANCE_QUESTION,
-            ),
-            exerciseId,
-        )
-    if (!state.welcomed)
-        return decision(
-            CoachInitiativeKind.WELCOME,
-            "Я рядом. Можно записать результат, изменить отдых или обсудить оставшуюся часть тренировки.",
-        )
+                kind,
+                text,
+                state.copy(
+                    welcomed = state.welcomed || kind == CoachInitiativeKind.WELCOME,
+                    automaticCount = state.automaticCount + 1,
+                    lastAutomaticAtMillis = nowMillis,
+                    askedExerciseIds = state.askedExerciseIds + listOfNotNull(exerciseId),
+                    endReminderSent =
+                        state.endReminderSent || kind == CoachInitiativeKind.END_REMINDER,
+                    pendingInteraction =
+                        kind == CoachInitiativeKind.PERFORMANCE_QUESTION ||
+                            (kind == CoachInitiativeKind.AUTOREGULATION &&
+                                assessment?.kind !=
+                                    com.valerochka1337.valerochkagym.domain.autoregulation
+                                        .RecommendationKind
+                                        .ADVISE),
+                ),
+                exerciseId,
+            )
+            .also { CoachDiagnostics.event("initiative.selected", "kind" to kind) }
+    if (assessment != null) {
+      if (
+          assessment.missingData.any {
+            it in
+                setOf(
+                    com.valerochka1337.valerochkagym.domain.autoregulation.MissingData.SET_TYPE,
+                    com.valerochka1337.valerochkagym.domain.autoregulation.MissingData.ACTUAL_RIR,
+                )
+          }
+      )
+          return skip("optional_set_effort")
+
+      val key = "autoregulation:${assessment.interventionKey}"
+      if (
+          assessment.kind ==
+              com.valerochka1337.valerochkagym.domain.autoregulation.RecommendationKind.NO_CHANGE
+      )
+          return skip("no_change")
+      if (key in state.askedExerciseIds) return skip("already_asked")
+      return decision(CoachInitiativeKind.AUTOREGULATION, assessment.explanation(), key)
+    }
     if (!state.endReminderSent && endsAtMillis != null && nowMillis >= endsAtMillis - 5 * 60_000L) {
       return decision(
           CoachInitiativeKind.END_REMINDER,
