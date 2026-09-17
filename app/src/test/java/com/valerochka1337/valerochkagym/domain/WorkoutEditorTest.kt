@@ -46,6 +46,149 @@ import org.junit.Test
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class WorkoutEditorTest : RoomDaoTest() {
   @Test
+  fun `calculated proposal survives recreation applies atomically and undo restores RIR and targets`() =
+      runTest {
+        val workout = insertWorkout("autoregulated")
+        val section = insertWorkoutExercise(workout, exercise("Press"))
+        val doneId = insertSet(section, 0, weightKg = 100.0, reps = 8, isCompleted = true)
+        val nextId = insertSet(section, 1, weightKg = 100.0, reps = 8)
+        val done =
+            db.workoutDao()
+                .getSet(doneId)!!
+                .copy(
+                    completedAt = 1000,
+                    setType = "WORK",
+                    targetReps = 8,
+                    targetWeightKg = 100.0,
+                    legacyTargetRir = 9,
+                    actualRir = 1,
+                    reportedFeelingsJson = "[\"HARDER_THAN_EXPECTED\"]",
+                )
+        val next =
+            db.workoutDao()
+                .getSet(nextId)!!
+                .copy(setType = "WORK", targetReps = 8, targetWeightKg = 100.0)
+        db.workoutDao().updateSet(done)
+        db.workoutDao().updateSet(next)
+        val timer = RestTimerEngine(backgroundScope) { 0L }
+        val editor = coordinator(timer)
+        val proposal =
+            assertIsSaved(
+                editor.saveModelProposalResult(
+                    "user",
+                    workout,
+                    0,
+                    listOf(
+                        CoachChangeIntent.Autoregulate(
+                            com.valerochka1337.valerochkagym.domain.autoregulation
+                                .AutoregulationOptions()
+                        )
+                    ),
+                    Long.MAX_VALUE,
+                )
+            )
+        assertEquals(8, db.workoutDao().getSet(nextId)!!.reps)
+        val recreated = coordinator(timer)
+        assertEquals(
+            CommandResult.APPLIED,
+            recreated.confirmProposal("user", proposal.id, "calculated").result,
+        )
+        assertEquals(7, db.workoutDao().getSet(nextId)!!.reps)
+        assertEquals(done, db.workoutDao().getSet(doneId))
+        val undo = WorkoutChangeSet.Packet(listOf(WorkoutChangeSet.Operation.UndoLast))
+        assertEquals(
+            CommandResult.APPLIED,
+            recreated.submit("user", workout, "undo-calculated", 1, undo, authority(undo)).result,
+        )
+        assertEquals(8, db.workoutDao().getSet(nextId)!!.reps)
+        assertEquals(1, db.workoutDao().getSet(doneId)!!.actualRir)
+        assertEquals(9, db.workoutDao().getSet(doneId)!!.legacyTargetRir)
+      }
+
+  @Test
+  fun `changed feedback replaces a pending calculation and rejects the old confirmation`() =
+      runTest {
+        val workout = insertWorkout("refresh")
+        val section = insertWorkoutExercise(workout, exercise("Press"))
+        val doneId = insertSet(section, 0, weightKg = 100.0, reps = 8, isCompleted = true)
+        val nextId = insertSet(section, 1, weightKg = 100.0, reps = 8)
+        db.workoutDao()
+            .updateSet(
+                db.workoutDao()
+                    .getSet(doneId)!!
+                    .copy(
+                        completedAt = 1000,
+                        setType = "WORK",
+                        targetReps = 8,
+                        actualRir = 1,
+                        reportedFeelingsJson = "[\"HARDER_THAN_EXPECTED\"]",
+                    )
+            )
+        db.workoutDao()
+            .updateSet(db.workoutDao().getSet(nextId)!!.copy(setType = "WORK", targetReps = 8))
+        val editor = coordinator(RestTimerEngine(backgroundScope) { 0L })
+        val old =
+            assertIsSaved(
+                editor.saveModelProposalResult(
+                    "user",
+                    workout,
+                    0,
+                    listOf(
+                        CoachChangeIntent.Autoregulate(
+                            com.valerochka1337.valerochkagym.domain.autoregulation
+                                .AutoregulationOptions()
+                        )
+                    ),
+                    Long.MAX_VALUE,
+                )
+            )
+        // Even a data correction without a revision bump must not preserve the old evidence.
+        db.workoutDao().updateSet(db.workoutDao().getSet(doneId)!!.copy(actualRir = 5))
+        editor.refreshAutoregulationProposal("user", workout, null)
+        val replacement = db.coachDao().pendingProposal(workout)!!
+        assertTrue(old.id != replacement.id)
+        assertEquals(CommandResult.STALE, editor.confirmProposal("user", old.id, "old").result)
+        assertEquals(
+            CommandResult.APPLIED,
+            editor.confirmProposal("user", replacement.id, "new").result,
+        )
+        assertEquals(7, db.workoutDao().getSet(nextId)!!.reps)
+      }
+
+  @Test
+  fun `model estimates a weight step as a proposal without applying it`() = runTest {
+    val workout = insertWorkout("guard")
+    val section = insertWorkoutExercise(workout, exercise("Press"))
+    val set = insertSet(section, 0, weightKg = 50.0, reps = 8)
+    val editor = coordinator(RestTimerEngine(backgroundScope) { 0L })
+    val proposal =
+        assertIsSaved(
+            editor.saveModelProposalResult(
+                "user",
+                workout,
+                0,
+                listOf(
+                    CoachChangeIntent.EditSet(
+                        db.workoutDao().getSet(set)!!.syncId,
+                        com.valerochka1337.valerochkagym.data.ai.CoachSetValues(
+                            setOf("weight_kg"),
+                            weightKg = 45.0,
+                        ),
+                        false,
+                    )
+                ),
+                Long.MAX_VALUE,
+            )
+        )
+    assertEquals(50.0, db.workoutDao().getSet(set)!!.weightKg!!, 0.0)
+    assertEquals(
+        CommandResult.APPLIED,
+        editor.confirmProposal("user", proposal.id, "confirm-estimate").result,
+    )
+    assertEquals(45.0, db.workoutDao().getSet(set)!!.weightKg!!, 0.0)
+  }
+
+  @Test
   fun `model addition without history creates one empty set and rejects invalid insertion positions`() =
       runTest {
         val workout = insertWorkout("active")

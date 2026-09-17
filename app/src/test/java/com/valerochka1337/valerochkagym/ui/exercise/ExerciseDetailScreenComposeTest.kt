@@ -5,12 +5,15 @@ import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import com.valerochka1337.valerochkagym.data.db.entity.ExerciseEntity
 import com.valerochka1337.valerochkagym.data.db.entity.ExerciseType
 import com.valerochka1337.valerochkagym.data.db.entity.Muscle
 import com.valerochka1337.valerochkagym.data.db.entity.MuscleGroup
 import com.valerochka1337.valerochkagym.data.db.entity.MuscleLoad
+import com.valerochka1337.valerochkagym.domain.ExerciseEquipmentRequirements
 import com.valerochka1337.valerochkagym.ui.theme.GymTheme
+import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -22,6 +25,66 @@ import org.robolectric.annotation.Config
 class ExerciseDetailScreenComposeTest {
 
   @get:Rule val compose = createComposeRule()
+
+  @Test
+  fun `standard exercise moves personal copy into the top bar menu`() {
+    var copies = 0
+    compose.setContent {
+      GymTheme {
+        ExerciseHeader(
+            exercise =
+                ExerciseEntity(
+                    id = 1L,
+                    name = "Стандартное упражнение",
+                    muscleGroup = MuscleGroup.LEGS,
+                    type = ExerciseType.STRENGTH,
+                    origin = "STANDARD",
+                ),
+            requirements = ExerciseEquipmentRequirements.ExplicitNone,
+            onBack = {},
+            onEdit = {},
+            onCopy = { copies++ },
+        )
+      }
+    }
+
+    compose.onNodeWithText("Стандартное").assertDoesNotExist()
+    compose.onNodeWithText("Создать личную копию").assertDoesNotExist()
+    compose.onNodeWithContentDescription("Редактировать упражнение").assertDoesNotExist()
+    compose.onNodeWithContentDescription("Меню упражнения").performClick()
+    compose.onNodeWithText("Создать личную копию").performClick()
+
+    assertEquals(1, copies)
+  }
+
+  @Test
+  fun `personal exercise keeps edit without origin labels or overflow menu`() {
+    var edits = 0
+    compose.setContent {
+      GymTheme {
+        ExerciseHeader(
+            exercise =
+                ExerciseEntity(
+                    id = 1L,
+                    name = "Моё упражнение",
+                    muscleGroup = MuscleGroup.LEGS,
+                    type = ExerciseType.STRENGTH,
+                    origin = "PERSONAL",
+                ),
+            requirements = ExerciseEquipmentRequirements.ExplicitNone,
+            onBack = {},
+            onEdit = { edits++ },
+            onCopy = {},
+        )
+      }
+    }
+
+    compose.onNodeWithText("Личное").assertDoesNotExist()
+    compose.onNodeWithContentDescription("Меню упражнения").assertDoesNotExist()
+    compose.onNodeWithContentDescription("Редактировать упражнение").performClick()
+
+    assertEquals(1, edits)
+  }
 
   @Test
   fun `detail keeps role text and exposes a read-only body map`() {

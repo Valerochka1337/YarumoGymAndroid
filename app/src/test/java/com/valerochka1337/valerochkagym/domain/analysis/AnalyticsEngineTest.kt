@@ -21,6 +21,19 @@ import org.junit.Test
  * [daysAgo], чтобы тесты не зависели от календарной даты запуска.
  */
 class AnalyticsEngineTest {
+  @Test
+  fun `explicit work and warmup labels override the legacy weight heuristic`() {
+    val report =
+        analyze(
+            sets =
+                listOf(
+                    set(BENCH, weight = 100.0, reps = 5, daysAgo = 1).copy(setType = "WARMUP"),
+                    set(BENCH, weight = 40.0, reps = 5, daysAgo = 1).copy(setType = "WORK"),
+                ),
+            muscles = mapOf(BENCH to listOf(MuscleLoad(Muscle.UPPER_CHEST, 100))),
+        )
+    assertEquals(1.0, report.totalFor(Muscle.UPPER_CHEST), 1e-6)
+  }
 
   @Test
   fun `upper and lower chest use per set maximum for push balance`() {

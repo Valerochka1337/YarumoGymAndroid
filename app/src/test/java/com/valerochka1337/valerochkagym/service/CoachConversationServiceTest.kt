@@ -27,12 +27,125 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class CoachConversationServiceTest : RoomDaoTest() {
+  @Test
+  fun `first low rep set sends one AI request and saves an estimated proposal without a user message`() =
+      runTest {
+        val workout = activeWorkout()
+        val next = db.workoutDao().getWorkoutFull(workout)!!.exercises.single().sets.single()
+        db.workoutDao().updateSet(next.copy(setIndex = 1))
+        db.workoutDao()
+            .insertSet(
+                next.copy(
+                    id = 0,
+                    syncId = java.util.UUID.randomUUID().toString(),
+                    setIndex = 0,
+                    reps = 2,
+                    actualRir = 0,
+                    setType = "WORK",
+                    isCompleted = true,
+                    completedAt = 1000,
+                )
+            )
+        val gateway = AutomaticProposalGateway(next.syncId)
+        val service = conversation(gateway)
+        service.attach(
+            kotlinx.coroutines.CoroutineScope(
+                backgroundScope.coroutineContext + kotlinx.coroutines.Dispatchers.Default
+            )
+        )
+        val decisions =
+            kotlinx.coroutines.coroutineScope {
+              listOf(
+                      async { service.considerInitiative("user", workout) },
+                      async { service.considerInitiative("user", workout) },
+                  )
+                  .map { it.await() }
+            }
+        assertEquals(1, decisions.count { it != null })
+        gateway.started.await()
+        assertNull(service.considerInitiative("user", workout))
+        assertTrue(db.coachDao().messages(workout).isEmpty())
+        gateway.release.complete(Unit)
+        db.coachDao().observeMessages(workout).first {
+          it.any { row -> row.text == "Предлагаю 45 кг, чтобы сохранить повторы." }
+        }
+        val proposal = db.coachDao().pendingProposal(workout)!!
+        assertEquals(2, gateway.calls)
+        assertEquals(50.0, db.workoutDao().getSet(next.id)!!.weightKg!!, 0.0)
+        assertTrue(db.coachDao().messages(workout).all { it.role == "assistant" })
+        assertFalse(
+            db.coachDao().messages(workout).any {
+              it.text.contains("настройки приложения") || it.text.contains("Я рядом")
+            }
+        )
+        assertTrue(service.cancel(workout, proposal.id))
+        assertNull(service.considerInitiative("user", workout))
+      }
+
+  @Test
+  fun `disabling initiative discards an in flight automatic answer and proposal`() = runTest {
+    val workout = activeWorkout()
+    val next = db.workoutDao().getWorkoutFull(workout)!!.exercises.single().sets.single()
+    db.workoutDao().updateSet(next.copy(setIndex = 1))
+    db.workoutDao()
+        .insertSet(
+            next.copy(
+                id = 0,
+                syncId = java.util.UUID.randomUUID().toString(),
+                reps = 16,
+                setType = "WORK",
+                isCompleted = true,
+                completedAt = 1000,
+            )
+        )
+    val gateway = AutomaticProposalGateway(next.syncId)
+    val service = conversation(gateway)
+    service.attach(
+        kotlinx.coroutines.CoroutineScope(
+            backgroundScope.coroutineContext + kotlinx.coroutines.Dispatchers.Default
+        )
+    )
+    assertNotNull(service.considerInitiative("user", workout))
+    gateway.started.await()
+    assertTrue(service.setInitiativeEnabled("user", workout, false))
+    gateway.release.complete(Unit)
+    service.runningWorkouts.first { workout !in it }
+    assertTrue(db.coachDao().messages(workout).isEmpty())
+    assertNull(db.coachDao().pendingProposal(workout))
+  }
+
+  @Test
+  fun `missing effort and starting a workout do not greet or call AI`() = runTest {
+    val workout = activeWorkout()
+    val gateway = RecordingGateway()
+    val service = conversation(gateway)
+    service.attach(backgroundScope)
+    assertNull(service.considerInitiative("user", workout))
+    val set = db.workoutDao().getWorkoutFull(workout)!!.exercises.single().sets.single()
+    db.workoutDao()
+        .insertSet(
+            set.copy(
+                id = 0,
+                syncId = java.util.UUID.randomUUID().toString(),
+                setIndex = 1,
+                isCompleted = true,
+                completedAt = 1000,
+                setType = "WORK",
+                actualRir = null,
+            )
+        )
+    assertNull(service.considerInitiative("user", workout))
+    assertEquals(0, gateway.calls)
+    assertTrue(db.coachDao().messages(workout).isEmpty())
+  }
+
   @Test
   fun `streaming draft promotes to one stored message with the same id`() = runTest {
     val workout = activeWorkout()
@@ -387,8 +500,29 @@ class CoachConversationServiceTest : RoomDaoTest() {
   @Test
   fun `model tool proposal changes Room only after confirmation`() = runTest {
     val workout = activeWorkout()
+    val original = db.workoutDao().getWorkoutFull(workout)!!.exercises.single().sets.single()
+    val set =
+        original.copy(
+            setIndex = 1,
+            weightKg = 100.0,
+            reps = 7,
+            targetReps = 7,
+            setType = "WORK",
+        )
+    db.workoutDao().updateSet(set)
+    db.workoutDao()
+        .insertSet(
+            set.copy(
+                id = 0,
+                syncId = java.util.UUID.randomUUID().toString(),
+                setIndex = 0,
+                isCompleted = true,
+                completedAt = 1000,
+                actualRir = 1,
+                reportedFeelingsJson = "[\"HARDER_THAN_EXPECTED\"]",
+            )
+        )
     val before = db.workoutDao().getWorkoutFull(workout)!!
-    val set = before.exercises.single().sets.single()
     val gateway =
         object : RecordingGateway() {
           override suspend fun complete(
@@ -433,9 +567,7 @@ class CoachConversationServiceTest : RoomDaoTest() {
     val proposal = requireNotNull(db.coachDao().pendingProposal(workout)) { messages.toString() }
     assertEquals(before, db.workoutDao().getWorkoutFull(workout))
     assertTrue(proposal.afterSummary.contains("→ 6"))
-    assertTrue(
-        messages.last().text.contains("Обоснование тренера: Учитываю сообщение об усталости")
-    )
+    assertTrue(messages.last().text == "Учитываю сообщение об усталости")
     assertTrue(conversation.confirm(workout, proposal.id))
     assertEquals(6, db.workoutDao().getSet(set.id)!!.reps)
     assertEquals(1, gateway.calls)
@@ -451,6 +583,83 @@ class CoachConversationServiceTest : RoomDaoTest() {
   @Test
   fun `repeated incomplete reorder stops after one recovery without durable changes`() = runTest {
     verifyReorderRecovery(corrected = false)
+  }
+
+  @Test
+  fun `invalid future set effort is corrected once before proposal confirmation`() = runTest {
+    verifyInvalidParametersRecovery(corrected = true)
+  }
+
+  @Test
+  fun `repeated invalid parameters stop after one correction without saving changes`() = runTest {
+    verifyInvalidParametersRecovery(corrected = false)
+  }
+
+  private suspend fun TestScope.verifyInvalidParametersRecovery(corrected: Boolean) {
+    val workout = activeWorkout()
+    val before = db.workoutDao().getWorkoutFull(workout)!!
+    val set = before.exercises.single().sets.single()
+    val gateway =
+        object : RecordingGateway() {
+          override suspend fun complete(
+              expectedOwner: String,
+              expectedSessionEpoch: Long?,
+              messages: List<AiApiMessage>,
+              tools: List<AiApiTool>,
+          ): AiApiChatResponse {
+            calls++
+            if (calls > 1) {
+              val recovery = (messages.last().content as JsonPrimitive).content
+              assertTrue(recovery.contains("invalid_change_parameters"))
+              assertTrue(recovery.contains("current_state"))
+              assertTrue(recovery.contains(set.syncId))
+              assertNull(db.coachDao().pendingProposal(workout))
+              assertEquals(before, db.workoutDao().getWorkoutFull(workout))
+            }
+            val values =
+                if (corrected && calls == 2) """{"reps":6}""" else """{"reps":6,"actual_rir":2}"""
+            return AiApiChatResponse(
+                choices =
+                    listOf(
+                        AiApiChoice(
+                            AiApiResponseMessage(
+                                toolCalls =
+                                    listOf(
+                                        com.valerochka1337.valerochkagym.data.ai.AiApiToolCall(
+                                            "proposal-$calls",
+                                            function =
+                                                com.valerochka1337.valerochkagym.data.ai
+                                                    .AiApiToolCallFunction(
+                                                        "submit_workout_changes",
+                                                        """{"base_revision":0,"operations":[{"action":"edit_set","set_id":"${set.syncId}","values":$values}]}""",
+                                                    ),
+                                        )
+                                    ),
+                            )
+                        )
+                    )
+            )
+          }
+        }
+    val service = conversation(gateway)
+    service.attach(
+        kotlinx.coroutines.CoroutineScope(
+            backgroundScope.coroutineContext + kotlinx.coroutines.Dispatchers.Default
+        )
+    )
+    assertTrue(service.send(workout, "Предложи корректировку следующих подходов"))
+    db.coachDao().observeMessages(workout).first { rows ->
+      rows.any { it.role == "user" && it.status == "DELIVERED" }
+    }
+    assertEquals(2, gateway.calls)
+    assertEquals(before, db.workoutDao().getWorkoutFull(workout))
+    val proposal = db.coachDao().pendingProposal(workout)
+    if (corrected) {
+      assertNotNull(proposal)
+      assertTrue(service.confirm(workout, proposal!!.id))
+      assertEquals(6, db.workoutDao().getSet(set.id)!!.reps)
+      assertNull(db.workoutDao().getSet(set.id)!!.actualRir)
+    } else assertNull(proposal)
   }
 
   private suspend fun TestScope.verifyReorderRecovery(corrected: Boolean) {
@@ -566,7 +775,7 @@ class CoachConversationServiceTest : RoomDaoTest() {
                 if (calls == 1) {
                   firstRequestStarted.complete(Unit)
                   releaseFirstResponse.await()
-                  """{"base_revision":0,"operations":[{"action":"edit_set","set_id":"${set.syncId}","values":{"reps":6}}]}"""
+                  """{"base_revision":0,"operations":[{"action":"edit_set","set_id":"${set.syncId}","values":{"set_type":"WORK"}}]}"""
                 } else {
                   val recovery = (messages.last().content as JsonPrimitive).content
                   assertTrue(recovery.contains("revision_conflict"))
@@ -574,7 +783,7 @@ class CoachConversationServiceTest : RoomDaoTest() {
                       requireNotNull(Regex("\\\"revision\\\":(\\d+)").find(recovery)).groupValues[1]
                   correctedRequestStarted.complete(Unit)
                   releaseCorrectedResponse.await()
-                  """{"base_revision":$revision,"operations":[{"action":"edit_set","set_id":"${set.syncId}","values":{"reps":6}}]}"""
+                  """{"base_revision":$revision,"operations":[{"action":"edit_set","set_id":"${set.syncId}","values":{"set_type":"WORK"}}]}"""
                 }
             return AiApiChatResponse(
                 choices =
@@ -606,7 +815,7 @@ class CoachConversationServiceTest : RoomDaoTest() {
         )
     )
 
-    assertTrue(conversation.send(workout, "Предложи шесть повторений"))
+    assertTrue(conversation.send(workout, "Установи целевой запас шесть повторений"))
     firstRequestStarted.await()
     db.workoutDao().updateSet(set.copy(reps = 5))
     db.openHelper.writableDatabase.execSQL(
@@ -624,7 +833,7 @@ class CoachConversationServiceTest : RoomDaoTest() {
     db.coachDao().observeMessages(workout).first { it.firstOrNull()?.status == "DELIVERED" }
     val proposal = requireNotNull(db.coachDao().pendingProposal(workout))
     assertEquals(1L, proposal.baseRevision)
-    assertTrue(proposal.afterSummary.contains("→ 6"))
+    assertTrue(proposal.afterSummary.contains("рабочий"))
     assertEquals(2, gateway.calls)
     assertEquals(5, db.workoutDao().getSet(set.id)!!.reps)
   }
@@ -730,23 +939,22 @@ class CoachConversationServiceTest : RoomDaoTest() {
       }
 
   @Test
-  fun `concurrent initiative checks consume their quota with exactly one message and journal`() =
-      runTest {
-        val workout = activeWorkout()
-        val conversation = conversation(RecordingGateway())
-        val decisions =
-            kotlinx.coroutines.coroutineScope {
-              listOf(
-                      async { conversation.considerInitiative(workout) },
-                      async { conversation.considerInitiative(workout) },
-                  )
-                  .map { it.await() }
-            }
-        assertEquals(1, decisions.count { it })
-        assertEquals(1, db.coachDao().messages(workout).size)
-        assertEquals(1, db.coachDao().pendingJournal("user", 100).size)
-        assertTrue(db.coachDao().context(workout)!!.initiativeWelcomed)
-      }
+  fun `concurrent startup checks remain silent without a signal`() = runTest {
+    val workout = activeWorkout()
+    val service = conversation(RecordingGateway())
+    service.attach(backgroundScope)
+    val decisions =
+        kotlinx.coroutines.coroutineScope {
+          listOf(
+                  async { service.considerInitiative(workout) },
+                  async { service.considerInitiative(workout) },
+              )
+              .map { it.await() }
+        }
+    assertTrue(decisions.none { it })
+    assertTrue(db.coachDao().messages(workout).isEmpty())
+    assertTrue(db.coachDao().pendingJournal("user", 100).isEmpty())
+  }
 
   @Test
   fun `newer message supersedes a model request without recording its late answer`() = runTest {
@@ -893,6 +1101,47 @@ class CoachConversationServiceTest : RoomDaoTest() {
     override fun save(tokens: BackendTokens?) {
       epoch++
       state.value = tokens
+    }
+  }
+
+  private class AutomaticProposalGateway(private val setId: String) : RecordingGateway() {
+    val started = CompletableDeferred<Unit>()
+    val release = CompletableDeferred<Unit>()
+
+    override suspend fun complete(
+        expectedOwner: String,
+        expectedSessionEpoch: Long?,
+        messages: List<AiApiMessage>,
+        tools: List<AiApiTool>,
+    ): AiApiChatResponse {
+      calls++
+      if (calls == 1) {
+        started.complete(Unit)
+        release.await()
+      }
+      val name = if (calls == 1) "get_workout_state" else "submit_workout_changes"
+      val arguments =
+          if (calls == 1) "{}"
+          else
+              """{"base_revision":0,"reason":"Предлагаю 45 кг, чтобы сохранить повторы.","operations":[{"action":"edit_set","set_id":"$setId","values":{"weight_kg":45}}]}"""
+      return AiApiChatResponse(
+          choices =
+              listOf(
+                  AiApiChoice(
+                      AiApiResponseMessage(
+                          toolCalls =
+                              listOf(
+                                  com.valerochka1337.valerochkagym.data.ai.AiApiToolCall(
+                                      "auto-$calls",
+                                      function =
+                                          com.valerochka1337.valerochkagym.data.ai
+                                              .AiApiToolCallFunction(name, arguments),
+                                  )
+                              )
+                      )
+                  )
+              )
+      )
     }
   }
 

@@ -127,7 +127,26 @@ constructor(
         database.withTransaction {
           val current = workoutDao.getSet(setId) ?: return@withTransaction false
           val workoutId = activeWorkoutIdForSet(setId) ?: return@withTransaction false
-          workoutDao.updateSet(transform(current).copy(id = current.id, note = current.note))
+          val changed = transform(current).copy(id = current.id, note = current.note)
+          workoutDao.updateSet(
+              if (changed.isCompleted)
+                  changed.copy(
+                      actualWeightKg = changed.weightKg,
+                      actualReps = changed.reps,
+                      actualDurationSec = changed.durationSec,
+                      actualSpeedKmh = changed.speedKmh,
+                      actualInclinePct = changed.inclinePct,
+                  )
+              else
+                  changed.copy(
+                      targetWeightKg = changed.weightKg,
+                      targetReps = changed.reps,
+                      targetDurationSec = changed.durationSec,
+                      targetSpeedKmh = changed.speedKmh,
+                      targetInclinePct = changed.inclinePct,
+                      actualRir = changed.actualRir,
+                  )
+          )
           incrementCoachRevision(workoutId)
           true
         }

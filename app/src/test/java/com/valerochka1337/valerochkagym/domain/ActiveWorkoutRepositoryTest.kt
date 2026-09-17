@@ -42,6 +42,32 @@ class ActiveWorkoutRepositoryTest : RoomDaoTest() {
   }
 
   @Test
+  fun `effort survives numeric edits and completion and can switch to warmup`() = runTest {
+    val exercise = addExercise("Жим RIR")
+    val workout = repository.startEmpty()
+    val section = repository.addExercise(workout, exercise)
+    val set = workoutDao.getSetsForWorkoutExercise(section).single()
+    repository.mutateSet(set.id) { SetEffort.FOUR_PLUS.applyTo(it) }
+    repository.mutateSet(set.id) { it.copy(reps = 8) }
+    repository.toggleSetCompleted(set.id, true)
+    val completed = repository.getSet(set.id)!!
+    assertTrue(completed.actualRirAtLeastFour)
+    assertNull(completed.actualRir)
+    assertEquals("WORK", completed.setType)
+    repository.addSet(section)
+    assertFalse(workoutDao.getSetsForWorkoutExercise(section).last().actualRirAtLeastFour)
+    repository.mutateSet(set.id) { SetEffort.FAILURE.applyTo(it) }
+    assertEquals(0, repository.getSet(set.id)!!.actualRir)
+    assertFalse(repository.getSet(set.id)!!.actualRirAtLeastFour)
+    repository.mutateSet(set.id) { SetEffort.WARMUP.applyTo(it) }
+    assertEquals("WARMUP", repository.getSet(set.id)!!.setType)
+    assertNull(repository.getSet(set.id)!!.actualRir)
+    repository.mutateSet(set.id) { SetEffort.FOUR_PLUS.applyTo(it) }
+    repository.toggleSetCompleted(set.id, false)
+    assertFalse(repository.getSet(set.id)!!.actualRirAtLeastFour)
+  }
+
+  @Test
   fun `set note is guarded by active workout and survives a stale numeric entity save`() = runTest {
     val exercise = addExercise("Заметка")
     val workoutId = repository.startEmpty()

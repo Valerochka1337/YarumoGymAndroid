@@ -208,6 +208,8 @@ object WorkoutChangeSummary {
               "FATIGUE" -> "усталость"
               "TECHNIQUE_BREAKDOWN" -> "нарушение техники"
               "INTERRUPTED" -> "подход прерван"
+              "PLANNED_EFFORT" -> "усилие было запланировано"
+              "HARDER_THAN_EXPECTED" -> "стало тяжелее ожидаемого"
               else -> error("Unknown feeling")
             }
           }

@@ -36,4 +36,5 @@ data class CoachSessionContextEntity(
     val initiativeAskedExerciseIdsJson: String = "[]",
     val initiativeEndReminderSent: Boolean = false,
     val initiativePendingInteraction: Boolean = false,
+    @androidx.room.ColumnInfo(defaultValue = "'{}'") val autoregulationOptionsJson: String = "{}",
 )

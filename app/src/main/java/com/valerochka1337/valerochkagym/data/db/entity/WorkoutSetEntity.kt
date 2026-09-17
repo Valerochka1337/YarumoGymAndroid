@@ -53,4 +53,8 @@ data class WorkoutSetEntity(
     @ColumnInfo(defaultValue = "'[]'") val reportedFeelingsJson: String = "[]",
     val restSnapshotJson: String? = null,
     @ColumnInfo(defaultValue = "0") val coachMutationRevision: Long = 0,
+    /** Retained only for compatibility with stored history; never used as a training target. */
+    @ColumnInfo(name = "targetRir") val legacyTargetRir: Int? = null,
+    val actualRir: Int? = null,
+    @ColumnInfo(defaultValue = "0") val actualRirAtLeastFour: Boolean = false,
 )

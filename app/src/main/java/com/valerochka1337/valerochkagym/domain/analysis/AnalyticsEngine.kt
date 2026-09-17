@@ -103,12 +103,14 @@ class AnalyticsEngine @Inject constructor() {
   private fun hardSets(sets: List<AnalyticsSetRow>): List<AnalyticsSetRow> {
     val topWeights =
         sets
-            .filter { it.exerciseType == ExerciseType.STRENGTH }
+            .filter { it.exerciseType == ExerciseType.STRENGTH && it.setType != "WARMUP" }
             .groupBy { it.workoutId to it.exerciseId }
             .mapValues { (_, group) -> group.maxOfOrNull { it.weightKg ?: 0.0 } ?: 0.0 }
     return sets.filter { set ->
       if (set.exerciseType == ExerciseType.CARDIO) return@filter false
+      if (set.setType == "WARMUP") return@filter false
       if (set.reps != null && set.reps !in 1..30) return@filter false
+      if (set.setType == "WORK") return@filter true
       val top = topWeights[set.workoutId to set.exerciseId] ?: 0.0
       top <= 0.0 || (set.weightKg ?: 0.0) >= 0.6 * top
     }

@@ -1,6 +1,7 @@
 package com.valerochka1337.valerochkagym.data.ai
 
 import com.valerochka1337.valerochkagym.data.backend.BackendException
+import com.valerochka1337.valerochkagym.diagnostics.CoachDiagnostics
 import com.valerochka1337.valerochkagym.domain.CoachReply
 import com.valerochka1337.valerochkagym.domain.WorkoutSnapshot
 import java.io.IOException
@@ -74,12 +75,23 @@ constructor(
       history: List<CoachHistoryMessage> = emptyList(),
       expectedSessionEpoch: Long? = null,
       onDraft: suspend (String) -> Unit = {},
+      automaticProposal: Boolean = false,
       dispatch: suspend (AiApiToolCall) -> CoachToolOutcome,
   ): CoachRunResult {
+    val trace =
+        CoachDiagnostics.span(
+            "agent.turn",
+            "revision" to snapshot.revision,
+            "message_chars" to userText.length,
+            "history" to history.size,
+            "tools" to tools.size,
+        )
     var requests = 0
     var calls = 0
     fun result(text: String, status: CoachRunStatus = CoachRunStatus.ERROR) =
-        CoachRunResult(text, requests, calls, status)
+        CoachRunResult(text, requests, calls, status).also {
+          trace.finish("status" to status, "requests" to requests, "tool_calls" to calls)
+        }
     if (userText.isBlank() || userText.length > MAX_MESSAGE_CHARS) {
       return result("Напишите сообщение длиной до $MAX_MESSAGE_CHARS символов.")
     }
@@ -91,7 +103,15 @@ constructor(
             mutableListOf(
                 AiApiMessage.text(
                     "system",
-                    gateway.systemPrompt(snapshot.accountId, expectedSessionEpoch),
+                    gateway.systemPrompt(snapshot.accountId, expectedSessionEpoch) +
+                        "\nRIR пользователь указывает в поле подхода: Отказ (0), 1, 2, 3, 4+ или Разминка. " +
+                        "Не спрашивай после каждого подхода его тип или фактический RIR. Целевого RIR в приложении нет: не запрашивай и не назначай его. " +
+                        "Пустой RIR оставляй неизвестным. actual_rir_at_least_four означает диапазон от 4, не точное число 4. " +
+                        "Разминка задаётся явно, высокий RIR не делает подход разминочным. " +
+                        "Не объясняй пользователю внутренние правила, пороги, настройки приложения, инструменты или ограничения локального расчёта. " +
+                        "Объясняй наблюдение и пользу изменения простыми словами. Шаг веса выбирай по упражнению, оборудованию, истории и результату. " +
+                        "Если точного ряда доступных весов нет, предложи разумный предварительный шаг, не выдавая его за подтверждённое наличие оборудования. " +
+                        "Для предложения используй edit_set и rest через submit_workout_changes; локальный autoregulation — только дополнительный ориентир, не обязательный способ назначения чисел.",
                 )
             )
         messages +=
@@ -99,15 +119,30 @@ constructor(
                 "system",
                 "Текущая тренировка: ${snapshot.workoutId}; ревизия при отправке: ${snapshot.revision}. Сведения и закреплённые ссылки получай через get_workout_state.",
             )
+        if (automaticProposal)
+            messages +=
+                AiApiMessage.text(
+                    "system",
+                    "Это инициативная оценка результатов. Не начинай с приветствия. Получи актуальное состояние и сразу создай конкретное предложение через submit_workout_changes. " +
+                        "Не спрашивай разрешения предложить изменение, доступный шаг веса или целевой RIR: пользователь примет либо отклонит карточку. " +
+                        "Не применяй ничего без подтверждения. Если изменение неуместно по свежим данным, кратко объясни причину без упоминания приложения.",
+                )
         history.takeLast(MAX_HISTORY_MESSAGES).forEach {
           messages += AiApiMessage.text(it.role, it.text.take(MAX_MESSAGE_CHARS))
         }
         messages += AiApiMessage.text("user", userText)
         val seenIds = mutableSetOf<String>()
+        var proposalReminderSent = false
         var recoveryUsed = false
         for (request in 1..MAX_REQUESTS) {
           currentCoroutineContext().ensureActive()
           requests = request
+          CoachDiagnostics.event(
+              "agent.request",
+              "trace" to trace.id,
+              "attempt" to request,
+              "messages" to messages.size,
+          )
           onDraft("")
           val decoder = com.valerochka1337.valerochkagym.domain.CoachTextDecoder()
           val response =
@@ -127,7 +162,14 @@ constructor(
           currentCoroutineContext().ensureActive()
           val choice = response.choices.firstOrNull()
           val error = response.error ?: choice?.error
-          if (error != null) return@withTimeout result(providerFailure(error.httpCode))
+          if (error != null) {
+            CoachDiagnostics.event(
+                "agent.provider_error",
+                "trace" to trace.id,
+                "http_status" to error.httpCode,
+            )
+            return@withTimeout result(providerFailure(error.httpCode))
+          }
           val message =
               choice?.message
                   ?: return@withTimeout result("Модель не вернула ответ. Повторите запрос.")
@@ -135,6 +177,18 @@ constructor(
             return@withTimeout result("Ответ модели не завершён. Попробуйте уточнить запрос.")
           }
           if (message.toolCalls.isEmpty()) {
+            if (automaticProposal && !proposalReminderSent) {
+              proposalReminderSent = true
+              // Keep the final user/tool message required by the backend turn contract.
+              messages.add(
+                  messages.indexOfFirst { it.role != "system" },
+                  AiApiMessage.text(
+                      "system",
+                      "Если результат требует корректировки, создай карточку конкретных изменений сейчас через submit_workout_changes, а не спрашивай, нужно ли её создать. Если свежие данные не требуют изменений, дай краткое объяснение.",
+                  ),
+              )
+              continue
+            }
             val text = (message.content as? JsonPrimitive)?.takeIf { it.isString }?.content?.trim()
             if (text.isNullOrEmpty())
                 return@withTimeout result(
@@ -143,6 +197,11 @@ constructor(
             val reply = CoachReply.decode(text)
             if (reply.text.length > MAX_ANSWER_CHARS)
                 return@withTimeout result("Ответ модели слишком длинный. Уточните запрос.")
+            trace.finish(
+                "status" to CoachRunStatus.ANSWER,
+                "requests" to requests,
+                "tool_calls" to calls,
+            )
             return@withTimeout CoachRunResult(
                 reply.text,
                 requests,
@@ -181,7 +240,20 @@ constructor(
           for (call in incoming) {
             currentCoroutineContext().ensureActive()
             calls++
+            CoachDiagnostics.event(
+                "agent.tool.dispatch",
+                "trace" to trace.id,
+                "tool" to call.function.name,
+                "number" to calls,
+            )
             val outcome = dispatch(call)
+            CoachDiagnostics.event(
+                "agent.tool.result",
+                "trace" to trace.id,
+                "tool" to call.function.name,
+                "terminal" to outcome.terminal,
+                "kind" to outcome.kind,
+            )
             currentCoroutineContext().ensureActive()
             // No further call, including already returned calls, is executed after this result.
             if (outcome.terminal != null)
@@ -207,14 +279,22 @@ constructor(
         }
         result("Достигнут предел запросов к модели. Уточните запрос.", CoachRunStatus.LIMIT)
       }
-    } catch (_: TimeoutCancellationException) {
+    } catch (e: TimeoutCancellationException) {
+      CoachDiagnostics.event("agent.timeout", "trace" to trace.id)
       currentCoroutineContext().ensureActive()
       result(
           "Модель не успела ответить. Повторите запрос; уже сохранённые действия остаются в истории."
       )
     } catch (e: CancellationException) {
+      trace.failed(e)
       throw e
     } catch (e: BackendException) {
+      CoachDiagnostics.failure(
+          "agent.backend_error",
+          e,
+          "trace" to trace.id,
+          "http_status" to e.status,
+      )
       result(
           when {
             e.code == "coach_unconfigured" ->
@@ -229,15 +309,24 @@ constructor(
           }
       )
     } catch (e: HttpException) {
+      CoachDiagnostics.failure(
+          "agent.http_error",
+          e,
+          "trace" to trace.id,
+          "http_status" to e.code(),
+      )
       result(providerFailure(e.code()))
-    } catch (_: InterruptedIOException) {
+    } catch (e: InterruptedIOException) {
+      CoachDiagnostics.failure("agent.io_timeout", e, "trace" to trace.id)
       currentCoroutineContext().ensureActive()
       result(
           "Модель не успела ответить. Повторите запрос; уже сохранённые действия остаются в истории."
       )
-    } catch (_: IOException) {
+    } catch (e: IOException) {
+      CoachDiagnostics.failure("agent.io_error", e, "trace" to trace.id)
       result("Нет подключения к модели. Проверьте сеть и повторите запрос.")
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+      CoachDiagnostics.failure("agent.unexpected_error", e, "trace" to trace.id)
       result("Не удалось обработать запрос")
     }
   }
@@ -262,7 +351,7 @@ private fun providerFailure(code: Int?): String =
       403 -> "Сервер не получил доступ к модели. Проверьте доступность тренера в настройках."
       400,
       404,
-      422 -> "Модель не принимает этот запрос. Выберите модель с поддержкой инструментов."
+      422 -> "Не удалось отправить запрос тренеру. Сервер отклонил запрос."
       402 -> "Недостаточно средств у провайдера модели."
       429 -> "Слишком много запросов. Попробуйте немного позже."
       else -> "Сервер модели недоступен. Повторите запрос позже."

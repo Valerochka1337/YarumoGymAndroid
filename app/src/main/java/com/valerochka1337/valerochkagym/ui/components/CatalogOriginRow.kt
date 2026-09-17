@@ -41,6 +41,10 @@ class CatalogActionsViewModel @Inject constructor(private val sync: BackendSync)
       }
     }
   }
+
+  fun clearMessage() {
+    mutableMessage.value = null
+  }
 }
 
 @Composable

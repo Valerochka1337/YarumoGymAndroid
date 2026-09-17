@@ -6,6 +6,53 @@ import org.junit.Test
 
 class CoachToolCodecTest {
   @Test
+  fun `state tool supports calculation options without adding a backend tool`() {
+    assertEquals(CoachToolRequest.State, decode("get_workout_state", "{}"))
+    val defaults =
+        decode("get_workout_state", """{"autoregulation":{}}""") as CoachToolRequest.Autoregulation
+    assertNull(defaults.options)
+    val explicit =
+        decode(
+            "get_workout_state",
+            """{"autoregulation":{"exercise_id":"$EXERCISE","available_weights_kg":[40,50],"observed_rest_seconds":120}}""",
+        )
+            as CoachToolRequest.Autoregulation
+    assertEquals(listOf(40.0, 50.0), explicit.options!!.availableWeightsKg.getValue(EXERCISE))
+    assertEquals(120, explicit.options.observedRestSeconds)
+    for (value in
+        listOf("null", "true", "[]", "{\"actual_rir\":2}", "{\"account_id\":\"other\"}")) {
+      rejected("get_workout_state", "{\"autoregulation\":$value}")
+    }
+    rejected("get_autoregulation", "{}")
+  }
+
+  @Test
+  fun `RIR accepts zero and explicit null but rejects invented values`() {
+    val intent =
+        submit(
+                """{"action":"edit_set","set_id":"$SET","values":{"actual_rir":0,"set_type":"WORK"}}"""
+            )
+            .operations
+            .single() as CoachChangeIntent.EditSet
+    assertEquals(0, intent.values.actualRir)
+    assertTrue("actual_rir" in intent.values.supplied)
+    rejected(
+        "submit_workout_changes",
+        """{"base_revision":0,"operations":[{"action":"edit_set","set_id":"$SET","values":{"target_rir":3}}]}""",
+    )
+    val cleared =
+        submit("""{"action":"edit_set","set_id":"$SET","values":{"actual_rir":null}}""")
+            .operations
+            .single() as CoachChangeIntent.EditSet
+    assertNull(cleared.values.actualRir)
+
+    rejected(
+        "submit_workout_changes",
+        """{"base_revision":0,"operations":[{"action":"edit_set","set_id":"$SET","values":{"actual_rir":11}}]}""",
+    )
+  }
+
+  @Test
   fun `find validates broad muscle groups and bounded result count`() {
     val request =
         decode("find_exercises", """{"muscle_groups":["CHEST"],"limit":2}""")
@@ -62,6 +109,17 @@ class CoachToolCodecTest {
             rest = com.valerochka1337.valerochkagym.domain.SnapshotRest("rest", 90, 30, 0),
             pulse = com.valerochka1337.valerochkagym.domain.SnapshotPulse(120, 123L),
         )
+    val rangeSnapshot =
+        snapshot.copy(
+            exercises =
+                snapshot.exercises.map {
+                  it.copy(sets = listOf(set.copy(actualRir = null, actualRirAtLeastFour = true)))
+                }
+        )
+    val rangeJson = CoachToolCodec.snapshotJson(rangeSnapshot)
+    assertFalse(rangeJson.contains("target_rir"))
+    assertTrue(rangeJson.contains("\"actual_rir_at_least_four\":true"))
+    assertTrue(rangeJson.contains("\"actual_rir\":null"))
     val output = Json.parseToJsonElement(CoachToolCodec.snapshotJson(snapshot)).jsonObject
     assertEquals(JsonPrimitive("workout"), output["workout_id"])
     assertEquals(JsonPrimitive(3), output["revision"])

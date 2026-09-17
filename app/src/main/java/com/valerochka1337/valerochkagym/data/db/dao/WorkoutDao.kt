@@ -65,7 +65,14 @@ interface WorkoutDao {
   @Update suspend fun updateWorkoutExercises(exercises: List<WorkoutExerciseEntity>)
 
   @Query(
-      "UPDATE workout_sets SET isCompleted = :completed, completedAt = :completedAt WHERE id = :setId"
+      """UPDATE workout_sets SET isCompleted = :completed, completedAt = :completedAt,
+      actualWeightKg = CASE WHEN :completed THEN weightKg ELSE NULL END,
+      actualReps = CASE WHEN :completed THEN reps ELSE NULL END,
+      actualDurationSec = CASE WHEN :completed THEN durationSec ELSE NULL END,
+      actualSpeedKmh = CASE WHEN :completed THEN speedKmh ELSE NULL END,
+      actualInclinePct = CASE WHEN :completed THEN inclinePct ELSE NULL END,
+      actualRir = CASE WHEN :completed THEN actualRir ELSE NULL END,
+      actualRirAtLeastFour = CASE WHEN :completed THEN actualRirAtLeastFour ELSE 0 END WHERE id = :setId"""
   )
   suspend fun setSetCompleted(setId: Long, completed: Boolean, completedAt: Long?)
 
@@ -75,7 +82,7 @@ interface WorkoutDao {
   @Query(
       """
         UPDATE workout_sets
-        SET weightKg = :weightKg, reps = :reps
+        SET weightKg = :weightKg, reps = :reps, actualWeightKg = :weightKg, actualReps = :reps
         WHERE id = :setId AND isCompleted = 1
           AND EXISTS (
             SELECT 1 FROM workout_exercises we
@@ -91,7 +98,7 @@ interface WorkoutDao {
   @Query(
       """
         UPDATE workout_sets
-        SET durationSec = :durationSec
+        SET durationSec = :durationSec, actualDurationSec = :durationSec
         WHERE id = :setId AND isCompleted = 1
           AND EXISTS (
             SELECT 1 FROM workout_exercises we
@@ -107,7 +114,8 @@ interface WorkoutDao {
   @Query(
       """
         UPDATE workout_sets
-        SET durationSec = :durationSec, speedKmh = :speedKmh, inclinePct = :inclinePct
+        SET durationSec = :durationSec, speedKmh = :speedKmh, inclinePct = :inclinePct,
+            actualDurationSec = :durationSec, actualSpeedKmh = :speedKmh, actualInclinePct = :inclinePct
         WHERE id = :setId AND isCompleted = 1
           AND EXISTS (
             SELECT 1 FROM workout_exercises we
@@ -162,7 +170,8 @@ interface WorkoutDao {
                ws.durationSec AS durationSec,
                ws.speedKmh AS speedKmh,
                ws.inclinePct AS inclinePct,
-               COALESCE(ws.completedAt, w.startedAt) AS completedAt
+               COALESCE(ws.completedAt, w.startedAt) AS completedAt,
+               ws.setType AS setType
         FROM workout_sets ws
         JOIN workout_exercises we ON we.id = ws.workoutExerciseId
         JOIN workouts w ON w.id = we.workoutId

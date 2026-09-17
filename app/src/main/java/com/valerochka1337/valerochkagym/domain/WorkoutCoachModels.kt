@@ -1,3 +1,5 @@
+@file:OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+
 package com.valerochka1337.valerochkagym.domain
 
 import java.util.UUID
@@ -21,6 +23,9 @@ data class WorkoutSnapshot(
     val feelings: Set<String> = emptySet(),
     val pulse: SnapshotPulse? = null,
     val futureRestSeconds: Int? = null,
+    val autoregulationOptions:
+        com.valerochka1337.valerochkagym.domain.autoregulation.AutoregulationOptions =
+        com.valerochka1337.valerochkagym.domain.autoregulation.AutoregulationOptions(),
 )
 
 data class SnapshotExercise(
@@ -63,6 +68,8 @@ data class SnapshotSet(
     val actualSpeedKmh: Double? = null,
     val actualInclinePct: Double? = null,
     val reportedFeelings: Set<String> = emptySet(),
+    val actualRir: Int? = null,
+    val actualRirAtLeastFour: Boolean = false,
 )
 
 data class SnapshotHistory(
@@ -74,6 +81,11 @@ data class SnapshotHistory(
     val speedKmh: Double? = null,
     val inclinePct: Double? = null,
     val setType: String = "UNKNOWN",
+    val workoutId: String = "",
+    val setSyncId: String = "",
+    val actualRir: Int? = null,
+    val actualRirAtLeastFour: Boolean = false,
+    val interrupted: Boolean = false,
 )
 
 data class SnapshotPulse(val bpm: Int, val measuredAtMillis: Long)
@@ -90,7 +102,13 @@ data class SnapshotRest(
 sealed interface WorkoutChangeSet {
   /** The only mutating unit. A packet is all-or-nothing and earns exactly one revision. */
   @Serializable
-  data class Packet(val operations: List<Operation>) : WorkoutChangeSet {
+  data class Packet(
+      val operations: List<Operation>,
+      @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+      val autoregulation:
+          com.valerochka1337.valerochkagym.domain.autoregulation.AutoregulationProof? =
+          null,
+  ) : WorkoutChangeSet {
     init {
       require(operations.isNotEmpty())
     }
@@ -109,6 +127,10 @@ sealed interface WorkoutChangeSet {
         val completed: Boolean? = null,
         val clearFields: Set<String> = emptySet(),
         val recordResult: Boolean = false,
+        @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+        val actualRir: Int? = null,
+        @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+        val setType: String? = null,
     ) : Operation
 
     @Serializable data class AddSet(val sectionId: String) : Operation
@@ -201,6 +223,13 @@ data class RestoreSet(
     val restSnapshotJson: String?,
     val coachMutationRevision: Long,
     val note: String = "",
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val actualRir: Int? = null,
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val actualRirAtLeastFour: Boolean = false,
+    /** Read-only compatibility with saved undo from builds with planned RIR. Never applied. */
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val targetRir: Int? = null,
 )
 
 @Serializable

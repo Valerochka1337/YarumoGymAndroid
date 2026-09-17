@@ -18,6 +18,69 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class CoachAgentTest {
   @Test
+  fun `automatic proposal reminder preserves the completed tool exchange`() = runTest {
+    val api = FakeCoachApi { index ->
+      when (index) {
+        1 -> toolResponse(call("state"))
+        2 -> answer("Снизить вес?")
+        else -> toolResponse(call("proposal", MUTATION))
+      }
+    }
+    val result =
+        agent(api).reply(snapshot(), "Мало повторений", tools(), automaticProposal = true) {
+          if (it.function.name == "submit_workout_changes")
+              CoachToolOutcome("Предложение сохранено", CoachRunStatus.PROPOSAL)
+          else CoachToolOutcome("{}")
+        }
+    assertEquals(CoachRunStatus.PROPOSAL, result.status)
+    assertEquals(3, api.requests.size)
+    assertEquals(listOf("user", "tool", "tool"), api.requests.map { it.messages.last().role })
+    api.requests.forEach {
+      assertTrue(
+          it.messages
+              .dropWhile { message -> message.role == "system" }
+              .none { message -> message.role == "system" }
+      )
+    }
+    assertEquals("state", api.requests.last().messages.last().toolCallId)
+  }
+
+  @Test
+  fun `rejected request does not blame model tool support`() = runTest {
+    for (status in listOf(400, 404, 422)) {
+      val result =
+          agent(FakeCoachApi { throw BackendException(status, "invalid_request", "private") })
+              .reply(snapshot(), "Проверка", tools()) { error("No tools expected") }
+      assertEquals(CoachRunStatus.ERROR, result.status)
+      assertFalse(result.text.contains("поддержкой инструментов"))
+      assertFalse(result.text.contains("private"))
+    }
+  }
+
+  @Test
+  fun `automatic recommendation asks the model to create a proposal instead of asking permission`() =
+      runTest {
+        val api = FakeCoachApi { index ->
+          if (index == 1) answer("Снизить вес?") else toolResponse(call("proposal", MUTATION))
+        }
+        val result =
+            agent(api).reply(snapshot(), "Падение повторений", tools(), automaticProposal = true) {
+              CoachToolOutcome("Предложение сохранено", CoachRunStatus.PROPOSAL)
+            }
+        assertEquals(CoachRunStatus.PROPOSAL, result.status)
+        assertEquals(2, api.requests.size)
+        api.requests.forEach { request ->
+          assertEquals("user", request.messages.last().role)
+          assertTrue(
+              request.messages.dropWhile { it.role == "system" }.none { it.role == "system" }
+          )
+        }
+        assertTrue(
+            api.requests[1].messages.any { it.content.toString().contains("создай карточку") }
+        )
+      }
+
+  @Test
   fun `prompt failure returns an error without sending model requests`() = runTest {
     val gateway =
         object : CoachModelGateway {
@@ -155,10 +218,11 @@ class CoachAgentTest {
     assertEquals("Продолжай", result.text)
     assertEquals(2, result.requestCount)
     assertEquals(1, result.toolCount)
-    assertEquals(
-        AiApiMessage.text("system", "Server coach prompt"),
-        api.requests[0].messages.first(),
-    )
+    val system = api.requests[0].messages.first()
+    assertEquals("system", system.role)
+    assertTrue(system.content.toString().contains("Server coach prompt"))
+    assertTrue(system.content.toString().contains("actual_rir_at_least_four"))
+    assertTrue(system.content.toString().contains("Не спрашивай после каждого подхода"))
     assertEquals(api.requests[0].messages.first(), api.requests[1].messages.first())
     assertEquals("tool", api.requests[1].messages.last().role)
     assertEquals("state", api.requests[1].messages.last().toolCallId)

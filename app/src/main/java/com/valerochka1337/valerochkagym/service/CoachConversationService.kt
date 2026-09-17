@@ -12,10 +12,10 @@ import com.valerochka1337.valerochkagym.data.db.GymDatabase
 import com.valerochka1337.valerochkagym.data.db.entity.CoachJournalEntity
 import com.valerochka1337.valerochkagym.data.db.entity.CoachMessageEntity
 import com.valerochka1337.valerochkagym.data.db.entity.CoachSessionContextEntity
+import com.valerochka1337.valerochkagym.diagnostics.CoachDiagnostics
 import com.valerochka1337.valerochkagym.domain.CoachInitiativeDecision
 import com.valerochka1337.valerochkagym.domain.CoachInitiativePolicy
 import com.valerochka1337.valerochkagym.domain.CoachInitiativeState
-import com.valerochka1337.valerochkagym.domain.CoachPerformanceSet
 import com.valerochka1337.valerochkagym.domain.CoachReply
 import com.valerochka1337.valerochkagym.domain.CoachWorkoutReader
 import com.valerochka1337.valerochkagym.domain.CommandAuthority
@@ -94,6 +94,7 @@ constructor(
   private var ownerScope: CoroutineScope? = null
 
   fun attach(scope: CoroutineScope) {
+    CoachDiagnostics.event("service.attached")
     drafts.value = emptyMap()
     val interrupted =
         synchronized(lifecycle) {
@@ -125,6 +126,7 @@ constructor(
   }
 
   fun detach() {
+    CoachDiagnostics.event("service.detached")
     drafts.value = emptyMap()
     val interrupted =
         synchronized(lifecycle) {
@@ -143,6 +145,7 @@ constructor(
 
   /** Finishing a workout makes an in-flight answer ineligible to write its transcript. */
   fun stopWorkout(workoutId: String) {
+    CoachDiagnostics.event("service.workout_stopped")
     drafts.value = drafts.value - workoutId
     val interrupted =
         synchronized(lifecycle) {
@@ -158,7 +161,14 @@ constructor(
     }
   }
 
-  suspend fun send(workoutId: String, text: String): Boolean {
+  suspend fun send(workoutId: String, text: String): Boolean =
+      CoachDiagnostics.trace("conversation.send") {
+        sendLogged(workoutId, text).also {
+          CoachDiagnostics.event("conversation.send.result", "accepted" to it)
+        }
+      }
+
+  private suspend fun sendLogged(workoutId: String, text: String): Boolean {
     if (text.isBlank() || text.length > MAX_USER_MESSAGE_CHARS || workoutId in stoppedWorkouts)
         return false
     if (consumer?.isActive != true) return false
@@ -202,7 +212,14 @@ constructor(
   /**
    * Retry the original turn without inserting a second user message or replaying local commands.
    */
-  suspend fun retry(workoutId: String, errorMessageId: String): Boolean {
+  suspend fun retry(workoutId: String, errorMessageId: String): Boolean =
+      CoachDiagnostics.trace("conversation.retry") {
+        retryLogged(workoutId, errorMessageId).also {
+          CoachDiagnostics.event("conversation.retry.result", "accepted" to it)
+        }
+      }
+
+  private suspend fun retryLogged(workoutId: String, errorMessageId: String): Boolean {
     if (consumer?.isActive != true || workoutId in stoppedWorkouts) return false
     val requestScope = ownerScope ?: return false
     val sentGeneration = generation
@@ -268,7 +285,9 @@ constructor(
           if (
               request.generation != generation ||
                   consumer?.isActive != true ||
-                  request.workoutId in stoppedWorkouts
+                  request.workoutId in stoppedWorkouts ||
+                  (request.automatic &&
+                      pendingRequests.values.any { it.workoutId == request.workoutId })
           )
               false
           else {
@@ -277,6 +296,11 @@ constructor(
             true
           }
         }
+    CoachDiagnostics.event(
+        "conversation.enqueue",
+        "request" to request.messageId,
+        "accepted" to accepted,
+    )
     if (!accepted) {
       markInterrupted(request)
       return false
@@ -291,7 +315,14 @@ constructor(
     return true
   }
 
-  suspend fun confirm(workoutId: String, proposalId: String): Boolean {
+  suspend fun confirm(workoutId: String, proposalId: String): Boolean =
+      CoachDiagnostics.trace("conversation.confirm") {
+        confirmLogged(workoutId, proposalId).also {
+          CoachDiagnostics.event("conversation.confirm.result", "accepted" to it)
+        }
+      }
+
+  private suspend fun confirmLogged(workoutId: String, proposalId: String): Boolean {
     val session = sessions.snapshot() ?: return false
     val accountId = session.tokens.userId
     val proposal = database.coachDao().pendingProposalForId(proposalId)
@@ -322,7 +353,14 @@ constructor(
     return receipt.result == com.valerochka1337.valerochkagym.domain.CommandResult.APPLIED
   }
 
-  suspend fun cancel(workoutId: String, proposalId: String): Boolean {
+  suspend fun cancel(workoutId: String, proposalId: String): Boolean =
+      CoachDiagnostics.trace("conversation.cancel") {
+        cancelLogged(workoutId, proposalId).also {
+          CoachDiagnostics.event("conversation.cancel.result", "accepted" to it)
+        }
+      }
+
+  private suspend fun cancelLogged(workoutId: String, proposalId: String): Boolean {
     val session = sessions.snapshot() ?: return false
     val accountId = session.tokens.userId
     val proposal = database.coachDao().pendingProposalForId(proposalId)
@@ -345,7 +383,14 @@ constructor(
     return cancelled
   }
 
-  suspend fun undo(workoutId: String): Boolean {
+  suspend fun undo(workoutId: String): Boolean =
+      CoachDiagnostics.trace("conversation.undo") {
+        undoLogged(workoutId).also {
+          CoachDiagnostics.event("conversation.undo.result", "accepted" to it)
+        }
+      }
+
+  private suspend fun undoLogged(workoutId: String): Boolean {
     val session = sessions.snapshot() ?: return false
     val accountId = session.tokens.userId
     val snapshot = reader.snapshot(accountId, workoutId, session.epoch) ?: return false
@@ -381,7 +426,17 @@ constructor(
     }
   }
 
-  private suspend fun runRequest(request: PendingRequest) {
+  private suspend fun runRequest(request: PendingRequest) =
+      CoachDiagnostics.trace(
+          "conversation.request",
+          "request" to request.messageId,
+          "revision" to request.snapshot.revision,
+          "retry" to request.retry,
+      ) {
+        executeRequest(request)
+      }
+
+  private suspend fun executeRequest(request: PendingRequest) {
     running.value = running.value + request.workoutId
     setStage(request.workoutId, "Проверяем тренировку…")
     var interrupted = false
@@ -390,43 +445,51 @@ constructor(
     drafts.value = drafts.value - request.workoutId
     try {
       if (!isCurrent(request)) {
+        CoachDiagnostics.event("conversation.stale", "request" to request.messageId)
         interrupted = true
         return
       }
       database.coachDao().setMessageStatus(request.messageId, "PROCESSING")
       val snapshot = request.snapshot
-      (if (request.retry) null else LocalWorkoutCommandParser.parse(request.text, snapshot))?.let {
-          local ->
-        val receipt =
-            editor.submit(
+      (if (request.retry || request.automatic) null
+          else LocalWorkoutCommandParser.parse(request.text, snapshot))
+          ?.let { local ->
+            CoachDiagnostics.event(
+                "conversation.local_command",
+                "request" to request.messageId,
+                "operations" to
+                    local.packet.operations.joinToString(",") { it.javaClass.simpleName },
+            )
+            val receipt =
+                editor.submit(
+                    request.accountId,
+                    request.workoutId,
+                    UUID.randomUUID().toString(),
+                    snapshot.revision,
+                    local.packet,
+                    local.authority,
+                    CommandAuthority.Anchors(
+                        snapshot.currentSetId,
+                        snapshot.previousSetId,
+                        snapshot.nextSetId,
+                    ),
+                    request.sessionEpoch,
+                    isCurrent = { isCurrent(request) },
+                )
+            appendMessage(
+                UUID.randomUUID().toString(),
                 request.accountId,
                 request.workoutId,
-                UUID.randomUUID().toString(),
-                snapshot.revision,
-                local.packet,
-                local.authority,
-                CommandAuthority.Anchors(
-                    snapshot.currentSetId,
-                    snapshot.previousSetId,
-                    snapshot.nextSetId,
-                ),
-                request.sessionEpoch,
+                "assistant",
+                if (receipt.result == com.valerochka1337.valerochkagym.domain.CommandResult.APPLIED)
+                    "Готово: изменение применено."
+                else "Не удалось применить изменение: состояние тренировки изменилось.",
+                expectedSessionEpoch = request.sessionEpoch,
                 isCurrent = { isCurrent(request) },
             )
-        appendMessage(
-            UUID.randomUUID().toString(),
-            request.accountId,
-            request.workoutId,
-            "assistant",
-            if (receipt.result == com.valerochka1337.valerochkagym.domain.CommandResult.APPLIED)
-                "Готово: изменение применено."
-            else "Не удалось применить изменение: состояние тренировки изменилось.",
-            expectedSessionEpoch = request.sessionEpoch,
-            isCurrent = { isCurrent(request) },
-        )
-        coachAlerts.emit(request.workoutId)
-        return
-      }
+            coachAlerts.emit(request.workoutId)
+            return
+          }
       val history =
           database
               .coachDao()
@@ -444,8 +507,9 @@ constructor(
               tools = CoachToolCodec.tools,
               history = history,
               expectedSessionEpoch = request.sessionEpoch,
+              automaticProposal = request.automaticProposal,
               onDraft = { text ->
-                if (isCurrent(request)) {
+                if (isCurrent(request) && !request.automatic) {
                   drafts.value =
                       if (text.isEmpty()) drafts.value - request.workoutId
                       else
@@ -465,9 +529,17 @@ constructor(
             dispatch(request, call)
           }
       if (!isCurrent(request)) {
+        CoachDiagnostics.event("conversation.stale", "request" to request.messageId)
         interrupted = true
         return
       }
+      CoachDiagnostics.event(
+          "conversation.result",
+          "request" to request.messageId,
+          "status" to result.status,
+          "requests" to result.requestCount,
+          "tool_calls" to result.toolCount,
+      )
       if (
           result.status == CoachRunStatus.ANSWER ||
               result.status == CoachRunStatus.ERROR ||
@@ -564,7 +636,29 @@ constructor(
                 "Аккаунт изменился. Не выполняй действие.",
                 CoachRunStatus.ERROR,
             )
-        when (val decoded = CoachToolCodec.decode(call)) {
+        val decoded = CoachToolCodec.decode(call)
+        CoachDiagnostics.event(
+            "tool.decoded",
+            "request" to request.messageId,
+            "operation" to decoded.javaClass.simpleName,
+        )
+        when (decoded) {
+          is CoachToolRequest.Autoregulation -> {
+            val fresh =
+                freshSnapshot(request)
+                    ?: return CoachToolOutcome("Тренировка недоступна.", CoachRunStatus.ERROR)
+            val result =
+                com.valerochka1337.valerochkagym.domain.autoregulation.AutoregulationEngine
+                    .calculate(fresh, decoded.options ?: fresh.autoregulationOptions)
+            CoachToolOutcome(
+                json.encodeToString(
+                    com.valerochka1337.valerochkagym.domain.autoregulation
+                        .AutoregulationRecommendation
+                        .serializer(),
+                    result,
+                )
+            )
+          }
           CoachToolRequest.State -> {
             setStage(request.workoutId, "Проверяю текущий подход…")
             val fresh = freshSnapshot(request)
@@ -623,7 +717,7 @@ constructor(
                           request.accountId,
                           request.workoutId,
                           "assistant",
-                          "Обоснование тренера: $reason",
+                          reason,
                           expectedSessionEpoch = request.sessionEpoch,
                           isCurrent = { isCurrent(request) },
                       )
@@ -635,6 +729,7 @@ constructor(
                 )
               }
               ModelProposalSaveResult.Stale,
+              ModelProposalSaveResult.Invalid,
               ModelProposalSaveResult.InvalidOrder -> {
                 val fresh = freshSnapshot(request)
                 if (fresh == null)
@@ -647,16 +742,12 @@ constructor(
                         recoveryJson(
                             fresh,
                             invalidOrder = result == ModelProposalSaveResult.InvalidOrder,
+                            invalidParameters = result == ModelProposalSaveResult.Invalid,
                         ),
                         kind =
                             com.valerochka1337.valerochkagym.data.ai.CoachToolOutcomeKind.RECOVERY,
                     )
               }
-              ModelProposalSaveResult.Invalid ->
-                  CoachToolOutcome(
-                      "Не удалось подготовить предложенное изменение. Уточните упражнение или параметры.",
-                      CoachRunStatus.ERROR,
-                  )
               ModelProposalSaveResult.Unavailable ->
                   CoachToolOutcome(
                       "Тренировка больше недоступна для изменений.",
@@ -667,7 +758,8 @@ constructor(
         }
       } catch (error: CancellationException) {
         throw error
-      } catch (_: Exception) {
+      } catch (error: Exception) {
+        CoachDiagnostics.failure("tool.dispatch.failed", error, "request" to request.messageId)
         CoachToolOutcome(
             "Не удалось обработать запрос",
             CoachRunStatus.ERROR,
@@ -685,12 +777,22 @@ constructor(
     }
   }
 
-  private fun recoveryJson(snapshot: WorkoutSnapshot, invalidOrder: Boolean): String =
+  private fun recoveryJson(
+      snapshot: WorkoutSnapshot,
+      invalidOrder: Boolean,
+      invalidParameters: Boolean = false,
+  ): String =
       buildJsonObject {
-            put("error", if (invalidOrder) "invalid_exercise_order" else "revision_conflict")
+            put(
+                "error",
+                if (invalidParameters) "invalid_change_parameters"
+                else if (invalidOrder) "invalid_exercise_order" else "revision_conflict",
+            )
             put(
                 "instruction",
-                if (invalidOrder)
+                if (invalidParameters)
+                    "Пакет отклонён целиком, ничего не сохранено и не применено. Исправь предложение по current_state: используй точные set_id и revision, поля по типу упражнения и положительные значения веса и повторов. Для корректировки будущей нагрузки меняй только невыполненные подходы, не задавай им actual_rir и не записывай за пользователя результат. Предложение должно реально менять параметры. Если изменение не нужно, объясни это без повторной отправки пакета."
+                else if (invalidOrder)
                     "Пакет не сохранён и не применён. reorder_exercises должен содержать каждый section_id из current_state ровно один раз, включая полностью выполненные упражнения и разминку. Исправь полный порядок, сохрани место выполненной разминки и используй revision из current_state."
                 else "Создай новое предложение только по current_state с новой revision.",
             )
@@ -718,6 +820,11 @@ constructor(
             .saveContext(
                 existing.copy(initiativeEnabled = enabled, initiativePendingInteraction = false)
             )
+        if (!enabled) {
+          pendingRequests.values
+              .filter { it.workoutId == workoutId && it.automatic }
+              .forEach { latestRequests.remove(workoutId, it.messageId) }
+        }
         true
       }
     }
@@ -797,6 +904,7 @@ constructor(
   }
 
   private fun setStage(workoutId: String, stage: String) {
+    CoachDiagnostics.event("conversation.stage", "stage" to stage)
     stages.value = stages.value + (workoutId to stage)
   }
 
@@ -805,13 +913,39 @@ constructor(
       workoutId: String,
       expectedSessionEpoch: Long? = null,
       nowMillis: Long = System.currentTimeMillis(),
+  ): CoachInitiativeDecision? =
+      CoachDiagnostics.trace("initiative.evaluate") {
+        evaluateInitiative(accountId, workoutId, expectedSessionEpoch, nowMillis).also {
+          CoachDiagnostics.event("initiative.result", "saved" to (it != null), "kind" to it?.kind)
+        }
+      }
+
+  private suspend fun evaluateInitiative(
+      accountId: String,
+      workoutId: String,
+      expectedSessionEpoch: Long?,
+      nowMillis: Long,
   ): CoachInitiativeDecision? {
-    if (!belongsToLiveAccount(accountId, expectedSessionEpoch)) return null
-    val full = database.workoutDao().getWorkoutFull(workoutId) ?: return null
-    if (full.workout.finishedAt != null) return null
+    fun skip(reason: String): CoachInitiativeDecision? {
+      CoachDiagnostics.event("initiative.skipped", "reason" to reason)
+      return null
+    }
+    if (!belongsToLiveAccount(accountId, expectedSessionEpoch)) return skip("owner_changed")
+    editor.refreshAutoregulationProposal(accountId, workoutId, expectedSessionEpoch)
+    val full = database.workoutDao().getWorkoutFull(workoutId) ?: return skip("unavailable")
+    if (full.workout.finishedAt != null) return skip("workout_finished")
     val context =
         database.coachDao().context(workoutId) ?: CoachSessionContextEntity(workoutId, accountId)
-    if (context.accountId != accountId) return null
+    if (context.accountId != accountId) return skip("context_owner_changed")
+    // Recalculate after business changes, including while an interaction is pending.
+    val assessmentSnapshot =
+        reader.snapshot(accountId, workoutId, expectedSessionEpoch) ?: return skip("unavailable")
+    if (assessmentSnapshot.revision != full.workout.coachRevision) return skip("revision_changed")
+    val assessment =
+        com.valerochka1337.valerochkagym.domain.autoregulation.AutoregulationEngine.calculate(
+            assessmentSnapshot
+        )
+    val pendingProposal = database.coachDao().pendingProposal(workoutId)
     val state =
         CoachInitiativeState(
             enabled = context.initiativeEnabled,
@@ -820,86 +954,80 @@ constructor(
             lastAutomaticAtMillis = context.initiativeLastAutomaticAtMillis,
             askedExerciseIds = context.initiativeAskedExerciseIdsJson.decodeStrings(),
             endReminderSent = context.initiativeEndReminderSent,
-            pendingInteraction = context.initiativePendingInteraction,
+            pendingInteraction =
+                (context.initiativePendingInteraction &&
+                    "autoregulation:${assessment.interventionKey}" in
+                        context.initiativeAskedExerciseIdsJson.decodeStrings()) ||
+                    pendingProposal != null ||
+                    workoutId in running.value ||
+                    pendingRequests.values.any { it.workoutId == workoutId },
         )
-    val rows = mutableListOf<CoachPerformanceSet>()
-    for (section in full.exercises) {
-      val exercise = database.exerciseDao().getById(section.workoutExercise.exerciseId) ?: continue
-      rows +=
-          database.workoutDao().coachCompletedSetsForExercise(exercise.id).map { row ->
-            CoachPerformanceSet(
-                setId = row.setId,
-                workoutId = row.workoutId,
-                exerciseId = row.exerciseId,
-                exerciseName = row.exerciseName,
-                setIndex = row.setIndex,
-                weightKg = row.weightKg,
-                reps = row.reps,
-                completedAtMillis = row.completedAtMillis,
-                workoutFinishedAtMillis = row.workoutFinishedAtMillis,
-                setType = row.setType,
-                interrupted = "INTERRUPTED" in row.reportedFeelingsJson.decodeStrings(),
-            )
-          }
-    }
     val decision =
         CoachInitiativePolicy.next(
             state = state,
             nowMillis = nowMillis,
-            completedSets = rows.filter { it.workoutId == workoutId },
-            history = rows.filter { it.workoutId != workoutId },
+            completedSets = emptyList(),
+            history = emptyList(),
             endsAtMillis = context.availableTimeEndsAtMillis,
+            assessment = assessment,
         ) ?: return null
-    val messageId = UUID.randomUUID().toString()
-    return writes.write {
-      database.withTransaction {
-        if (!belongsToLiveAccount(accountId, expectedSessionEpoch)) return@withTransaction null
-        val active = database.workoutDao().getWorkoutFull(workoutId)?.workout
-        if (
-            active?.finishedAt != null ||
-                active == null ||
-                active.coachRevision != full.workout.coachRevision
+    val scope = ownerScope ?: return skip("service_detached")
+    val session = sessions.snapshot() ?: return skip("owner_changed")
+    val sentGeneration = generation
+    if (
+        consumer?.isActive != true ||
+            session.tokens.userId != accountId ||
+            (expectedSessionEpoch != null && session.epoch != expectedSessionEpoch)
+    )
+        return skip("service_detached")
+    val requestId = UUID.randomUUID().toString()
+    val reserved =
+        writes.write {
+          database.withTransaction {
+            val active = database.workoutDao().getWorkoutFull(workoutId)?.workout
+            val latest =
+                database.coachDao().context(workoutId)
+                    ?: CoachSessionContextEntity(workoutId, accountId)
+            if (
+                !belongsToLiveAccount(accountId, session.epoch) ||
+                    generation != sentGeneration ||
+                    active == null ||
+                    active.finishedAt != null ||
+                    active.coachRevision != assessmentSnapshot.revision ||
+                    latest != context ||
+                    pendingRequests.values.any { it.workoutId == workoutId } ||
+                    database.coachDao().pendingProposal(workoutId) != null
+            )
+                return@withTransaction false
+            database.coachDao().saveContext(latest.withInitiativeState(decision.nextState))
+            true
+          }
+        }
+    if (!reserved) return skip("initiative_changed")
+    val request =
+        PendingRequest(
+            requestId,
+            accountId,
+            session.epoch,
+            workoutId,
+            "Самостоятельно оцени последние результаты тренировки. Сигнал для проверки: ${assessment.observation} " +
+                "Это внутренний контекст, не сообщение пользователя. Сверь актуальные результаты через get_workout_state. " +
+                "Подбери изменение с учётом упражнения и сразу создай предложение; не повторяй пользователю текст правил или настройки приложения.",
+            assessmentSnapshot,
+            sentGeneration,
+            scope,
+            automatic = true,
+            automaticProposal =
+                assessment.kind in
+                    setOf(
+                        com.valerochka1337.valerochkagym.domain.autoregulation.RecommendationKind
+                            .ADVISE,
+                        com.valerochka1337.valerochkagym.domain.autoregulation.RecommendationKind
+                            .ADJUST,
+                    ),
         )
-            return@withTransaction null
-        val latest =
-            database.coachDao().context(workoutId)
-                ?: CoachSessionContextEntity(workoutId, accountId)
-        if (!belongsToLiveAccount(accountId, expectedSessionEpoch) || latest != context)
-            return@withTransaction null
-        database.coachDao().saveContext(latest.withInitiativeState(decision.nextState))
-        database
-            .coachDao()
-            .saveMessage(
-                CoachMessageEntity(
-                    messageId,
-                    accountId,
-                    workoutId,
-                    "assistant",
-                    decision.text,
-                    nowMillis,
-                ),
-            )
-        database
-            .coachDao()
-            .saveJournal(
-                CoachJournalEntity(
-                    id = messageId,
-                    accountId = accountId,
-                    workoutId = workoutId,
-                    createdAt = nowMillis,
-                    payload =
-                        json.encodeToString(
-                            buildJsonObject {
-                              put("kind", "message")
-                              put("role", "assistant")
-                              put("text", decision.text)
-                            }
-                        ),
-                )
-            )
-        decision
-      }
-    }
+    if (!enqueue(request)) return skip("enqueue_failed")
+    return decision
   }
 
   private fun belongsToLiveAccount(accountId: String, expectedSessionEpoch: Long? = null): Boolean {
@@ -958,6 +1086,8 @@ constructor(
       val generation: Long,
       val scope: CoroutineScope,
       val retry: Boolean = false,
+      val automatic: Boolean = false,
+      val automaticProposal: Boolean = false,
   )
 
   companion object {

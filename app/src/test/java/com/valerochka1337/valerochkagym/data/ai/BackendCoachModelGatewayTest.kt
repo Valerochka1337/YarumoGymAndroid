@@ -29,6 +29,33 @@ import org.junit.Test
 
 class BackendCoachModelGatewayTest {
   @Test
+  fun `gateway sends all registered coach tools within the backend contract`() = runTest {
+    val backend = FakeBackend()
+    val gateway = BackendCoachModelGateway(backend, FakeSessions(), SettingsRepository(FakeStore()))
+
+    val result =
+        gateway.complete(
+            "owner",
+            7,
+            listOf(AiApiMessage.text("user", "Привет")),
+            CoachToolCodec.tools,
+        )
+
+    assertEquals("Ответ", (result.choices.single().message!!.content as JsonPrimitive).content)
+    assertEquals(CoachToolCodec.tools, backend.turn.tools)
+    assertEquals(
+        setOf(
+            "get_workout_state",
+            "find_exercises",
+            "get_exercise_history",
+            "submit_workout_changes",
+        ),
+        backend.turn.tools.map { it.function.name }.toSet(),
+    )
+    assertEquals(4, backend.turn.tools.size)
+  }
+
+  @Test
   fun `invalid or foreign prompt is rejected`() = runTest {
     for (backend in
         listOf(

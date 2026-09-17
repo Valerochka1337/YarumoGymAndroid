@@ -74,6 +74,67 @@ class PortableDataTest : RoomDaoTest() {
       }
 
   @Test
+  fun `workout RIR survives portable round trip and legacy omissions remain unknown`() = runTest {
+    val workout = insertWorkout("rir-sync", finishedAt = 2000)
+    val exercise =
+        db.exerciseDao()
+            .insert(
+                com.valerochka1337.valerochkagym.data.db.entity.ExerciseEntity(
+                    name = "Press",
+                    muscleGroup = com.valerochka1337.valerochkagym.data.db.entity.MuscleGroup.CHEST,
+                    type = com.valerochka1337.valerochkagym.data.db.entity.ExerciseType.STRENGTH,
+                )
+            )
+    val section = insertWorkoutExercise(workout, exercise)
+    val setId = insertSet(section, 0, weightKg = 50.0, reps = 8, isCompleted = true)
+    db.workoutDao()
+        .updateSet(db.workoutDao().getSet(setId)!!.copy(legacyTargetRir = 3, actualRir = 0))
+    val portable = PortableData(db.openHelper.writableDatabase)
+    val payload = portable.snapshot(includeStandard = true).getValue("workout:$workout")
+    db.withTransaction {
+      portable.apply(listOf(CloudRecord("workout", workout, 1, payload = payload)), emptyList())
+    }
+    val restored = workoutFull(workout).exercises.single().sets.single()
+    assertEquals(3, restored.legacyTargetRir)
+    assertEquals(0, restored.actualRir)
+    db.workoutDao().updateSet(restored.copy(actualRir = null, actualRirAtLeastFour = true))
+    val rangePayload = portable.snapshot(includeStandard = true).getValue("workout:$workout")
+    db.workoutDao().updateSet(restored.copy(actualRir = 2, actualRirAtLeastFour = false))
+    db.withTransaction {
+      portable.apply(
+          listOf(CloudRecord("workout", workout, 2, payload = rangePayload)),
+          emptyList(),
+      )
+    }
+    assertTrue(workoutFull(workout).exercises.single().sets.single().actualRirAtLeastFour)
+    assertEquals(null, workoutFull(workout).exercises.single().sets.single().actualRir)
+    fun withoutRir(
+        value: kotlinx.serialization.json.JsonElement
+    ): kotlinx.serialization.json.JsonElement =
+        when (value) {
+          is JsonObject ->
+              JsonObject(
+                  value
+                      .filterKeys { it !in setOf("targetRir", "actualRir", "actualRirAtLeastFour") }
+                      .mapValues { withoutRir(it.value) }
+              )
+          is JsonArray -> JsonArray(value.map(::withoutRir))
+          else -> value
+        }
+    db.withTransaction {
+      portable.apply(
+          listOf(
+              CloudRecord("workout", workout, 2, payload = withoutRir(rangePayload) as JsonObject)
+          ),
+          emptyList(),
+      )
+    }
+    assertEquals(null, workoutFull(workout).exercises.single().sets.single().actualRir)
+    assertEquals(null, workoutFull(workout).exercises.single().sets.single().legacyTargetRir)
+    assertFalse(workoutFull(workout).exercises.single().sets.single().actualRirAtLeastFour)
+  }
+
+  @Test
   fun `profile wire atomically replaces canonical children and rejects wrong scalar types`() =
       runTest {
         val owner = "owner-7"

@@ -10,6 +10,10 @@ import kotlinx.serialization.json.*
  * Wire intents contain portable identifiers only. The host resolves them within the pinned owner.
  */
 sealed interface CoachToolRequest {
+  data class Autoregulation(
+      val options: com.valerochka1337.valerochkagym.domain.autoregulation.AutoregulationOptions?
+  ) : CoachToolRequest
+
   data object State : CoachToolRequest
 
   data class Find(
@@ -30,6 +34,10 @@ sealed interface CoachToolRequest {
 }
 
 sealed interface CoachChangeIntent {
+  data class Autoregulate(
+      val options: com.valerochka1337.valerochkagym.domain.autoregulation.AutoregulationOptions?
+  ) : CoachChangeIntent
+
   data class AddExercise(val exerciseId: String, val position: Int? = null) : CoachChangeIntent
 
   data class RemoveRemaining(val sectionId: String) : CoachChangeIntent
@@ -83,6 +91,8 @@ data class CoachSetValues(
     val durationSec: Int? = null,
     val speedKmh: Double? = null,
     val inclinePct: Double? = null,
+    val actualRir: Int? = null,
+    val setType: String? = null,
 )
 
 class CoachToolValidationException(message: String) : IllegalArgumentException(message)
@@ -176,7 +186,13 @@ object CoachToolCodec {
                                         }
                                         set.actualSpeedKmh?.let { put("actual_speed_kmh", it) }
                                         set.actualInclinePct?.let { put("actual_incline_pct", it) }
+                                        if (set.actualRirAtLeastFour)
+                                            put("actual_rir_at_least_four", true)
                                         put("reported_feelings", stringArray(set.reportedFeelings))
+                                        put(
+                                            "actual_rir",
+                                            set.actualRir?.let(::JsonPrimitive) ?: JsonNull,
+                                        )
                                       }
                                   )
                                 }
@@ -196,6 +212,9 @@ object CoachToolCodec {
                                         row.speedKmh?.let { put("speed_kmh", it) }
                                         row.inclinePct?.let { put("incline_pct", it) }
                                         put("set_type", row.setType)
+                                        row.actualRir?.let { put("actual_rir", it) }
+                                        if (row.actualRirAtLeastFour)
+                                            put("actual_rir_at_least_four", true)
                                       }
                                   )
                                 }
@@ -255,6 +274,8 @@ object CoachToolCodec {
             put("set_index", set.setIndex)
             put("completed_at", set.completedAt?.let(::JsonPrimitive) ?: JsonNull)
             put("set_type", set.setType)
+            set.actualRir?.let { put("actual_rir", it) }
+            if (set.actualRirAtLeastFour) put("actual_rir_at_least_four", true)
             put("weight_kg", (set.actualWeightKg ?: set.weightKg)?.let(::JsonPrimitive) ?: JsonNull)
             put("reps", (set.actualReps ?: set.reps)?.let(::JsonPrimitive) ?: JsonNull)
             put(
@@ -278,8 +299,25 @@ object CoachToolCodec {
     isLenient = false
     ignoreUnknownKeys = false
   }
-  private val valueFields = setOf("weight_kg", "reps", "duration_sec", "speed_kmh", "incline_pct")
-  private val feelingValues = setOf("PAIN", "FATIGUE", "TECHNIQUE_BREAKDOWN", "INTERRUPTED")
+  private val valueFields =
+      setOf(
+          "weight_kg",
+          "reps",
+          "duration_sec",
+          "speed_kmh",
+          "incline_pct",
+          "actual_rir",
+          "set_type",
+      )
+  private val feelingValues =
+      setOf(
+          "PAIN",
+          "FATIGUE",
+          "TECHNIQUE_BREAKDOWN",
+          "INTERRUPTED",
+          "PLANNED_EFFORT",
+          "HARDER_THAN_EXPECTED",
+      )
 
   private fun invalid(): Nothing =
       throw CoachToolValidationException("Некорректные аргументы инструмента. Уточните запрос.")
@@ -294,8 +332,14 @@ object CoachToolCodec {
         }
     return when (call.function.name) {
       "get_workout_state" -> {
-        obj.keys(emptySet())
-        CoachToolRequest.State
+        obj.keys(setOf("autoregulation"))
+        if ("autoregulation" in obj) {
+          val options = obj["autoregulation"] as? JsonObject ?: invalid()
+          options.keys(
+              setOf("goal", "exercise_id", "available_weights_kg", "observed_rest_seconds")
+          )
+          CoachToolRequest.Autoregulation(autoregulationOptions(options))
+        } else CoachToolRequest.State
       }
       "find_exercises" -> {
         obj.keys(setOf("query", "equipment_ids", "muscle_ids", "muscle_groups", "limit"))
@@ -343,6 +387,10 @@ object CoachToolCodec {
     obj.optionalText("reason", 1200)
     fun keys(vararg names: String) = obj.keys(names.toSet() + setOf("action", "reason"))
     return when (action) {
+      "autoregulate" -> {
+        keys("goal", "exercise_id", "available_weights_kg", "observed_rest_seconds")
+        CoachChangeIntent.Autoregulate(autoregulationOptions(obj))
+      }
       "add_exercise" -> {
         keys("exercise_id", "position")
         CoachChangeIntent.AddExercise(
@@ -398,6 +446,10 @@ object CoachToolCodec {
                 values.optionalInt("duration_sec"),
                 values.optionalNumber("speed_kmh"),
                 values.optionalNumber("incline_pct", -100.0),
+                values.optionalInt("actual_rir")?.also { if (it !in 0..10) invalid() },
+                values.optionalText("set_type", 20)?.also {
+                  if (it !in setOf("WORK", "WARMUP", "UNKNOWN", "DROP", "AMRAP")) invalid()
+                },
             ),
             action == "record_result",
         )
@@ -522,8 +574,9 @@ object CoachToolCodec {
     listOf(
         tool(
             "get_workout_state",
-            "Полная активная тренировка, закреплённые ссылки, отдых, доступное оборудование, мышцы и свежий доступный пульс.",
-            schema(emptyMap()),
+            "Без параметров: полная активная тренировка, закреплённые ссылки, отдых, доступное оборудование, мышцы и свежий доступный пульс. С объектом autoregulation (допустим пустой): вместо состояния локальный расчёт продолжения. RIR и тип подхода сначала записать как явные сведения пользователя. goal и оборудование передавать только из его данных, иначе опустить. Не выводить RIR, технику или восстановление из пульса и повторов. Для предложения можно использовать edit_set и rest с обоснованными значениями. autoregulate доступен как необязательный локальный расчёт.",
+            // The backend contract allows exactly four tool names; extend the read tool.
+            schema(mapOf("autoregulation" to schema(autoregulationFields()))),
         ),
         tool(
             "find_exercises",
@@ -606,24 +659,37 @@ object CoachToolCodec {
     val setValues =
         schema(
             valueFields.associateWith { field ->
-              buildJsonObject {
-                put(
-                    "type",
-                    JsonArray(
-                        listOf(
-                            JsonPrimitive(
-                                if (field in setOf("reps", "duration_sec")) "integer" else "number"
-                            ),
-                            JsonPrimitive("null"),
-                        )
-                    ),
-                )
-                put("minimum", if (field == "incline_pct") -100 else 0)
-                put("maximum", 1_000_000)
-              }
+              if (field == "set_type")
+                  enumSchema(listOf("WORK", "WARMUP", "UNKNOWN", "DROP", "AMRAP"))
+              else
+                  buildJsonObject {
+                    put(
+                        "type",
+                        JsonArray(
+                            listOf(
+                                JsonPrimitive(
+                                    if (
+                                        field in
+                                            setOf(
+                                                "reps",
+                                                "duration_sec",
+                                                "actual_rir",
+                                            )
+                                    )
+                                        "integer"
+                                    else "number"
+                                ),
+                                JsonPrimitive("null"),
+                            )
+                        ),
+                    )
+                    put("minimum", if (field == "incline_pct") -100 else 0)
+                    put("maximum", if (field.endsWith("_rir")) 10 else 1_000_000)
+                  }
             }
         )
     return listOf(
+        op("autoregulate", autoregulationFields(), autoregulationFields().keys),
         op(
             "add_exercise",
             mapOf("exercise_id" to id, "position" to numberSchema(true)),
@@ -679,6 +745,67 @@ object CoachToolCodec {
 
   private fun tool(name: String, description: String, parameters: JsonObject) =
       AiApiTool(function = AiApiToolFunction(name, description, parameters))
+
+  private fun autoregulationFields(): Map<String, JsonElement> =
+      mapOf(
+          "goal" to
+              enumSchema(
+                  com.valerochka1337.valerochkagym.domain.autoregulation.TrainingGoal.entries.map {
+                    it.name
+                  }
+              ),
+          "exercise_id" to uuidSchema(),
+          "available_weights_kg" to arraySchema(numberSchema(false)),
+          "observed_rest_seconds" to numberSchema(true),
+      )
+
+  private fun autoregulationOptions(
+      obj: JsonObject
+  ): com.valerochka1337.valerochkagym.domain.autoregulation.AutoregulationOptions? {
+    if (
+        obj.keys.none {
+          it in setOf("goal", "exercise_id", "available_weights_kg", "observed_rest_seconds")
+        }
+    )
+        return null
+    val goal =
+        obj.optionalText("goal", 30)?.let { value ->
+          com.valerochka1337.valerochkagym.domain.autoregulation.TrainingGoal.entries.firstOrNull {
+            it.name == value
+          } ?: invalid()
+        } ?: com.valerochka1337.valerochkagym.domain.autoregulation.TrainingGoal.PRESERVE_PLAN
+    val weights =
+        if ("available_weights_kg" in obj) {
+          val id = obj.uuid("exercise_id")
+          val values = obj["available_weights_kg"] as? JsonArray ?: invalid()
+          if (values.size !in 1..100) invalid()
+          mapOf(
+              id to
+                  values
+                      .map { value ->
+                        (value as? JsonPrimitive)
+                            ?.takeIf { !it.isString }
+                            ?.doubleOrNull
+                            ?.takeIf { it.isFinite() && it > 0 && it <= 1000 } ?: invalid()
+                      }
+                      .distinct()
+                      .sorted()
+          )
+        } else {
+          if ("exercise_id" in obj) invalid()
+          emptyMap()
+        }
+    return com.valerochka1337.valerochkagym.domain.autoregulation.AutoregulationOptions(
+        goal,
+        weights,
+        obj.optionalInt("observed_rest_seconds")?.also { if (it !in 0..86400) invalid() },
+    )
+  }
+
+  private fun enumSchema(values: List<String>): JsonObject = buildJsonObject {
+    put("type", "string")
+    put("enum", JsonArray(values.map(::JsonPrimitive)))
+  }
 
   private fun schema(fields: Map<String, JsonElement>, vararg required: String) = buildJsonObject {
     put("type", "object")
