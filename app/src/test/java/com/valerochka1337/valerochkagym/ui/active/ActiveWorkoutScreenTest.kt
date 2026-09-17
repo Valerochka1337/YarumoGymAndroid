@@ -412,6 +412,62 @@ class ActiveWorkoutScreenTest {
   }
 
   @Test
+  fun `skipping rest keeps the outgoing timer in the primary action slot`() {
+    val restTimer =
+        MutableStateFlow<RestTimerState?>(
+            RestTimerState.Timed(totalSec = 90, remainingSec = 45, endsAtMillis = 45_000L)
+        )
+    composeRule.mainClock.autoAdvance = false
+    composeRule.setContent {
+      GymTheme {
+        ActiveWorkoutContent(
+            state =
+                ActiveWorkoutUiState(
+                    loading = false,
+                    workout = workoutWithIncompleteExercises(),
+                ),
+            elapsedSeconds = MutableStateFlow(0L),
+            restTimer = restTimer,
+            heartRateState =
+                MutableStateFlow<HeartRateConnectionState>(HeartRateConnectionState.Idle),
+            heartRateReading = MutableStateFlow<HeartRateReading?>(null),
+            setActions = noOpSetActions(),
+            onDeleteExercise = {},
+            onReorderExercises = {},
+            onAddExercise = {},
+            onExerciseClick = {},
+            onFinish = {},
+            onDiscard = {},
+            onAddRestSeconds = {},
+            onSkipRest = { restTimer.value = null },
+            onScanHeartRate = {},
+            onConnectHeartRate = {},
+            onCancelHeartRateSelection = {},
+        )
+      }
+    }
+    composeRule.mainClock.advanceTimeByFrame()
+    val initialTimerBounds =
+        composeRule
+            .onNodeWithContentDescription("Пропустить отдых")
+            .fetchSemanticsNode()
+            .boundsInRoot
+
+    composeRule.onNodeWithContentDescription("Пропустить отдых").performClick()
+    composeRule.mainClock.advanceTimeByFrame()
+
+    val outgoingTimerBounds =
+        composeRule
+            .onNodeWithContentDescription("Пропустить отдых")
+            .fetchSemanticsNode()
+            .boundsInRoot
+    assertEquals(initialTimerBounds.top, outgoingTimerBounds.top, 0.5f)
+    assertEquals(initialTimerBounds.bottom, outgoingTimerBounds.bottom, 0.5f)
+    composeRule.onNodeWithText("Подход выполнен").assertIsDisplayed()
+    composeRule.mainClock.autoAdvance = true
+  }
+
+  @Test
   fun `adding a set stays unavailable until local reorder reaches Room`() {
     val workout = mutableStateOf(workoutWithIncompleteExercises())
     val addedSetTo = mutableListOf<Long>()

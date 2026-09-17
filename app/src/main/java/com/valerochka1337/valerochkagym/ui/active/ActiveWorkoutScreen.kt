@@ -6,14 +6,11 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.view.WindowManager
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -588,15 +585,12 @@ internal fun ActiveWorkoutContent(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
           Column(Modifier.weight(1f)) {
-            RestTimerPill(
+            WorkoutPrimaryAction(
                 restTimer = restTimer,
                 heartRateReading = heartRateReading,
+                activeSetId = activeSetId,
                 onAddRestSeconds = onAddRestSeconds,
                 onSkipRest = onSkipRest,
-            )
-            CurrentSetPrimaryAction(
-                restTimer = restTimer,
-                activeSetId = activeSetId,
                 onComplete = { setId ->
                   val focus = currentFocus
                   if (
@@ -849,79 +843,110 @@ private fun HeartRateBubble(
 }
 
 /**
- * Пилюля отдыха внизу экрана. В таймерном режиме показывает «−15с / M:SS / +15с», а в режиме пульса
- * — текущий BPM и порог; тап по центру всегда пропускает отдых.
+ * Один стабильный слот главного действия. При завершении отдыха меняет таймер на кнопку подхода в
+ * тех же границах, чтобы две кнопки не меняли высоту нижней панели во время exit-анимации.
  */
 @Composable
-private fun RestTimerPill(
+private fun WorkoutPrimaryAction(
     restTimer: StateFlow<RestTimerState?>,
     heartRateReading: StateFlow<HeartRateReading?>,
+    activeSetId: Long?,
     onAddRestSeconds: (Int) -> Unit,
     onSkipRest: () -> Unit,
+    onComplete: (Long) -> Unit,
 ) {
   val rest by restTimer.collectAsStateWithLifecycle()
   val reading by heartRateReading.collectAsStateWithLifecycle()
-  AnimatedVisibility(
-      visible = rest != null,
-      enter =
-          slideInVertically(GymMotion.spatialDefault()) { it } + fadeIn(GymMotion.effectsDefault()),
-      exit =
-          slideOutVertically(GymMotion.spatialDefault()) { it } +
-              fadeOut(GymMotion.effectsDefault()),
-  ) {
-    // Пока идёт exit-анимация, `rest` уже null — держим последнее ненулевое значение,
-    // чтобы контент пилюли не исчезал мгновенно.
-    var lastState by remember { mutableStateOf(rest) }
-    rest?.let { lastState = it }
-    val state = lastState ?: return@AnimatedVisibility
-    Row(
-        modifier =
-            Modifier.fillMaxWidth()
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.primary)
-                .height(56.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-      val haptics = gymHaptics()
-      when (state) {
-        is RestTimerState.Timed -> {
-          RestPillSide(symbol = "−15с", contentDescription = "убавить отдых") {
-            haptics.step()
-            onAddRestSeconds(-REST_TIMER_STEP)
-          }
-          SkipRestButton(onSkipRest) {
-            Text(
-                text = "⏱ ${formatRestClock(state.remainingSec)}",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onPrimary,
-            )
-          }
-          RestPillSide(symbol = "+15с", contentDescription = "прибавить отдых") {
-            haptics.step()
-            onAddRestSeconds(REST_TIMER_STEP)
-          }
-        }
+  var lastRest by remember { mutableStateOf(rest) }
+  rest?.let { lastRest = it }
+  val effectsMotion: FiniteAnimationSpec<Float> = GymMotion.effectsFast()
 
-        is RestTimerState.HeartRate ->
-            SkipRestButton(onSkipRest) {
-              Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = Icons.Default.Favorite,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.background,
-                    modifier = Modifier.size(14.dp),
-                )
-                Spacer(Modifier.width(5.dp))
-                Text(
-                    text = "${reading?.bpm ?: "—"} · ≤ ${state.thresholdBpm} BPM",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onPrimary,
-                )
-              }
-            }
+  AnimatedContent(
+      targetState = rest != null,
+      transitionSpec = { fadeIn(effectsMotion) togetherWith fadeOut(effectsMotion) },
+      contentAlignment = Alignment.Center,
+      modifier = Modifier.fillMaxWidth().height(56.dp).testTag("workout-primary-action"),
+      label = "workoutPrimaryAction",
+  ) { isResting ->
+    val state = lastRest
+    if (isResting && state != null) {
+      RestTimerPill(
+          state = state,
+          reading = reading,
+          onAddRestSeconds = onAddRestSeconds,
+          onSkipRest = onSkipRest,
+      )
+    } else {
+      activeSetId?.let { setId ->
+        PillButton(
+            text = "Подход выполнен",
+            onClick = { onComplete(setId) },
+            leadingIcon = Icons.Default.Check,
+            modifier = Modifier.fillMaxWidth(),
+        )
       }
+    }
+  }
+}
+
+/**
+ * Пилюля отдыха. В таймерном режиме показывает «−15с / M:SS / +15с», а в режиме пульса — текущий
+ * BPM и порог; тап по центру всегда пропускает отдых.
+ */
+@Composable
+private fun RestTimerPill(
+    state: RestTimerState,
+    reading: HeartRateReading?,
+    onAddRestSeconds: (Int) -> Unit,
+    onSkipRest: () -> Unit,
+) {
+  Row(
+      modifier =
+          Modifier.fillMaxWidth()
+              .clip(CircleShape)
+              .background(MaterialTheme.colorScheme.primary)
+              .height(56.dp),
+      verticalAlignment = Alignment.CenterVertically,
+  ) {
+    val haptics = gymHaptics()
+    when (state) {
+      is RestTimerState.Timed -> {
+        RestPillSide(symbol = "−15с", contentDescription = "убавить отдых") {
+          haptics.step()
+          onAddRestSeconds(-REST_TIMER_STEP)
+        }
+        SkipRestButton(onSkipRest) {
+          Text(
+              text = "⏱ ${formatRestClock(state.remainingSec)}",
+              style = MaterialTheme.typography.titleLarge,
+              fontWeight = FontWeight.Bold,
+              color = MaterialTheme.colorScheme.onPrimary,
+          )
+        }
+        RestPillSide(symbol = "+15с", contentDescription = "прибавить отдых") {
+          haptics.step()
+          onAddRestSeconds(REST_TIMER_STEP)
+        }
+      }
+
+      is RestTimerState.HeartRate ->
+          SkipRestButton(onSkipRest) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+              Icon(
+                  imageVector = Icons.Default.Favorite,
+                  contentDescription = null,
+                  tint = MaterialTheme.colorScheme.background,
+                  modifier = Modifier.size(14.dp),
+              )
+              Spacer(Modifier.width(5.dp))
+              Text(
+                  text = "${reading?.bpm ?: "—"} · ≤ ${state.thresholdBpm} BPM",
+                  style = MaterialTheme.typography.titleLarge,
+                  fontWeight = FontWeight.Bold,
+                  color = MaterialTheme.colorScheme.onPrimary,
+              )
+            }
+          }
     }
   }
 }
@@ -1346,25 +1371,6 @@ private fun CurrentSetCard(
         )
       }
     }
-  }
-}
-
-/** Контекстная закреплённая кнопка: во время отдыха её место занимают controls таймера. */
-@Composable
-private fun CurrentSetPrimaryAction(
-    restTimer: StateFlow<RestTimerState?>,
-    activeSetId: Long?,
-    onComplete: (Long) -> Unit,
-) {
-  val rest by restTimer.collectAsStateWithLifecycle()
-  val setId = activeSetId
-  if (rest == null && setId != null) {
-    PillButton(
-        text = "Подход выполнен",
-        onClick = { onComplete(setId) },
-        leadingIcon = Icons.Default.Check,
-        modifier = Modifier.fillMaxWidth(),
-    )
   }
 }
 
