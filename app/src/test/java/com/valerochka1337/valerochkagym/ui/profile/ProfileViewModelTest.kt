@@ -33,6 +33,31 @@ class ProfileViewModelTest {
   @get:Rule val mainDispatcherRule = MainDispatcherRule()
 
   @Test
+  fun `rep range draft restores validates and clears`() =
+      runTest(mainDispatcherRule.testDispatcher.scheduler) {
+        val repository = FakeProfileRepository()
+        val handle = SavedStateHandle()
+        val first = ProfileViewModel(repository, gate(repository), handle)
+        advanceUntilIdle()
+        first.setRepRange("6", "12")
+        val restored = ProfileViewModel(repository, gate(repository), handle)
+        advanceUntilIdle()
+        assertEquals("6", restored.uiState.value.preferredRepMin)
+        assertEquals("12", restored.uiState.value.preferredRepMax)
+        restored.save()
+        advanceUntilIdle()
+        assertEquals(6, repository.saved?.preferredRepMin)
+        restored.setRepRange("12", "6")
+        restored.save()
+        assertNotNull(restored.uiState.value.error)
+        restored.setRepRange("", "")
+        restored.save()
+        advanceUntilIdle()
+        assertEquals(null, repository.saved?.preferredRepMin)
+        assertEquals(null, repository.saved?.preferredRepMax)
+      }
+
+  @Test
   fun `invalid optional values show error and valid empty profile saves`() =
       runTest(mainDispatcherRule.testDispatcher.scheduler) {
         val repository = FakeProfileRepository()

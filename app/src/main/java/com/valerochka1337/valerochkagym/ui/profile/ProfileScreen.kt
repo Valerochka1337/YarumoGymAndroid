@@ -62,6 +62,7 @@ fun ProfileScreen(
       onSessions = viewModel::setSessions,
       onDuration = viewModel::setDuration,
       onConstraints = viewModel::setConstraints,
+      onRepRange = viewModel::setRepRange,
       onEquipment = viewModel::toggleEquipment,
       onPromptDisabled = viewModel::setPromptDisabled,
       onKeyExercise = {
@@ -101,6 +102,7 @@ internal fun ProfileScreenContent(
     onConstraints: (String) -> Unit,
     onEquipment: (String) -> Unit,
     onPromptDisabled: (Boolean) -> Unit,
+    onRepRange: (String, String) -> Unit = { _, _ -> },
     onKeyExercise: (Long) -> Unit = {},
     onKeyPriority: (Long, KeyExercisePriority) -> Unit = { _, _ -> },
     onRemoveKeyExercise: (String) -> Unit = {},
@@ -146,6 +148,58 @@ internal fun ProfileScreenContent(
               ::goalLabel,
               onGoal,
           )
+          GymCard(modifier = Modifier.fillMaxWidth()) {
+            Text("Диапазон повторений", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Необязательно. Тренер учитывает этот ориентир вместе с историей упражнения и самочувствием.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+              listOf(3 to 6, 6 to 12, 8 to 15, 12 to 20).forEach { (min, max) ->
+                FilterChip(
+                    selected =
+                        state.preferredRepMin == min.toString() &&
+                            state.preferredRepMax == max.toString(),
+                    onClick = { onRepRange(min.toString(), max.toString()) },
+                    label = { Text("$min–$max") },
+                    enabled = !state.isSaving,
+                )
+              }
+              FilterChip(
+                  selected = state.preferredRepMin.isBlank() && state.preferredRepMax.isBlank(),
+                  onClick = { onRepRange("", "") },
+                  label = { Text("Не задан") },
+                  enabled = !state.isSaving,
+              )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+              OutlinedTextField(
+                  state.preferredRepMin,
+                  { onRepRange(it, state.preferredRepMax) },
+                  modifier = Modifier.weight(1f),
+                  label = { Text("От") },
+                  singleLine = true,
+                  enabled = !state.isSaving,
+                  keyboardOptions =
+                      androidx.compose.foundation.text.KeyboardOptions(
+                          keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
+                      ),
+              )
+              OutlinedTextField(
+                  state.preferredRepMax,
+                  { onRepRange(state.preferredRepMin, it) },
+                  modifier = Modifier.weight(1f),
+                  label = { Text("До") },
+                  singleLine = true,
+                  enabled = !state.isSaving,
+                  keyboardOptions =
+                      androidx.compose.foundation.text.KeyboardOptions(
+                          keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
+                      ),
+              )
+            }
+          }
           if (state.trainingGoal == TrainingGoal.STRENGTH) {
             GymCard(modifier = Modifier.fillMaxWidth()) {
               Text(

@@ -36,6 +36,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
 import com.valerochka1337.valerochkagym.domain.WorkoutApprovalPreview
 import com.valerochka1337.valerochkagym.ui.components.GymCard
@@ -53,6 +54,8 @@ data class CoachChatMessage(
     val quickReplies: List<String>? = null,
     val failed: Boolean = false,
     val streaming: Boolean = false,
+    val unread: Boolean = false,
+    val isNew: Boolean = false,
 )
 
 data class CoachChatProposal(
@@ -105,6 +108,9 @@ fun CoachChatContent(
     onDisableInitiative: () -> Unit,
     modifier: Modifier = Modifier,
     onRetry: (String) -> Unit = {},
+    onCancelWithReason:
+        ((String, com.valerochka1337.valerochkagym.domain.CoachRejectionReason) -> Unit)? =
+        null,
     imeInsets: WindowInsets = WindowInsets.ime,
 ) {
   val last = state.messages.lastOrNull()
@@ -193,7 +199,11 @@ fun CoachChatContent(
       withFrameNanos {}
       automaticScroll = true
       try {
-        listState.scrollToItem(itemCount - 1, Int.MAX_VALUE)
+        val firstNew = if (!openedHistory) state.messages.indexOfFirst { it.isNew } else -1
+        if (firstNew >= 0) {
+          listState.scrollToItem(firstNew)
+          followAnswer = false
+        } else listState.scrollToItem(itemCount - 1, Int.MAX_VALUE)
       } finally {
         automaticScroll = false
       }
@@ -281,16 +291,25 @@ fun CoachChatContent(
                     if (isUser) MaterialTheme.colorScheme.onPrimaryContainer
                     else MaterialTheme.colorScheme.onSurface,
                 shape = MaterialTheme.shapes.large,
+                border =
+                    if (message.isNew && !message.streaming && !message.failed)
+                        androidx.compose.foundation.BorderStroke(
+                            2.dp,
+                            MaterialTheme.colorScheme.primary,
+                        )
+                    else null,
                 modifier =
                     Modifier.fillMaxWidth(0.86f).testTag("coach-message:${message.id}").semantics(
                         mergeDescendants = true
-                    ) {},
+                    ) {
+                      if (message.isNew) stateDescription = "Новое сообщение"
+                    },
             ) {
               Column(Modifier.padding(16.dp)) {
                 Text(
                     when (message.role) {
                       "user" -> "Вы"
-                      "assistant" -> "Тренер"
+                      "assistant" -> if (message.isNew) "Тренер · Новое" else "Тренер"
                       else -> "Действие"
                     },
                     style = MaterialTheme.typography.labelLarge,
@@ -493,6 +512,36 @@ fun CoachChatContent(
                       modifier = Modifier.weight(1f).testTag("coach-cancel"),
                   ) {
                     Text("Отклонить")
+                  }
+                }
+                if (onCancelWithReason != null) {
+                  var showReasons by remember(proposal.id) { mutableStateOf(false) }
+                  androidx.compose.foundation.layout.Box {
+                    TextButton(
+                        onClick = {
+                          haptics.tap()
+                          showReasons = true
+                        },
+                        enabled = !state.busy,
+                    ) {
+                      Text("Отклонить с причиной")
+                    }
+                    DropdownMenu(
+                        expanded = showReasons && !state.busy,
+                        onDismissRequest = { showReasons = false },
+                    ) {
+                      com.valerochka1337.valerochkagym.domain.CoachRejectionReason.entries
+                          .forEach { reason ->
+                            DropdownMenuItem(
+                                text = { Text(reason.label) },
+                                onClick = {
+                                  haptics.tap()
+                                  showReasons = false
+                                  onCancelWithReason(proposal.id, reason)
+                                },
+                            )
+                          }
+                    }
                   }
                 }
               }

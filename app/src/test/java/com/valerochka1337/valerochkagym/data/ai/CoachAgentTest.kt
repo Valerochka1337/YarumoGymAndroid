@@ -18,32 +18,38 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class CoachAgentTest {
   @Test
-  fun `automatic proposal reminder preserves the completed tool exchange`() = runTest {
+  fun `automatic assessment accepts a clarification without demanding a proposal`() = runTest {
     val api = FakeCoachApi { index ->
-      when (index) {
-        1 -> toolResponse(call("state"))
-        2 -> answer("Снизить вес?")
-        else -> toolResponse(call("proposal", MUTATION))
-      }
+      if (index == 1) toolResponse(call("state")) else answer("Отдых был короче обычного?")
     }
     val result =
-        agent(api).reply(snapshot(), "Мало повторений", tools(), automaticProposal = true) {
-          if (it.function.name == "submit_workout_changes")
-              CoachToolOutcome("Предложение сохранено", CoachRunStatus.PROPOSAL)
-          else CoachToolOutcome("{}")
+        agent(api).reply(snapshot(), "Падение повторений", tools(), automaticProposal = true) {
+          CoachToolOutcome("{}")
         }
-    assertEquals(CoachRunStatus.PROPOSAL, result.status)
-    assertEquals(3, api.requests.size)
-    assertEquals(listOf("user", "tool", "tool"), api.requests.map { it.messages.last().role })
-    api.requests.forEach {
-      assertTrue(
-          it.messages
-              .dropWhile { message -> message.role == "system" }
-              .none { message -> message.role == "system" }
-      )
-    }
-    assertEquals("state", api.requests.last().messages.last().toolCallId)
+    assertEquals(CoachRunStatus.ANSWER, result.status)
+    assertEquals(2, api.requests.size)
   }
+
+  @Test
+  fun `automatic no change does not become a visible answer while a direct question gets an answer`() =
+      runTest {
+        for (automatic in listOf(true, false)) {
+          val api = FakeCoachApi {
+            answer(
+                """{"decision":"no_change","text":"Результат соответствует истории","quick_replies":[]}"""
+            )
+          }
+          val result =
+              agent(api).reply(snapshot(), "Оцени", tools(), automaticProposal = automatic) {
+                error("No mutation")
+              }
+          assertEquals(
+              if (automatic) CoachRunStatus.NO_CHANGE else CoachRunStatus.ANSWER,
+              result.status,
+          )
+          assertEquals(1, api.requests.size)
+        }
+      }
 
   @Test
   fun `rejected request does not blame model tool support`() = runTest {
@@ -56,29 +62,6 @@ class CoachAgentTest {
       assertFalse(result.text.contains("private"))
     }
   }
-
-  @Test
-  fun `automatic recommendation asks the model to create a proposal instead of asking permission`() =
-      runTest {
-        val api = FakeCoachApi { index ->
-          if (index == 1) answer("Снизить вес?") else toolResponse(call("proposal", MUTATION))
-        }
-        val result =
-            agent(api).reply(snapshot(), "Падение повторений", tools(), automaticProposal = true) {
-              CoachToolOutcome("Предложение сохранено", CoachRunStatus.PROPOSAL)
-            }
-        assertEquals(CoachRunStatus.PROPOSAL, result.status)
-        assertEquals(2, api.requests.size)
-        api.requests.forEach { request ->
-          assertEquals("user", request.messages.last().role)
-          assertTrue(
-              request.messages.dropWhile { it.role == "system" }.none { it.role == "system" }
-          )
-        }
-        assertTrue(
-            api.requests[1].messages.any { it.content.toString().contains("создай карточку") }
-        )
-      }
 
   @Test
   fun `prompt failure returns an error without sending model requests`() = runTest {

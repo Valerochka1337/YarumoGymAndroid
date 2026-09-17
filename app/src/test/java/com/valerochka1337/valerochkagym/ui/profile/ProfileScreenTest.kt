@@ -33,6 +33,38 @@ class ProfileScreenTest {
   @get:Rule val compose = createComposeRule()
 
   @Test
+  fun `rep range choices stay reachable and can be cleared`() {
+    var selected: Pair<String, String>? = null
+    compose.setContent {
+      GymTheme {
+        ProfileScreenContent(
+            state =
+                ProfileEditorUiState(
+                    isLoading = false,
+                    target = ProfileEditTarget("guest", null, 1L),
+                ),
+            onBack = {},
+            onGoal = {},
+            onExperience = {},
+            onSex = {},
+            onBirthDate = {},
+            onSessions = {},
+            onDuration = {},
+            onConstraints = {},
+            onEquipment = {},
+            onPromptDisabled = {},
+            onRepRange = { min, max -> selected = min to max },
+            onSave = {},
+        )
+      }
+    }
+    compose.onNodeWithText("6–12").performScrollTo().performClick()
+    org.junit.Assert.assertEquals("6" to "12", selected)
+    compose.onNodeWithText("Не задан").performScrollTo().performClick()
+    org.junit.Assert.assertEquals("" to "", selected)
+  }
+
+  @Test
   fun `profile prompt actions stay reachable at font scale two on expanded width`() {
     compose.setContent {
       val density = LocalDensity.current

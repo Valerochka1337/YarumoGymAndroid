@@ -55,6 +55,7 @@ data class AutoregulationRecommendation(
     val evidenceKey: String,
     val options: AutoregulationOptions,
     val interventionKey: String = evidenceKey,
+    val performanceSignal: Boolean = false,
 ) {
   fun packet(): WorkoutChangeSet.Packet? =
       operations
@@ -82,7 +83,7 @@ data class AutoregulationProof(
  * Deterministic local calculation; thresholds and limits are documented in docs/autoregulation.md.
  */
 object AutoregulationEngine {
-  const val RULES_VERSION = "1.3.0"
+  const val RULES_VERSION = "1.4.0"
 
   fun calculate(
       snapshot: WorkoutSnapshot,
@@ -117,6 +118,7 @@ object AutoregulationEngine {
                   snapshot.rest?.startId,
                   snapshot.excludedExerciseIds,
                   options,
+                  snapshot.profile,
               )
               .joinToString("|")
       fun digest(value: String) =
@@ -126,7 +128,7 @@ object AutoregulationEngine {
       val key = digest(evidence)
       val performanceKey =
           digest(
-              "${snapshot.accountId}|${snapshot.workoutId}|${sets.filter { it.completed }}|${options.copy(observedRestSeconds = null)}"
+              "${snapshot.accountId}|${snapshot.workoutId}|${sets.filter { it.completed }}|${options.copy(observedRestSeconds = null)}|${snapshot.profile}"
           )
       fun result(
           rule: String,
@@ -151,6 +153,14 @@ object AutoregulationEngine {
                   evidenceKey = key,
                   options = options,
                   interventionKey = interventionKey,
+                  performanceSignal =
+                      rule in
+                          setOf(
+                              "history_deviation",
+                              "preferred_rep_range",
+                              "unexplained_drop",
+                              "confirmed_harder_adjustment",
+                          ),
               )
               .also {
                 operations.forEach { operation ->
@@ -341,92 +351,91 @@ object AutoregulationEngine {
           "rir_four_plus" to latest.actualRirAtLeastFour,
       )
       if (
-          currentWeight != null &&
+          !harderConfirmed &&
+              currentWeight != null &&
               currentWeight.isFinite() &&
               currentWeight > 0 &&
               currentReps != null &&
-              currentReps > 0
+              currentReps > 0 &&
+              section.sets.any { !it.completed }
       ) {
-        val lowReps = currentReps < 5
-        val highReps = currentReps > 15
-        val restDrop = drop != null && drop > 2
-        if (lowReps || highReps || restDrop) {
-          val nextSet = section.sets.sortedBy { it.setIndex }.firstOrNull { !it.completed }
-          val observation =
-              if (previousWeight != null && previousReps != null)
-                  "«${section.name}»: $previousWeight кг × $previousReps → $currentWeight кг × $currentReps."
-              else "«${section.name}»: $currentWeight кг × $currentReps."
-          val operations = mutableListOf<WorkoutChangeSet.Operation>()
-          val notes = mutableListOf<String>()
-          var rule = "adjacent_rep_drop"
-          val canEditNext =
-              nextSet != null &&
-                  nextSet.setType in setOf("WORK", "UNKNOWN") &&
-                  (nextSet.targetWeightKg ?: nextSet.weightKg) == currentWeight
-          if (lowReps || highReps) {
-            rule = if (lowReps) "below_five_reps" else "above_fifteen_reps"
-            val candidate =
-                options.availableWeightsKg[section.exerciseSyncId]
-                    .orEmpty()
-                    .filter {
-                      if (lowReps) it < currentWeight && it >= currentWeight * .95
-                      else it > currentWeight && it <= currentWeight * 1.05
-                    }
-                    .minByOrNull { abs(it - currentWeight) }
-            if (candidate != null && canEditNext) {
-              operations +=
-                  WorkoutChangeSet.Operation.EditSet(nextSet!!.syncId, weightKg = candidate)
-              notes +=
-                  if (lowReps) "Предлагаю снизить вес следующего подхода до $candidate кг."
-                  else "Предлагаю повысить вес следующего подхода до $candidate кг."
-            } else {
-              notes +=
-                  if (lowReps)
-                      "Получилось меньше 5 повторений: рекомендую снизить вес на небольшой доступный шаг; одного этого результата недостаточно для прекращения упражнения."
-                  else
-                      "Получилось больше 15 повторений: рекомендую повысить вес на небольшой доступный шаг."
-              if (nextSet != null && !canEditNext)
-                  notes += "Следующий подход уже отличается по весу или режиму; его план не меняю."
-              else if (candidate == null)
-                  notes +=
-                      "Подходящий доступный шаг веса не задан, поэтому конкретный вес не подставляю."
-            }
-          }
-          if (restDrop) {
-            notes +=
-                "При том же весе потеряно больше 2 повторений: предлагаю увеличить отдых между подходами на 30 секунд."
-            if (rest != null && rest in 1..299) {
-              operations +=
-                  WorkoutChangeSet.Operation.Rest(
-                      RestAction.FUTURE_DURATION,
-                      null,
-                      (rest + 30).coerceAtMost(300),
-                  )
-              snapshot.rest
-                  ?.takeIf {
-                    it.plannedSeconds != null &&
-                        it.plannedSeconds in 1..299 &&
-                        (it.remainingSeconds ?: 0) > 0
-                  }
-                  ?.let {
-                    operations +=
-                        WorkoutChangeSet.Operation.Rest(
-                            RestAction.EXTEND,
-                            it.startId,
-                            minOf(30, 300 - it.plannedSeconds!!),
-                        )
-                  }
-            } else if (rest == null)
-                notes += "Текущая длительность отдыха неизвестна; таймер автоматически не задаю."
-            else notes += "Заданный отдых уже не меньше 5 минут; автоматически его не удлиняю."
-          }
+        // Legacy UNKNOWN history is usable as a comparison, never proof of a prescribed plan.
+        val historical =
+            section.history
+                .filter {
+                  it.setType in setOf("WORK", "UNKNOWN") &&
+                      !it.interrupted &&
+                      it.setIndex == latest.setIndex &&
+                      it.weightKg == currentWeight &&
+                      it.reps != null &&
+                      it.reps > 0 &&
+                      it.completedAt in
+                          (snapshot.observedAtMillis - 90L * 24 * 60 * 60 * 1000)..snapshot
+                                  .observedAtMillis
+                }
+                .distinctBy { it.setSyncId.ifBlank { it.toString() } }
+                .groupBy { it.workoutId }
+                .values
+                .mapNotNull { it.singleOrNull()?.reps }
+                .sorted()
+        val reference =
+            if (historical.size >= 2) {
+              (historical[(historical.size - 1) / 2] + historical[historical.size / 2]) / 2.0
+            } else null
+        val min = snapshot.profile.preferredRepMin
+        val max = snapshot.profile.preferredRepMax
+        val hasRange = min != null && max != null && min in 1..50 && max in min..50
+        val outside = hasRange && (currentReps < min || currentReps > max)
+        val observation = "«${section.name}»: $currentWeight кг × $currentReps."
+        if (reference != null && abs(reference - currentReps) >= 3) {
           return result(
-              rule,
-              if (operations.isEmpty()) RecommendationKind.ADVISE else RecommendationKind.ADJUST,
+              "history_deviation",
+              RecommendationKind.ADVISE,
               observation,
-              notes.joinToString(" "),
-              "Диапазон 5–15 — ориентир приложения. Если такой режим был запланирован, сохраните план.",
-              operations = operations,
+              "В ${historical.size} сопоставимых прошлых тренировках ориентир — $reference повторений при том же весе и номере подхода. Сейчас результат заметно отличается.",
+              "Оценить историю, текущий диапазон и самочувствие; при неясной причине уточнить её до изменения нагрузки.",
+          )
+        }
+        if (outside) {
+          // A familiar result outside a general preference is not itself a problem.
+          if (reference != null && abs(reference - currentReps) < 3)
+              return result(
+                  "familiar_result",
+                  RecommendationKind.NO_CHANGE,
+                  observation,
+                  "Результат соответствует собственной истории упражнения; общий диапазон не требует обязательной корректировки.",
+              )
+          val repeated =
+              sameWeight &&
+                  previousReps != null &&
+                  ((currentReps < min && previousReps < min) ||
+                      (currentReps > max && previousReps > max))
+          return result(
+              "preferred_rep_range",
+              if (repeated) RecommendationKind.ADVISE else RecommendationKind.CLARIFY,
+              observation,
+              "В профиле выбран ориентир $min–$max повторений; история пока не объясняет результат.",
+              if (repeated)
+                  "Оценить небольшую корректировку следующего подхода с учётом самочувствия."
+              else "Сегодня хотите работать в этом диапазоне или оставить текущий режим?",
+              missing = if (repeated) emptySet() else setOf(MissingData.INTENT),
+          )
+        }
+        if (drop != null && drop > 2) {
+          if (reference != null && abs(reference - currentReps) < 3)
+              return result(
+                  "familiar_decline",
+                  RecommendationKind.NO_CHANGE,
+                  observation,
+                  "Снижение между подходами соответствует собственной истории.",
+              )
+          return result(
+              "unexplained_drop",
+              RecommendationKind.CLARIFY,
+              observation,
+              "При том же весе стало на $drop повторений меньше; этого недостаточно, чтобы определить причину.",
+              "Отдых был короче обычного или подход оказался тяжелее?",
+              missing = setOf(MissingData.INTENT),
           )
         }
       }
@@ -469,24 +478,7 @@ object AutoregulationEngine {
                   observation,
                   "Рабочие подходы этого упражнения завершены; нагрузку другого упражнения не выводим из этого результата.",
               )
-      val nextWeight = next.targetWeightKg ?: next.weightKg
-      val nextReps = next.targetReps ?: next.reps
-      // Different prescribed load/effort can be a deliberate back-off, ramp or drop set.
-      if (nextWeight != weight || nextReps != latest.targetReps)
-          return clarify(
-              "different_next_target",
-              observation,
-              "Следующий подход имеет другую цель. Это было запланировано или стало тяжелее?",
-              MissingData.INTENT,
-          )
-      val plannedReps = latest.targetReps
-      if (plannedReps == null || nextReps == null || (reps != plannedReps && !harderConfirmed))
-          return clarify(
-              "unexplained_reps",
-              observation,
-              "Повторы отличаются от цели или цель неизвестна. Это было запланировано или стало тяжелее?",
-              MissingData.INTENT,
-          )
+      // Prefilled targets may be stale; the explicit report and actual result anchor this step.
       if (options.observedRestSeconds != null && rest != null && options.observedRestSeconds < rest)
           return result(
               "short_rest",
@@ -513,11 +505,11 @@ object AutoregulationEngine {
             return clarify(
                 "missing_weight_step",
                 observation,
-                "Для сохранения плановых повторов нужен доступный шаг веса в пределах 5%.",
+                "Для небольшого снижения веса нужен известный доступный шаг в пределах 5%.",
                 MissingData.EQUIPMENT,
             )
-        val adjustedReps = (minOf(reps, nextReps) - 1).coerceIn(1, OneRepMax.MAX_TRUSTED_REPS)
-        if (nextReps !in 1..OneRepMax.MAX_TRUSTED_REPS || adjustedReps == nextReps)
+        val adjustedReps = (reps - 1).coerceIn(1, OneRepMax.MAX_TRUSTED_REPS)
+        if (reps !in 1..OneRepMax.MAX_TRUSTED_REPS || adjustedReps == reps)
             return clarify(
                 "rep_limit",
                 observation,

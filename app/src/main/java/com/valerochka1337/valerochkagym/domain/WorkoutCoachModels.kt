@@ -23,9 +23,21 @@ data class WorkoutSnapshot(
     val feelings: Set<String> = emptySet(),
     val pulse: SnapshotPulse? = null,
     val futureRestSeconds: Int? = null,
+    val profile: CoachProfile = CoachProfile(),
+    val coachDecisions: List<CoachDecisionMemory> = emptyList(),
+    val observedAtMillis: Long = System.currentTimeMillis(),
     val autoregulationOptions:
         com.valerochka1337.valerochkagym.domain.autoregulation.AutoregulationOptions =
         com.valerochka1337.valerochkagym.domain.autoregulation.AutoregulationOptions(),
+)
+
+data class CoachProfile(
+    val trainingGoal: String? = null,
+    val experienceLevel: String? = null,
+    val constraints: String? = null,
+    val equipmentIds: Set<String> = emptySet(),
+    val preferredRepMin: Int? = null,
+    val preferredRepMax: Int? = null,
 )
 
 data class SnapshotExercise(

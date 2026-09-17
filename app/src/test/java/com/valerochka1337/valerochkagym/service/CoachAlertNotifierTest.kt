@@ -15,19 +15,44 @@ class CoachAlertNotifierTest {
   private val context = ApplicationProvider.getApplicationContext<Application>()
   private val manager = context.getSystemService(NotificationManager::class.java)
 
+  @org.junit.Before
+  fun allowNotifications() {
+    org.robolectric.Shadows.shadowOf(context)
+        .grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+  }
+
   @Test
-  fun `visible activities suppress alerts and background restores delivery`() {
+  fun `only the resumed matching chat suppresses alerts and pausing restores delivery`() {
     val notifier = CoachAlertNotifier(context)
     val first = Any()
     val second = Any()
-    notifier.activityStarted(first)
-    notifier.activityStarted(second)
-    notifier.activityStopped(first)
+    notifier.chatResumed("w", first)
+    notifier.chatResumed("w", second)
+    notifier.chatPaused(first)
     notifier.show("w")
     assertTrue(manager.activeNotifications.isEmpty())
-    notifier.activityStopped(second)
+    notifier.show("other")
+    assertEquals("other", manager.activeNotifications.single().tag)
+    notifier.chatPaused(second)
     notifier.show("w")
-    assertEquals("w", manager.activeNotifications.single().tag)
+    assertEquals(setOf("w", "other"), manager.activeNotifications.map { it.tag }.toSet())
+  }
+
+  @Test
+  fun `denied permission leaves notifications absent without throwing`() {
+    org.robolectric.Shadows.shadowOf(context)
+        .denyPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+    CoachAlertNotifier(context).show("w")
+    assertTrue(manager.activeNotifications.isEmpty())
+  }
+
+  @Test
+  fun `disabled legacy channel remains respected`() {
+    manager.createNotificationChannel(
+        android.app.NotificationChannel("live_coach", "Coach", NotificationManager.IMPORTANCE_NONE)
+    )
+    CoachAlertNotifier(context).show("w")
+    assertTrue(manager.activeNotifications.isEmpty())
   }
 
   @Test

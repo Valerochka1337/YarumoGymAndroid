@@ -14,6 +14,51 @@ import org.junit.Test
 
 class CoachWorkoutReaderTest : RoomDaoTest() {
   @Test
+  fun `snapshot reads only the active owners profile and durable decisions`() = runTest {
+    val workout = insertWorkout("active-profile")
+    val session = FakeSession()
+    session.save(BackendTokens("user", "user@example.com", "access", "refresh"))
+    db.openHelper.writableDatabase.execSQL(
+        "INSERT OR REPLACE INTO backend_state (id, owner, generation, phase, initialMergeAcknowledged) VALUES (1, 'user', 0, 'OWNED', 1)"
+    )
+    db.profileDao()
+        .upsert(
+            com.valerochka1337.valerochkagym.data.db.entity.ProfileEntity(
+                "other",
+                "other-profile",
+                preferredRepMin = 3,
+                preferredRepMax = 5,
+            )
+        )
+    db.profileDao()
+        .upsert(
+            com.valerochka1337.valerochkagym.data.db.entity.ProfileEntity(
+                "user",
+                "profile",
+                trainingGoal = "MUSCLE_GAIN",
+                manualConstraints = "Без спешки",
+                preferredRepMin = 6,
+                preferredRepMax = 12,
+            )
+        )
+    val decision = CoachDecisionMemory("proposal", "REJECTED", "Изменение веса", setOf("section"))
+    db.coachDao()
+        .saveContext(
+            com.valerochka1337.valerochkagym.data.db.entity.CoachSessionContextEntity(
+                workout,
+                "user",
+                decisionMemoryJson = CoachDecisionMemory.encode(listOf(decision)),
+            )
+        )
+    val reader = CoachWorkoutReader(db, RestTimerEngine(backgroundScope) { 0L }, session)
+    val snapshot = reader.snapshot("user", workout)!!
+    assertEquals(6, snapshot.profile.preferredRepMin)
+    assertEquals("MUSCLE_GAIN", snapshot.profile.trainingGoal)
+    assertEquals(listOf(decision), snapshot.coachDecisions)
+    assertNull(reader.snapshot("other", workout))
+  }
+
+  @Test
   fun `search ranks before limiting filters muscle groups and returns the entire latest workout`() =
       runTest {
         repeat(51) { exercise("Unused $it") }

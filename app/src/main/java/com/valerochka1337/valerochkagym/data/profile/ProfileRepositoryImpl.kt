@@ -139,6 +139,8 @@ constructor(
                   plannedSessionsPerWeek = normalized.plannedSessionsPerWeek,
                   preferredSessionDurationMinutes = normalized.preferredSessionDurationMinutes,
                   manualConstraints = normalized.manualConstraints,
+                  preferredRepMin = normalized.preferredRepMin,
+                  preferredRepMax = normalized.preferredRepMax,
                   updatedAt = clock.nowMillis().coerceAtLeast(0),
               )
           )
@@ -210,6 +212,8 @@ constructor(
           preferredSessionDurationMinutes = preferredSessionDurationMinutes,
           equipmentIds = equipmentIds.toSet(),
           manualConstraints = manualConstraints,
+          preferredRepMin = preferredRepMin,
+          preferredRepMax = preferredRepMax,
       )
 
   private fun profileSyncId(owner: String): String =

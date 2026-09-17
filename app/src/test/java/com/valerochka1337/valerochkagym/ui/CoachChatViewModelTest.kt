@@ -41,6 +41,41 @@ class CoachChatViewModelTest : RoomDaoTest() {
   @get:Rule val mainDispatcherRule = MainDispatcherRule(StandardTestDispatcher())
 
   @Test
+  fun `new message stays highlighted after marking read but not after reopening`() =
+      runTest(mainDispatcherRule.testDispatcher.scheduler) {
+        val workout = insertWorkout("unread")
+        val message =
+            com.valerochka1337.valerochkagym.data.db.entity.CoachMessageEntity(
+                "first",
+                "user",
+                workout,
+                "assistant",
+                "Продолжай",
+                1000,
+            )
+        db.coachDao().saveMessage(message)
+        val vm = viewModel(workout)
+        backgroundScope.launch(kotlinx.coroutines.test.UnconfinedTestDispatcher(testScheduler)) {
+          vm.uiState.collect()
+        }
+        vm.uiState.first { it.messages.any { message -> message.unread } }
+        vm.markAssistantMessagesRead()
+        // Arrives after the captured read snapshot; the pending write must not mark it.
+        db.coachDao().saveMessage(message.copy(id = "second", createdAt = 2000))
+        vm.uiState.first { it.messages.any { message -> message.id == "first" && !message.unread } }
+        assertTrue(vm.uiState.value.messages.first { it.id == "first" }.isNew)
+        assertEquals(null, db.coachDao().messages(workout).first { it.id == "second" }.readAt)
+        vm.uiState.first { it.messages.any { message -> message.id == "second" } }
+        vm.markAssistantMessagesRead()
+        vm.uiState.first { it.messages.all { message -> !message.unread } }
+        assertTrue(vm.uiState.value.messages.all { it.isNew })
+        vm.clearNewMessageHighlights()
+        vm.uiState.first { it.messages.all { message -> !message.isNew } }
+        val reopened = viewModel(workout)
+        assertTrue(reopened.uiState.first { it.messages.size == 2 }.messages.none { it.isNew })
+      }
+
+  @Test
   fun `reopened view model receives draft and deduplicates the committed answer`() =
       runTest(mainDispatcherRule.testDispatcher.scheduler) {
         val workout = insertWorkout("stream")

@@ -112,6 +112,25 @@ object CoachToolCodec {
                   snapshot.excludedExerciseIds.sorted().forEach { add(JsonPrimitive(it)) }
                 },
             )
+            put(
+                "profile",
+                buildJsonObject {
+                  snapshot.profile.trainingGoal?.let { put("training_goal", it) }
+                  snapshot.profile.experienceLevel?.let { put("experience_level", it) }
+                  snapshot.profile.constraints?.let { put("constraints", it) }
+                  put("equipment_preferences", stringArray(snapshot.profile.equipmentIds))
+                  snapshot.profile.preferredRepMin?.let { put("preferred_rep_min", it) }
+                  snapshot.profile.preferredRepMax?.let { put("preferred_rep_max", it) }
+                },
+            )
+            put(
+                "decisions",
+                Json.parseToJsonElement(
+                    com.valerochka1337.valerochkagym.domain.CoachDecisionMemory.encode(
+                        snapshot.coachDecisions
+                    )
+                ),
+            )
             put("feelings", stringArray(snapshot.feelings))
             snapshot.pulse?.let { pulse ->
               put(

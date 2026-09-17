@@ -38,6 +38,12 @@ fun CoachChatScreen(
   // A restored active workout has durable Room state but no process-local conversation consumer.
   // Starting the foreground owner is safe only while the observed workout is still active.
   LaunchedEffect(state.readOnly) { if (!state.readOnly) WorkoutSessionService.start(context) }
+  val chatHost = androidx.compose.runtime.remember { Any() }
+  LifecycleResumeEffect(chatHost) {
+    viewModel.chatResumed(chatHost)
+    onPauseOrDispose { viewModel.chatPaused(chatHost) }
+  }
+  DisposableEffect(viewModel) { onDispose { viewModel.clearNewMessageHighlights() } }
   LifecycleResumeEffect(state.messages) {
     viewModel.markAssistantMessagesRead()
     onPauseOrDispose {}
@@ -50,6 +56,7 @@ fun CoachChatScreen(
       onRetry = viewModel::retry,
       onConfirm = viewModel::confirm,
       onCancel = viewModel::cancel,
+      onCancelWithReason = viewModel::cancelWithReason,
       onUndo = viewModel::undo,
       onDisableInitiative = viewModel::disableInitiative,
   )

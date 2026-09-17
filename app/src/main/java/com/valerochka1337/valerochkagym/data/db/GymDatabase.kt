@@ -145,7 +145,7 @@ import kotlinx.serialization.json.JsonPrimitive
             CoachSessionContextEntity::class,
             CoachSyncStateEntity::class,
         ],
-    version = 32,
+    version = 33,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -1086,6 +1086,17 @@ abstract class GymDatabase : RoomDatabase() {
           }
         }
 
+    val MIGRATION_32_33: Migration =
+        object : Migration(32, 33) {
+          override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE profiles ADD COLUMN preferredRepMin INTEGER")
+            db.execSQL("ALTER TABLE profiles ADD COLUMN preferredRepMax INTEGER")
+            db.execSQL(
+                "ALTER TABLE coach_session_context ADD COLUMN decisionMemoryJson TEXT NOT NULL DEFAULT '[]'"
+            )
+          }
+        }
+
     val MIGRATION_31_32: Migration =
         object : Migration(31, 32) {
           override fun migrate(db: SupportSQLiteDatabase) {
@@ -1493,6 +1504,7 @@ abstract class GymDatabase : RoomDatabase() {
             MIGRATION_29_30,
             MIGRATION_30_31,
             MIGRATION_31_32,
+            MIGRATION_32_33,
         )
 
     private val legacyCoachJson = Json {
