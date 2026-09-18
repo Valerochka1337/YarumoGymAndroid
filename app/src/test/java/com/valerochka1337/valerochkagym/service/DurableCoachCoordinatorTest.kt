@@ -1,0 +1,581 @@
+package com.valerochka1337.valerochkagym.service
+
+import com.valerochka1337.valerochkagym.data.RoomDaoTest
+import com.valerochka1337.valerochkagym.data.ai.*
+import com.valerochka1337.valerochkagym.data.backend.*
+import com.valerochka1337.valerochkagym.data.db.entity.*
+import com.valerochka1337.valerochkagym.domain.*
+import java.util.UUID
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.test.*
+import kotlinx.serialization.json.*
+import org.junit.Assert.*
+import org.junit.Test
+
+class DurableCoachCoordinatorTest : RoomDaoTest() {
+  @Test
+  fun `sending offline persists immutable request and user message together before networking`() =
+      runTest {
+        val workout = activeWorkout()
+        val transport = FakeTransport()
+        val fixture = fixture(transport)
+        assertTrue(fixture.coordinator.send(workout, "Что изменить?"))
+        assertEquals(0, transport.submissions.size)
+        val run = db.coachRunDao().pending("user").single()
+        val request = Json.parseToJsonElement(run.requestJson).jsonObject
+        assertEquals(run.requestId, request["requestId"]!!.jsonPrimitive.content)
+        assertEquals(run.contextVersion, request["contextVersion"]!!.jsonPrimitive.content)
+        assertEquals("Что изменить?", db.coachDao().messages(workout).single().text)
+        assertFalse(run.submitted)
+        assertTrue(db.coachRunDao().dirtySessions().any { it.workoutId == workout })
+        fixture.coordinator.detach()
+        assertEquals(run, db.coachRunDao().pending("user").single())
+      }
+
+  @Test
+  fun `recreated coordinator submits retained request and imports terminal answer once`() =
+      runTest {
+        val workout = activeWorkout()
+        val transport = FakeTransport()
+        val first = fixture(transport)
+        assertTrue(first.coordinator.send(workout, "Объясни тренировку"))
+        val retained = db.coachRunDao().pending("user").single()
+        first.coordinator.detach()
+        val next = fixture(transport)
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+          next.coordinator.attach(scope)
+          withContext(Dispatchers.Default) {
+            withTimeout(15_000) {
+              db.coachDao().observeMessages(workout).first { rows ->
+                rows.any { it.role == "assistant" }
+              }
+            }
+          }
+          assertEquals(listOf(retained.requestJson), transport.submissions)
+          assertTrue(db.coachRunDao().run(retained.requestId)!!.imported)
+          assertEquals(1, db.coachDao().messages(workout).count { it.role == "assistant" })
+        } finally {
+          next.coordinator.detach()
+          scope.cancel()
+        }
+      }
+
+  @Test
+  fun `changed profile rejects confirmation and stores stale receipt without editing sets`() =
+      runTest {
+        val workout = activeWorkout()
+        val fixture = fixture(FakeTransport())
+        val snapshot = fixture.reader.snapshot("user", workout, 0)!!
+        val id = UUID.randomUUID().toString()
+        val proposalId = UUID.randomUUID().toString()
+        val version = CoachToolCodec.contextVersion(snapshot)
+        val run =
+            CoachRunEntity(
+                id,
+                "user",
+                workout,
+                "{}",
+                version,
+                1,
+                submitted = true,
+                proposalId = proposalId,
+            )
+        db.coachRunDao().insert(run)
+        val set = snapshot.exercises.single().sets.single()
+        val result =
+            fixture.editor.saveModelProposalResult(
+                "user",
+                workout,
+                snapshot.revision,
+                listOf(
+                    CoachChangeIntent.EditSet(
+                        set.syncId,
+                        CoachSetValues(setOf("weight_kg"), weightKg = 45.0),
+                        false,
+                    )
+                ),
+                System.currentTimeMillis() + 60_000,
+                0,
+                serverProposalId = proposalId,
+                expectedContextVersion = version,
+            )
+        assertTrue(result is ModelProposalSaveResult.Saved)
+        assertEquals(proposalId, (result as ModelProposalSaveResult.Saved).proposal.id)
+        db.profileDao().upsert(ProfileEntity("user", "profile", trainingGoal = "STRENGTH"))
+        val receipt =
+            fixture.editor.confirmProposal("user", proposalId, UUID.randomUUID().toString(), 0)
+        assertEquals(CommandResult.STALE, receipt.result)
+        assertEquals(
+            50.0,
+            db.workoutDao().getWorkoutFull(workout)!!.exercises.single().sets.single().weightKg!!,
+            0.0,
+        )
+        val outbound = db.coachRunDao().receipts("user").single()
+        assertEquals(id, outbound.runId)
+        assertEquals(
+            "STALE",
+            Json.parseToJsonElement(outbound.payload).jsonObject["status"]!!.jsonPrimitive.content,
+        )
+      }
+
+  @Test
+  fun `server proposal import preserves identity and replays without creating another proposal`() =
+      runTest {
+        val workout = activeWorkout()
+        val fixture = fixture(FakeTransport())
+        val snapshot = fixture.reader.snapshot("user", workout, 0)!!
+        val id = UUID.randomUUID().toString()
+        val expires = System.currentTimeMillis() + 60_000
+        val intents =
+            listOf(
+                CoachChangeIntent.EditSet(
+                    snapshot.exercises.single().sets.single().syncId,
+                    CoachSetValues(setOf("weight_kg"), weightKg = 45.0),
+                    false,
+                )
+            )
+        repeat(2) {
+          val result =
+              fixture.editor.saveModelProposalResult(
+                  "user",
+                  workout,
+                  snapshot.revision,
+                  intents,
+                  expires,
+                  0,
+                  serverProposalId = id,
+                  expectedContextVersion = CoachToolCodec.contextVersion(snapshot),
+              )
+          assertTrue(result is ModelProposalSaveResult.Saved)
+          assertEquals(id, (result as ModelProposalSaveResult.Saved).proposal.id)
+        }
+        assertEquals(1, tableCount("coach_proposals"))
+      }
+
+  @Test
+  fun `confirming remote proposal commits local changes and durable applied receipt together`() =
+      runTest {
+        val workout = activeWorkout()
+        val fixture = fixture(FakeTransport())
+        val snapshot = fixture.reader.snapshot("user", workout, 0)!!
+        val proposalId = UUID.randomUUID().toString()
+        val runId = UUID.randomUUID().toString()
+        val version = CoachToolCodec.contextVersion(snapshot)
+        db.coachRunDao()
+            .insert(
+                CoachRunEntity(
+                    runId,
+                    "user",
+                    workout,
+                    "{}",
+                    version,
+                    1,
+                    submitted = true,
+                    proposalId = proposalId,
+                )
+            )
+        val result =
+            fixture.editor.saveModelProposalResult(
+                "user",
+                workout,
+                snapshot.revision,
+                listOf(
+                    CoachChangeIntent.EditSet(
+                        snapshot.exercises.single().sets.single().syncId,
+                        CoachSetValues(setOf("weight_kg"), weightKg = 45.0),
+                        false,
+                    )
+                ),
+                System.currentTimeMillis() + 60_000,
+                0,
+                serverProposalId = proposalId,
+                expectedContextVersion = version,
+            )
+        assertTrue(result is ModelProposalSaveResult.Saved)
+        val receipt =
+            fixture.editor.confirmProposal("user", proposalId, UUID.randomUUID().toString(), 0)
+        assertEquals(CommandResult.APPLIED, receipt.result)
+        assertEquals(
+            45.0,
+            db.workoutDao().getWorkoutFull(workout)!!.exercises.single().sets.single().weightKg!!,
+            0.0,
+        )
+        assertNotNull(db.coachDao().receipt(receipt.operationId))
+        val outbound = db.coachRunDao().receipts("user").single()
+        assertEquals(runId, outbound.runId)
+        assertEquals(
+            "APPLIED",
+            Json.parseToJsonElement(outbound.payload).jsonObject["status"]!!.jsonPrimitive.content,
+        )
+      }
+
+  @Test
+  fun `malformed proposal does not starve later request and admission order survives clock rollback`() =
+      runTest {
+        val workout = activeWorkout()
+        val transport = FakeTransport().apply { malformedFirst = true }
+        val fixture = fixture(transport)
+        assertTrue(fixture.coordinator.send(workout, "Первый запрос"))
+        val first = db.coachRunDao().pending("user").single()
+        val futureCreatedAt = System.currentTimeMillis() + 60_000
+        db.coachRunDao().update(first.copy(createdAt = futureCreatedAt))
+        assertTrue(fixture.coordinator.send(workout, "Второй запрос"))
+        val ordered = db.coachRunDao().pending("user")
+        assertEquals(first.requestId, ordered.first().requestId)
+        assertTrue(ordered.last().createdAt > futureCreatedAt)
+        fixture.coordinator.deliverPending()
+        assertEquals(
+            listOf("Первый запрос", "Второй запрос"),
+            transport.submissions.map {
+              Json.parseToJsonElement(it).jsonObject["message"]!!.jsonPrimitive.content
+            },
+        )
+        assertTrue(db.coachRunDao().pending("user").isEmpty())
+        assertEquals(2, db.coachDao().messages(workout).count { it.role == "assistant" })
+        assertTrue(db.coachDao().messages(workout).any { it.text == "Сохранённый ответ" })
+      }
+
+  @OptIn(ExperimentalCoroutinesApi::class)
+  @Test
+  fun `no change result creates no assistant message journal entry or alert`() = runTest {
+    val workout = activeWorkout()
+    val transport = FakeTransport().apply { resultKind = "no_change" }
+    val fixture = fixture(transport)
+    val alerts = mutableListOf<String>()
+    backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+      fixture.coordinator.alerts.collect { alerts += it }
+    }
+    assertTrue(fixture.coordinator.send(workout, "Оцени состояние"))
+    val journalsBefore = tableCount("coach_journal")
+    fixture.coordinator.deliverPending()
+    assertTrue(db.coachRunDao().pending("user").isEmpty())
+    assertEquals(0, db.coachDao().messages(workout).count { it.role == "assistant" })
+    assertEquals(journalsBefore, tableCount("coach_journal"))
+    assertTrue(alerts.isEmpty())
+  }
+
+  @Test
+  fun `retrying terminal failure creates another request without duplicating user message`() =
+      runTest {
+        val workout = activeWorkout()
+        val transport = FakeTransport().apply { failedFirst = true }
+        val fixture = fixture(transport)
+        assertTrue(fixture.coordinator.send(workout, "Повтори анализ"))
+        val original = db.coachRunDao().pending("user").single()
+        fixture.coordinator.deliverPending()
+        val error = db.coachDao().messages(workout).single { it.status == "ERROR" }
+        assertEquals(
+            UUID.nameUUIDFromBytes("coach-answer:${original.requestId}".toByteArray()).toString(),
+            error.id,
+        )
+        assertTrue(fixture.coordinator.retry(workout, error.id))
+        val retry = db.coachRunDao().pending("user").single()
+        assertNotEquals(original.requestId, retry.requestId)
+        assertEquals(1, db.coachDao().messages(workout).count { it.role == "user" })
+        fixture.coordinator.deliverPending()
+        assertEquals(2, transport.submissions.size)
+        assertEquals(1, db.coachDao().messages(workout).count { it.role == "user" })
+        assertEquals(1, db.coachDao().messages(workout).count { it.role == "assistant" })
+      }
+
+  @Test
+  fun `follow up supersedes pending proposal and journals stale receipt before delivery`() =
+      runTest {
+        val workout = activeWorkout()
+        val fixture = fixture(FakeTransport())
+        val snapshot = fixture.reader.snapshot("user", workout, 0)!!
+        val runId = UUID.randomUUID().toString()
+        val proposalId = UUID.randomUUID().toString()
+        val version = CoachToolCodec.contextVersion(snapshot)
+        db.coachRunDao()
+            .insert(
+                CoachRunEntity(
+                    runId,
+                    "user",
+                    workout,
+                    "{}",
+                    version,
+                    1,
+                    submitted = true,
+                    imported = true,
+                    proposalId = proposalId,
+                )
+            )
+        assertTrue(
+            fixture.editor.saveModelProposalResult(
+                "user",
+                workout,
+                snapshot.revision,
+                listOf(
+                    CoachChangeIntent.EditSet(
+                        snapshot.exercises.single().sets.single().syncId,
+                        CoachSetValues(setOf("weight_kg"), weightKg = 45.0),
+                        false,
+                    )
+                ),
+                System.currentTimeMillis() + 60_000,
+                0,
+                serverProposalId = proposalId,
+                expectedContextVersion = version,
+            ) is ModelProposalSaveResult.Saved
+        )
+        assertTrue(fixture.coordinator.send(workout, "Лучше измени число повторений"))
+        assertNull(db.coachDao().pendingProposal(workout))
+        assertEquals("SUPERSEDED", db.coachDao().proposalForId(proposalId)!!.state)
+        val receipt = db.coachRunDao().receipts("user").single()
+        assertEquals(runId, receipt.runId)
+        assertEquals(
+            "STALE",
+            Json.parseToJsonElement(receipt.payload).jsonObject["status"]!!.jsonPrimitive.content,
+        )
+        assertEquals(1, db.coachRunDao().pending("user").size)
+        assertEquals(1, db.coachDao().messages(workout).count { it.role == "user" })
+      }
+
+  @Test
+  fun `deleted workout sends inactive session using last durable snapshot`() = runTest {
+    val workout = activeWorkout()
+    val transport = FakeTransport()
+    val fixture = fixture(transport)
+    assertTrue(fixture.coordinator.changed(workout))
+    fixture.coordinator.deliverPending()
+    val initial = transport.sessionUpdates.single()
+    assertEquals(true, initial["active"]!!.jsonPrimitive.boolean)
+    db.workoutDao().deleteWorkout(workout)
+    db.coachRunDao().markDirty(workout)
+    fixture.coordinator.deliverPending()
+    val closed = transport.sessionUpdates.last()
+    assertEquals(2, transport.sessionUpdates.size)
+    assertEquals(false, closed["active"]!!.jsonPrimitive.boolean)
+    assertEquals(initial["snapshot"], closed["snapshot"])
+    assertTrue(closed["sequence"]!!.jsonPrimitive.long > initial["sequence"]!!.jsonPrimitive.long)
+    assertTrue(db.coachRunDao().dirtySessions().isEmpty())
+    assertTrue(db.coachRunDao().pendingSessions("user").isEmpty())
+  }
+
+  @Test
+  fun `proposal with explicit null reason imports without poisoning the run`() = runTest {
+    val workout = activeWorkout()
+    val setId = db.workoutDao().getWorkoutFull(workout)!!.exercises.single().sets.single().syncId
+    val transport =
+        FakeTransport().apply {
+          resultKind = "proposal"
+          proposalOperations = buildJsonArray {
+            add(
+                buildJsonObject {
+                  put("action", "edit_set")
+                  put("set_id", setId)
+                  put("values", buildJsonObject { put("weight_kg", 45.0) })
+                }
+            )
+          }
+        }
+    val fixture = fixture(transport)
+    assertTrue(fixture.coordinator.send(workout, "Снизь вес"))
+    fixture.coordinator.deliverPending()
+    assertTrue(db.coachRunDao().pending("user").isEmpty())
+    val proposal = db.coachDao().pendingProposal(workout)
+    assertNotNull(proposal)
+    assertEquals("PENDING", proposal!!.state)
+    assertTrue(db.coachRunDao().receipts("user").isEmpty())
+  }
+
+  @Test
+  fun `closed session discovery survives restart while known pending run still imports`() =
+      runTest {
+        val workout = activeWorkout()
+        val transport = FakeTransport()
+        val initial = fixture(transport)
+        assertTrue(initial.coordinator.changed(workout))
+        initial.coordinator.deliverPending()
+        db.workoutDao().deleteWorkout(workout)
+        db.coachRunDao().markDirty(workout)
+        // Recreate to remove in-memory discovery throttling, as after process death.
+        fixture(transport).coordinator.deliverPending()
+        assertTrue(db.coachRunDao().session(workout)!!.discoveryComplete)
+        val discoveriesAfterClose = transport.listCalls.count { it == workout }
+        assertEquals(2, discoveriesAfterClose)
+        val runId = UUID.randomUUID().toString()
+        db.coachRunDao()
+            .insert(CoachRunEntity(runId, "user", workout, "{}", "context", 1, submitted = true))
+        transport.polledStatuses[runId] = buildJsonObject {
+          put("runId", runId)
+          put("requestId", runId)
+          put("workoutId", workout)
+          put("contextVersion", "context")
+          put("state", "SUCCEEDED")
+          put(
+              "result",
+              buildJsonObject {
+                put("kind", "no_change")
+                put("text", "")
+              },
+          )
+        }
+        val recreated = fixture(transport)
+        recreated.coordinator.deliverPending()
+        recreated.coordinator.deliverPending()
+        assertEquals(discoveriesAfterClose, transport.listCalls.count { it == workout })
+        assertEquals(listOf(runId), transport.statusCalls)
+        assertTrue(db.coachRunDao().run(runId)!!.imported)
+        assertTrue(db.coachRunDao().sessionsNeedingDiscovery("user").isEmpty())
+      }
+
+  private suspend fun activeWorkout(): String {
+    val id = insertWorkout(UUID.randomUUID().toString())
+    val exercise =
+        db.exerciseDao()
+            .insert(
+                ExerciseEntity(
+                    name = "Жим",
+                    muscleGroup = MuscleGroup.CHEST,
+                    type = ExerciseType.STRENGTH,
+                )
+            )
+    insertSet(insertWorkoutExercise(id, exercise), 0, weightKg = 50.0, reps = 8)
+    db.openHelper.writableDatabase.execSQL(
+        "INSERT OR REPLACE INTO backend_state (id,owner,generation,phase,initialMergeAcknowledged) VALUES(1,'user',0,'OWNED',1)"
+    )
+    return id
+  }
+
+  private data class Fixture(
+      val coordinator: DurableCoachCoordinator,
+      val editor: WorkoutEditor,
+      val reader: CoachWorkoutReader,
+  )
+
+  private fun TestScope.fixture(transport: FakeTransport): Fixture {
+    val session = FakeSession()
+    val timer = RestTimerEngine(backgroundScope, WallClock { System.currentTimeMillis() })
+    val reader = CoachWorkoutReader(db, timer, session)
+    val editor =
+        WorkoutEditor(db, db.workoutDao(), db.coachDao(), timer, session, WorkoutWriteQueue())
+    return Fixture(
+        DurableCoachCoordinator(CoachRunsClient(transport), db, reader, editor, session),
+        editor,
+        reader,
+    )
+  }
+
+  private class FakeSession : BackendSessionStore {
+    override val session =
+        MutableStateFlow<BackendTokens?>(
+            BackendTokens("user", "user@example.com", "access", "refresh")
+        )
+
+    override fun save(tokens: BackendTokens?) {
+      session.value = tokens
+    }
+  }
+
+  private class FakeTransport : BackendTransport {
+    override val json = Json
+    val submissions = java.util.concurrent.CopyOnWriteArrayList<String>()
+    val sessionUpdates = java.util.concurrent.CopyOnWriteArrayList<JsonObject>()
+    val listCalls = java.util.concurrent.CopyOnWriteArrayList<String>()
+    val statusCalls = java.util.concurrent.CopyOnWriteArrayList<String>()
+    val polledStatuses = mutableMapOf<String, JsonObject>()
+    var resultKind = "answer"
+    var malformedFirst = false
+    var failedFirst = false
+    var proposalOperations: JsonArray? = null
+
+    override suspend fun public(method: String, path: String, body: JsonElement?): JsonElement =
+        error("not used")
+
+    override suspend fun authorized(method: String, path: String, body: JsonElement?): JsonElement =
+        error("not used")
+
+    override suspend fun authorizedRawResponse(
+        method: String,
+        path: String,
+        rawBody: ByteArray,
+        headers: Map<String, String>,
+        expectedOwner: String?,
+        expectedSessionEpoch: Long?,
+        retryOnUnauthorized: Boolean,
+        maxResponseBytes: Int?,
+    ): BackendResponse {
+      val body =
+          when {
+            method == "PUT" -> {
+              sessionUpdates.add(json.parseToJsonElement(rawBody.decodeToString()).jsonObject)
+              buildJsonObject {}
+            }
+            method == "POST" && path.endsWith("/receipt") -> buildJsonObject {}
+            method == "GET" && path.contains("/sessions/") -> {
+              listCalls.add(path.substringAfter("/sessions/").substringBefore('/'))
+              JsonArray(emptyList())
+            }
+            method == "GET" && path.contains("/runs/") -> {
+              val id = path.substringAfterLast('/')
+              statusCalls.add(id)
+              checkNotNull(polledStatuses[id])
+            }
+            method == "POST" && path.endsWith("/runs") -> {
+              val raw = rawBody.decodeToString()
+              submissions.add(raw)
+              val request = json.parseToJsonElement(raw).jsonObject
+              buildJsonObject {
+                put("runId", request["requestId"]!!)
+                put("requestId", request["requestId"]!!)
+                put("workoutId", request["workoutId"]!!)
+                put("contextVersion", request["contextVersion"]!!)
+                put("state", if (failedFirst && submissions.size == 1) "FAILED" else "SUCCEEDED")
+                put("stage", "Готово")
+                put("lastEventSequence", 1)
+                if (!(failedFirst && submissions.size == 1))
+                    put(
+                        "result",
+                        buildJsonObject {
+                          put(
+                              "kind",
+                              if (malformedFirst && submissions.size == 1) "proposal"
+                              else resultKind,
+                          )
+                          put("text", "Сохранённый ответ")
+                          put("quickReplies", JsonArray(emptyList()))
+                          if (
+                              (malformedFirst && submissions.size == 1) ||
+                                  proposalOperations != null
+                          )
+                              put(
+                                  "proposal",
+                                  buildJsonObject {
+                                    put("proposalId", UUID.randomUUID().toString())
+                                    put("baseRevision", 0)
+                                    put("contextVersion", request["contextVersion"]!!)
+                                    put("expiresAtMillis", System.currentTimeMillis() + 60_000)
+                                    put("reason", JsonNull)
+                                    put(
+                                        "operations",
+                                        proposalOperations
+                                            ?: buildJsonArray {
+                                              add(
+                                                  buildJsonObject {
+                                                    put("action", "unknown_action")
+                                                  }
+                                              )
+                                            },
+                                    )
+                                  },
+                              )
+                        },
+                    )
+              }
+            }
+            else -> error("Unexpected $method $path")
+          }
+      return BackendResponse(
+          body,
+          body.toString().encodeToByteArray(),
+          emptySet(),
+          expectedOwner,
+          expectedSessionEpoch ?: 0,
+      )
+    }
+  }
+}

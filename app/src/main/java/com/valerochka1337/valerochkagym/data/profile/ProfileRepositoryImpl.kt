@@ -178,6 +178,7 @@ constructor(
             )
           }
           if (!targetStillCurrent(target)) throw StaleProfileTargetException()
+          database.workoutDao().getActiveWorkoutId()?.let { database.coachRunDao().markDirty(it) }
           ProfileSaveResult.Saved
         }
       } catch (_: StaleProfileTargetException) {

@@ -144,8 +144,12 @@ import kotlinx.serialization.json.JsonPrimitive
             CoachJournalEntity::class,
             CoachSessionContextEntity::class,
             CoachSyncStateEntity::class,
+            com.valerochka1337.valerochkagym.data.db.entity.CoachRunEntity::class,
+            com.valerochka1337.valerochkagym.data.db.entity.CoachDirtyEntity::class,
+            com.valerochka1337.valerochkagym.data.db.entity.CoachSessionOutboxEntity::class,
+            com.valerochka1337.valerochkagym.data.db.entity.CoachReceiptOutboxEntity::class,
         ],
-    version = 33,
+    version = 34,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -191,6 +195,8 @@ abstract class GymDatabase : RoomDatabase() {
   abstract fun workoutEffortDao(): WorkoutEffortDao
 
   abstract fun coachDao(): CoachDao
+
+  abstract fun coachRunDao(): com.valerochka1337.valerochkagym.data.db.dao.CoachRunDao
 
   abstract fun scheduledWorkoutDao(): ScheduledWorkoutDao
 
@@ -1086,6 +1092,24 @@ abstract class GymDatabase : RoomDatabase() {
           }
         }
 
+    val MIGRATION_33_34: Migration =
+        object : Migration(33, 34) {
+          override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                "CREATE TABLE IF NOT EXISTS coach_dirty_sessions (workoutId TEXT NOT NULL PRIMARY KEY, generation INTEGER NOT NULL)"
+            )
+            db.execSQL(
+                "CREATE TABLE IF NOT EXISTS coach_runs (requestId TEXT NOT NULL PRIMARY KEY, accountId TEXT NOT NULL, workoutId TEXT NOT NULL, requestJson TEXT NOT NULL, contextVersion TEXT NOT NULL, createdAt INTEGER NOT NULL, submitted INTEGER NOT NULL, imported INTEGER NOT NULL, cursor INTEGER NOT NULL, proposalId TEXT)"
+            )
+            db.execSQL(
+                "CREATE TABLE IF NOT EXISTS coach_session_outbox (workoutId TEXT NOT NULL PRIMARY KEY, accountId TEXT NOT NULL, sequence INTEGER NOT NULL, contextVersion TEXT NOT NULL, payload TEXT NOT NULL, delivered INTEGER NOT NULL, discoveryComplete INTEGER NOT NULL)"
+            )
+            db.execSQL(
+                "CREATE TABLE IF NOT EXISTS coach_receipt_outbox (receiptId TEXT NOT NULL PRIMARY KEY, accountId TEXT NOT NULL, runId TEXT NOT NULL, payload TEXT NOT NULL)"
+            )
+          }
+        }
+
     val MIGRATION_32_33: Migration =
         object : Migration(32, 33) {
           override fun migrate(db: SupportSQLiteDatabase) {
@@ -1505,6 +1529,7 @@ abstract class GymDatabase : RoomDatabase() {
             MIGRATION_30_31,
             MIGRATION_31_32,
             MIGRATION_32_33,
+            MIGRATION_33_34,
         )
 
     private val legacyCoachJson = Json {

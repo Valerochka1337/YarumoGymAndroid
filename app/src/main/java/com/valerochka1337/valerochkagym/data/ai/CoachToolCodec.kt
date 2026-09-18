@@ -99,17 +99,52 @@ class CoachToolValidationException(message: String) : IllegalArgumentException(m
 
 /** Strict local parser remains authoritative even for providers that ignore JSON Schema. */
 object CoachToolCodec {
+  fun contextVersion(snapshot: WorkoutSnapshot): String =
+      CoachContextFingerprint.of(snapshotJson(snapshot))
+
   fun snapshotJson(snapshot: WorkoutSnapshot): String =
       json.encodeToString(
           buildJsonObject {
             put("workout_id", snapshot.workoutId)
             put("revision", snapshot.revision)
             put("elapsed_seconds", snapshot.elapsedSeconds)
+            put("observed_at_millis", snapshot.observedAtMillis)
+            snapshot.futureRestSeconds?.let { put("future_rest_seconds", it) }
+            put(
+                "autoregulation_options",
+                buildJsonObject {
+                  put("goal", snapshot.autoregulationOptions.goal.name)
+                  snapshot.autoregulationOptions.observedRestSeconds?.let {
+                    put("observed_rest_seconds", it)
+                  }
+                  put(
+                      "available_weights_kg",
+                      buildJsonObject {
+                        snapshot.autoregulationOptions.availableWeightsKg.toSortedMap().forEach {
+                            (id, weights) ->
+                          put(
+                              id,
+                              buildJsonArray {
+                                weights.sorted().forEach { add(JsonPrimitive(it)) }
+                              },
+                          )
+                        }
+                      },
+                  )
+                },
+            )
             snapshot.availableTimeMinutes?.let { put("available_time_minutes", it) }
+            snapshot.availableTimeEndsAtMillis?.let { put("available_time_ends_at_millis", it) }
             put(
                 "excluded_exercise_ids",
                 buildJsonArray {
-                  snapshot.excludedExerciseIds.sorted().forEach { add(JsonPrimitive(it)) }
+                  (snapshot.excludedExerciseSyncIds +
+                          snapshot.exercises
+                              .filter { it.exerciseId in snapshot.excludedExerciseIds }
+                              .map { it.exerciseSyncId }
+                              .filter { it.isNotBlank() })
+                      .sorted()
+                      .forEach { add(JsonPrimitive(it)) }
                 },
             )
             put(
@@ -149,6 +184,8 @@ object CoachToolCodec {
                   "rest",
                   buildJsonObject {
                     put("start_id", rest.startId)
+                    put("started_at_millis", rest.startedAtMillis)
+                    rest.endsAtMillis?.let { put("ends_at_millis", it) }
                     rest.plannedSeconds?.let { put("planned_seconds", it) }
                     rest.remainingSeconds?.let { put("remaining_seconds", it) }
                   },
@@ -163,6 +200,7 @@ object CoachToolCodec {
                           put("section_id", exercise.sectionId)
                           put("exercise_id", exercise.exerciseSyncId)
                           put("name", exercise.name)
+                          exercise.type?.let { put("type", it.name) }
                           put("position", exercise.position)
                           put("muscles", stringArray(exercise.muscleIds))
                           put("equipment", stringArray(exercise.equipmentIds))
@@ -224,6 +262,9 @@ object CoachToolCodec {
                                   add(
                                       buildJsonObject {
                                         put("completed_at", row.completedAt)
+                                        put("workout_id", row.workoutId)
+                                        put("set_id", row.setSyncId)
+                                        put("interrupted", row.interrupted)
                                         put("set_index", row.setIndex)
                                         row.weightKg?.let { put("weight_kg", it) }
                                         row.reps?.let { put("reps", it) }

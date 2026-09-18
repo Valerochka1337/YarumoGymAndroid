@@ -130,7 +130,7 @@ class CoachToolCodecTest {
     )
     assertEquals(
         Json.parseToJsonElement(
-            "{\"start_id\":\"rest\",\"planned_seconds\":90,\"remaining_seconds\":30}"
+            "{\"start_id\":\"rest\",\"started_at_millis\":0,\"planned_seconds\":90,\"remaining_seconds\":30}"
         ),
         output["rest"],
     )

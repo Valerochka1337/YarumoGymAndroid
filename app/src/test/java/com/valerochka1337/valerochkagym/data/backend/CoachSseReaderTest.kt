@@ -10,6 +10,17 @@ import org.junit.Test
 
 class CoachSseReaderTest {
   @Test
+  fun `durable event IDs survive keepalive comments`() {
+    var eventId: String? = null
+    CoachSseReader(Buffer().writeUtf8("id: 42\n: keepalive\nevent: completed\ndata: {}\n\n"))
+        .readWithId { _, _, id ->
+          eventId = id
+          false
+        }
+    assertEquals("42", eventId)
+  }
+
+  @Test
   fun `framing survives every byte boundary and all line endings`() {
     for (newline in listOf("\n", "\r\n", "\r")) {
       val wire =

@@ -86,6 +86,14 @@ interface BackendTransport {
   ): kotlinx.coroutines.flow.Flow<BackendStreamEvent> =
       throw UnsupportedOperationException("Streaming backend transport is required")
 
+  /** Read-only subscription: closing it never cancels durable server execution. */
+  fun authorizedGetEventStream(
+      path: String,
+      expectedOwner: String,
+      expectedSessionEpoch: Long,
+  ): kotlinx.coroutines.flow.Flow<BackendStreamEvent> =
+      throw UnsupportedOperationException("GET streaming backend transport is required")
+
   /** Sends previously journaled bytes verbatim; unsupported transports fail closed. */
   suspend fun authorizedRawResponse(
       method: String,
@@ -564,11 +572,29 @@ class BackendApi @Inject constructor(private val tokens: BackendSessionStore) : 
     )
   }
 
+  override fun authorizedGetEventStream(
+      path: String,
+      expectedOwner: String,
+      expectedSessionEpoch: Long,
+  ): kotlinx.coroutines.flow.Flow<BackendStreamEvent> = flow {
+    // The normal JSON status request refreshes credentials while preserving the pinned login.
+    authorizedRawResponse(
+        "GET",
+        path.substringBefore("/events"),
+        byteArrayOf(),
+        expectedOwner = expectedOwner,
+        expectedSessionEpoch = expectedSessionEpoch,
+        retryOnUnauthorized = true,
+    )
+    emitAll(eventStreamAttempt(path, byteArrayOf(), expectedOwner, expectedSessionEpoch, "GET"))
+  }
+
   private fun eventStreamAttempt(
       path: String,
       rawBody: ByteArray,
       expectedOwner: String,
       expectedSessionEpoch: Long?,
+      method: String = "POST",
   ): kotlinx.coroutines.flow.Flow<BackendStreamEvent> =
       kotlinx.coroutines.flow
           .callbackFlow {
@@ -606,7 +632,7 @@ class BackendApi @Inject constructor(private val tokens: BackendSessionStore) : 
                     .header("Authorization", "Bearer ${dispatch.tokens.accessToken}")
                     .header("Accept", "text/event-stream")
                     .header("X-Gym-Sync-Version", "3")
-                    .post(streamBody)
+                    .method(method, if (method == "GET") null else streamBody)
                     .build()
             val openResponse = java.util.concurrent.atomic.AtomicReference<okhttp3.Response?>()
             val call =
@@ -618,7 +644,7 @@ class BackendApi @Inject constructor(private val tokens: BackendSessionStore) : 
                     .authenticator(okhttp3.Authenticator.NONE)
                     .proxyAuthenticator(okhttp3.Authenticator.NONE)
                     .readTimeout(60, TimeUnit.SECONDS)
-                    .callTimeout(60, TimeUnit.SECONDS)
+                    .callTimeout(if (method == "GET") 0 else 60, TimeUnit.SECONDS)
                     .build()
                     .newCall(request)
             val guard = launch {
@@ -652,11 +678,11 @@ class BackendApi @Inject constructor(private val tokens: BackendSessionStore) : 
                         ) {
                           "Expected event stream"
                         }
-                        CoachSseReader(it.body.source()).read { event, data ->
+                        CoachSseReader(it.body.source()).readWithId { event, data, id ->
                           pin()
                           val sent =
                               trySendBlocking(
-                                  BackendStreamEvent(event, data, expectedOwner, dispatch.epoch)
+                                  BackendStreamEvent(event, data, expectedOwner, dispatch.epoch, id)
                               )
                           sent.getOrThrow()
                           event !in setOf("completed", "error")

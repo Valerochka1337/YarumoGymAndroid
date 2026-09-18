@@ -97,6 +97,7 @@ constructor(
                 "UPDATE workouts SET coachRevision = coachRevision + 1 WHERE id=?",
                 arrayOf<Any?>(workoutId),
             )
+            database.coachRunDao().markDirty(workoutId)
             if (completesWorkout || !settings.restAutostart) null
             else if (settings.heartRateRestEnabled) Int.MIN_VALUE
             else resolver(full, section.exercise.id)
@@ -204,6 +205,8 @@ constructor(
       intents: List<CoachChangeIntent>,
       expiresAt: Long,
       expectedSessionEpoch: Long? = null,
+      serverProposalId: String? = null,
+      expectedContextVersion: String? = null,
       isCurrent: () -> Boolean = { true },
   ): ModelProposalSaveResult =
       CoachDiagnostics.trace(
@@ -219,6 +222,8 @@ constructor(
                 expiresAt,
                 expectedSessionEpoch,
                 isCurrent,
+                serverProposalId,
+                expectedContextVersion,
             )
             .also {
               CoachDiagnostics.event(
@@ -236,6 +241,8 @@ constructor(
       expiresAt: Long,
       expectedSessionEpoch: Long? = null,
       isCurrent: () -> Boolean = { true },
+      serverProposalId: String? = null,
+      expectedContextVersion: String? = null,
   ): ModelProposalSaveResult {
     // Preparation reads only local facts. Saving below recalculates under the checked revision.
     if (!belongsToLiveAccount(accountId, expectedSessionEpoch) || !isCurrent()) {
@@ -247,6 +254,8 @@ constructor(
     }
     if (full.workout.finishedAt != null) return ModelProposalSaveResult.Unavailable
     if (full.workout.coachRevision != baseRevision) return ModelProposalSaveResult.Stale
+    if (serverProposalId != null && intents.any { it is CoachChangeIntent.Autoregulate })
+        return ModelProposalSaveResult.Invalid
     val autoregulate = intents.filterIsInstance<CoachChangeIntent.Autoregulate>().singleOrNull()
     if (autoregulate != null) {
       if (intents.size != 1) return ModelProposalSaveResult.Invalid
@@ -268,6 +277,8 @@ constructor(
           expiresAt,
           expectedSessionEpoch,
           isCurrent,
+          serverProposalId,
+          expectedContextVersion,
       )
     }
     val snapshot =
@@ -300,6 +311,8 @@ constructor(
           expiresAt,
           expectedSessionEpoch,
           isCurrent,
+          serverProposalId,
+          expectedContextVersion,
       )
     } catch (_: InvalidExerciseOrder) {
       ModelProposalSaveResult.InvalidOrder
@@ -324,6 +337,8 @@ constructor(
       expiresAt: Long,
       expectedSessionEpoch: Long?,
       isCurrent: () -> Boolean,
+      serverProposalId: String? = null,
+      expectedContextVersion: String? = null,
   ): ModelProposalSaveResult =
       writes.write {
         try {
@@ -341,6 +356,46 @@ constructor(
                 return@withTransaction ModelProposalSaveResult.Unavailable
             if (workout.coachRevision != expectedRevision)
                 return@withTransaction ModelProposalSaveResult.Stale
+            if (serverProposalId != null && expiresAt <= System.currentTimeMillis())
+                return@withTransaction ModelProposalSaveResult.Stale
+            if (expectedContextVersion != null) {
+              val snapshot =
+                  CoachWorkoutReader(database, restTimer, sessions)
+                      .snapshot(accountId, workoutId, expectedSessionEpoch)
+              if (
+                  snapshot == null ||
+                      com.valerochka1337.valerochkagym.data.ai.CoachToolCodec.contextVersion(
+                          snapshot
+                      ) != expectedContextVersion
+              )
+                  return@withTransaction ModelProposalSaveResult.Stale
+            }
+            if (serverProposalId != null) {
+              val prior = coachDao.proposalForId(serverProposalId)
+              if (prior != null) {
+                if (
+                    prior.accountId != accountId ||
+                        prior.workoutId != workoutId ||
+                        prior.baseRevision != expectedRevision ||
+                        prior.expiresAt != expiresAt ||
+                        prior.packetJson !=
+                            json.encodeToString(WorkoutChangeSet.Packet.serializer(), packet)
+                )
+                    return@withTransaction ModelProposalSaveResult.Invalid
+                return@withTransaction ModelProposalSaveResult.Saved(
+                    WorkoutProposal(
+                        prior.id,
+                        prior.accountId,
+                        prior.workoutId,
+                        prior.baseRevision,
+                        prior.beforeSummary,
+                        prior.afterSummary,
+                        packet,
+                        prior.expiresAt,
+                    )
+                )
+              }
+            }
             if (coachDao.pendingProposal(workoutId) != null)
                 return@withTransaction ModelProposalSaveResult.Unavailable
             if (!validAutoregulation(accountId, workoutId, packet, expectedSessionEpoch))
@@ -362,6 +417,7 @@ constructor(
             }
             val proposal =
                 WorkoutProposal(
+                    id = serverProposalId ?: java.util.UUID.randomUUID().toString(),
                     accountId = accountId,
                     workoutId = workoutId,
                     baseRevision = workout.coachRevision,
@@ -434,8 +490,24 @@ constructor(
                             ?: return@withTransaction Applied(stale(operationId, ""), null)
                     if (proposal.accountId != accountId)
                         return@withTransaction Applied(stale(operationId, ""), null)
+                    val remoteRun = database.coachRunDao().proposal(proposalId)
+                    if (remoteRun != null) {
+                      val current =
+                          CoachWorkoutReader(database, restTimer, sessions)
+                              .snapshot(accountId, proposal.workoutId, expectedSessionEpoch)
+                      if (
+                          current == null ||
+                              com.valerochka1337.valerochkagym.data.ai.CoachToolCodec
+                                  .contextVersion(current) != remoteRun.contextVersion
+                      ) {
+                        coachDao.setProposalState(proposalId, "STALE")
+                        enqueueServerReceipt(accountId, proposalId, "STALE")
+                        return@withTransaction Applied(stale(operationId, proposal.workoutId), null)
+                      }
+                    }
                     if (proposal.expiresAt < System.currentTimeMillis()) {
                       coachDao.setProposalState(proposalId, "EXPIRED")
+                      enqueueServerReceipt(accountId, proposalId, "STALE")
                       return@withTransaction Applied(stale(operationId, proposal.workoutId), null)
                     }
                     coachDao.receipt(operationId)?.let { saved ->
@@ -464,6 +536,7 @@ constructor(
                         workout.finishedAt != null || workout.coachRevision != proposal.baseRevision
                     ) {
                       coachDao.setProposalState(proposalId, "STALE")
+                      enqueueServerReceipt(accountId, proposalId, "STALE")
                       return@withTransaction Applied(
                           saveReceipt(
                               accountId,
@@ -490,6 +563,7 @@ constructor(
                             )
                         ) {
                           coachDao.setProposalState(proposalId, "STALE")
+                          enqueueServerReceipt(accountId, proposalId, "STALE")
                           return@withTransaction Applied(
                               stale(operationId, proposal.workoutId),
                               null,
@@ -504,6 +578,7 @@ constructor(
                             )
                     rememberDecision(accountId, proposal, "APPLIED", packet)
                     coachDao.setProposalState(proposalId, "CONFIRMED")
+                    enqueueServerReceipt(accountId, proposalId, "APPLIED")
                     updateContext(accountId, proposal.workoutId) {
                       it.copy(initiativePendingInteraction = false)
                     }
@@ -553,6 +628,7 @@ constructor(
               reason,
           )
           coachDao.setProposalState(proposalId, "CANCELLED")
+          enqueueServerReceipt(accountId, proposalId, "REJECTED")
           json
               .decodeFromString(WorkoutChangeSet.Packet.serializer(), proposal.packetJson)
               .autoregulation
@@ -574,6 +650,33 @@ constructor(
           true
         }
       }
+
+  private suspend fun enqueueServerReceipt(accountId: String, proposalId: String, status: String) {
+    val run = database.coachRunDao().proposal(proposalId) ?: return
+    if (run.accountId != accountId) return
+    val receiptId =
+        java.util.UUID.nameUUIDFromBytes("${run.requestId}:$proposalId:$status".toByteArray())
+            .toString()
+    val payload =
+        kotlinx.serialization.json
+            .buildJsonObject {
+              put("proposalId", kotlinx.serialization.json.JsonPrimitive(proposalId))
+              put("status", kotlinx.serialization.json.JsonPrimitive(status))
+              put("receiptId", kotlinx.serialization.json.JsonPrimitive(receiptId))
+            }
+            .toString()
+    database
+        .coachRunDao()
+        .receipt(
+            com.valerochka1337.valerochkagym.data.db.entity.CoachReceiptOutboxEntity(
+                receiptId,
+                accountId,
+                run.requestId,
+                payload,
+            )
+        )
+    database.coachRunDao().markDirty(run.workoutId)
+  }
 
   private suspend fun rememberDecision(
       accountId: String,
@@ -652,6 +755,7 @@ constructor(
         )
       }
     }
+    database.coachRunDao().markDirty(workoutId)
     val receipt = saveReceipt(accountId, workoutId, operationId, revision, CommandResult.APPLIED)
     saveCommandJournal(operationId, accountId, workoutId, packet, receipt)
     return Applied(receipt, calculated.stagedRest)
