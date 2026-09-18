@@ -318,6 +318,7 @@ class BackendApi @Inject constructor(private val tokens: BackendSessionStore) : 
                 "profile",
                 "health-ledger-v1",
                 "strength-planner-personalization",
+                "workout-rir-v1",
             ) +
                 headers["X-Gym-Capabilities"]
                     .orEmpty()
