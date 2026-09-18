@@ -14,6 +14,36 @@ import org.junit.Test
 
 class CoachWorkoutReaderTest : RoomDaoTest() {
   @Test
+  fun `snapshot keeps portable exclusions for exercises outside the workout`() = runTest {
+    val workout = insertWorkout("excluded-context")
+    val excluded = exercise("Excluded press")
+    val session = FakeSession()
+    session.save(BackendTokens("user", "user@example.com", "access", "refresh"))
+    db.openHelper.writableDatabase.execSQL(
+        "INSERT OR REPLACE INTO backend_state (id, owner, generation, phase, initialMergeAcknowledged) VALUES (1, 'user', 0, 'OWNED', 1)"
+    )
+    val deadline = System.currentTimeMillis() + 600_000L
+    db.coachDao()
+        .saveContext(
+            com.valerochka1337.valerochkagym.data.db.entity.CoachSessionContextEntity(
+                workout,
+                "user",
+                excludedExerciseIdsJson = "[$excluded]",
+                availableTimeEndsAtMillis = deadline,
+            )
+        )
+    val snapshot =
+        CoachWorkoutReader(db, RestTimerEngine(backgroundScope) { 0L }, session)
+            .snapshot("user", workout)!!
+    assertTrue(snapshot.exercises.isEmpty())
+    assertEquals(
+        setOf(db.exerciseDao().getById(excluded)!!.syncId),
+        snapshot.excludedExerciseSyncIds,
+    )
+    assertEquals(deadline, snapshot.availableTimeEndsAtMillis)
+  }
+
+  @Test
   fun `snapshot reads only the active owners profile and durable decisions`() = runTest {
     val workout = insertWorkout("active-profile")
     val session = FakeSession()

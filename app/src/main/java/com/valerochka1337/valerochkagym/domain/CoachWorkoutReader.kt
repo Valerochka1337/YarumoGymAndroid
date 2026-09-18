@@ -1,5 +1,6 @@
 package com.valerochka1337.valerochkagym.domain
 
+import androidx.room.withTransaction
 import com.valerochka1337.valerochkagym.data.backend.BackendSessionStore
 import com.valerochka1337.valerochkagym.data.db.GymDatabase
 import com.valerochka1337.valerochkagym.data.db.dao.CoachHistorySet
@@ -29,15 +30,17 @@ constructor(
       expectedSessionEpoch: Long? = null,
   ): WorkoutSnapshot? =
       CoachDiagnostics.trace("context.snapshot") {
-        readSnapshot(accountId, workoutId, expectedSessionEpoch).also {
-          CoachDiagnostics.event(
-              "context.snapshot.result",
-              "available" to (it != null),
-              "revision" to it?.revision,
-              "exercises" to it?.exercises?.size,
-              "sets" to it?.exercises?.sumOf { exercise -> exercise.sets.size },
-          )
-        }
+        database
+            .withTransaction { readSnapshot(accountId, workoutId, expectedSessionEpoch) }
+            .also {
+              CoachDiagnostics.event(
+                  "context.snapshot.result",
+                  "available" to (it != null),
+                  "revision" to it?.revision,
+                  "exercises" to it?.exercises?.size,
+                  "sets" to it?.exercises?.sumOf { exercise -> exercise.sets.size },
+              )
+            }
       }
 
   private suspend fun readSnapshot(
@@ -132,6 +135,9 @@ constructor(
             .filterNotNull()
     val profile = database.profileDao().get(accountId)
     val profileEquipment = database.profileDao().equipmentIds(accountId).toSet()
+    val excludedIds = context?.excludedExerciseIdsJson?.decodeLongs().orEmpty()
+    val excludedSyncIds =
+        excludedIds.mapNotNull { database.exerciseDao().getById(it)?.syncId }.toSet()
     if (!belongsToLiveAccount(accountId, expectedSessionEpoch)) return null
     val allSets = exercises.flatMap { it.sets }
     val current = allSets.firstOrNull { !it.completed }?.syncId
@@ -177,7 +183,9 @@ constructor(
                   .div(60_000L)
                   .toInt()
             } ?: context?.availableTimeMinutes,
-        excludedExerciseIds = context?.excludedExerciseIdsJson?.decodeLongs().orEmpty(),
+        excludedExerciseIds = excludedIds,
+        excludedExerciseSyncIds = excludedSyncIds,
+        availableTimeEndsAtMillis = context?.availableTimeEndsAtMillis,
         feelings = allSets.flatMap { it.reportedFeelings }.toSet(),
         futureRestSeconds = context?.futureRestSeconds,
         autoregulationOptions =

@@ -9,6 +9,7 @@ data class BackendStreamEvent(
     val data: String,
     val owner: String,
     val sessionEpoch: Long,
+    val id: String? = null,
 )
 
 /** Bounded byte-oriented framing; UTF-8 is decoded only after a whole line arrives. */
@@ -18,6 +19,11 @@ internal class CoachSseReader(
     private val maxEventBytes: Int = 256 * 1024,
 ) {
   fun read(consume: (String, String) -> Boolean) {
+    readWithId { event, data, _ -> consume(event, data) }
+  }
+
+  fun readWithId(consume: (String, String, String?) -> Boolean) {
+    var id: String? = null
     var total = 0
     var size = 0
     var skipLf = false
@@ -44,7 +50,7 @@ internal class CoachSseReader(
       val value = if (firstLine) raw.removePrefix("\uFEFF") else raw
       firstLine = false
       if (value.isEmpty()) {
-        if (hasData && !consume(name, data.toString().dropLast(1))) return
+        if (hasData && !consume(name, data.toString().dropLast(1), id)) return
         name = "message"
         data.setLength(0)
         hasData = false
@@ -53,6 +59,7 @@ internal class CoachSseReader(
         val field = value.substringBefore(':')
         val content = value.substringAfter(':', "").removePrefix(" ")
         when (field) {
+          "id" -> if (!content.contains('\u0000')) id = content
           "event" -> name = content
           "data" -> {
             hasData = true

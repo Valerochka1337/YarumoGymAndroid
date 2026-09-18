@@ -73,18 +73,33 @@ constructor(
     private val sessions: BackendSessionStore,
     private val writes: WorkoutWriteQueue = WorkoutWriteQueue(),
 ) {
+  /**
+   * Hilt supplies the durable server path; legacy constructor-only instances remain test fixtures.
+   */
+  @Inject lateinit var remote: DurableCoachCoordinator
+  private val hasRemote
+    get() = ::remote.isInitialized
+
   private val json = Json { explicitNulls = false }
   /** One pending request is back-pressured instead of silently dropped during service startup. */
   private val requests = Channel<PendingRequest>(capacity = 1)
   private val running = MutableStateFlow<Set<String>>(emptySet())
-  val runningWorkouts: StateFlow<Set<String>> = running
+  val runningWorkouts: StateFlow<Set<String>>
+    get() = if (hasRemote) remote.running else running
+
   private val drafts = MutableStateFlow<Map<String, CoachDraft>>(emptyMap())
-  val responseDrafts: StateFlow<Map<String, CoachDraft>> = drafts
+  val responseDrafts: StateFlow<Map<String, CoachDraft>>
+    get() = if (hasRemote) remote.drafts else drafts
+
   private val stages = MutableStateFlow<Map<String, String>>(emptyMap())
   /** Ephemeral detail of the currently running request; Room remains the transcript source. */
-  val runningStages: StateFlow<Map<String, String>> = stages
+  val runningStages: StateFlow<Map<String, String>>
+    get() = if (hasRemote) remote.stages else stages
+
   private val coachAlerts = MutableSharedFlow<String>(extraBufferCapacity = 4)
-  val alerts = coachAlerts.asSharedFlow()
+  val alerts
+    get() = if (hasRemote) remote.alerts.asSharedFlow() else coachAlerts.asSharedFlow()
+
   private val lifecycle = Any()
   @Volatile private var generation = 0L
   private val latestRequests = ConcurrentHashMap<String, String>()
@@ -95,6 +110,10 @@ constructor(
   private var ownerScope: CoroutineScope? = null
 
   fun attach(scope: CoroutineScope) {
+    if (hasRemote) {
+      remote.attach(scope)
+      return
+    }
     CoachDiagnostics.event("service.attached")
     drafts.value = emptyMap()
     val interrupted =
@@ -127,6 +146,10 @@ constructor(
   }
 
   fun detach() {
+    if (hasRemote) {
+      remote.detach()
+      return
+    }
     CoachDiagnostics.event("service.detached")
     drafts.value = emptyMap()
     val interrupted =
@@ -146,6 +169,10 @@ constructor(
 
   /** Finishing a workout makes an in-flight answer ineligible to write its transcript. */
   fun stopWorkout(workoutId: String) {
+    if (hasRemote) {
+      remote.stopWorkout(workoutId)
+      return
+    }
     CoachDiagnostics.event("service.workout_stopped")
     drafts.value = drafts.value - workoutId
     val interrupted =
@@ -170,6 +197,7 @@ constructor(
       }
 
   private suspend fun sendLogged(workoutId: String, text: String): Boolean {
+    if (hasRemote) return remote.send(workoutId, text)
     if (text.isBlank() || text.length > MAX_USER_MESSAGE_CHARS || workoutId in stoppedWorkouts)
         return false
     if (consumer?.isActive != true) return false
@@ -221,6 +249,7 @@ constructor(
       }
 
   private suspend fun retryLogged(workoutId: String, errorMessageId: String): Boolean {
+    if (hasRemote) return remote.retry(workoutId, errorMessageId)
     if (consumer?.isActive != true || workoutId in stoppedWorkouts) return false
     val requestScope = ownerScope ?: return false
     val sentGeneration = generation
@@ -351,6 +380,7 @@ constructor(
         text,
         expectedSessionEpoch = session.epoch,
     )
+    if (hasRemote) remote.changed(workoutId)
     return receipt.result == com.valerochka1337.valerochkagym.domain.CommandResult.APPLIED
   }
 
@@ -390,12 +420,14 @@ constructor(
                 (reason?.let { " — ${it.label}" } ?: ""),
             expectedSessionEpoch = session.epoch,
         )
+    if (hasRemote) remote.changed(workoutId)
     return cancelled
   }
 
   suspend fun undo(workoutId: String): Boolean =
       CoachDiagnostics.trace("conversation.undo") {
         undoLogged(workoutId).also {
+          if (hasRemote) remote.changed(workoutId)
           CoachDiagnostics.event("conversation.undo.result", "accepted" to it)
         }
       }
@@ -430,6 +462,7 @@ constructor(
       } ?: false
 
   suspend fun considerInitiative(workoutId: String): Boolean {
+    if (hasRemote) return remote.changed(workoutId)
     val session = sessions.snapshot() ?: return false
     return considerInitiative(session.tokens.userId, workoutId, session.epoch) != null
   }
@@ -814,28 +847,31 @@ constructor(
       enabled: Boolean,
       expectedSessionEpoch: Long? = null,
   ): Boolean {
-    return writes.write {
-      database.withTransaction {
-        if (!belongsToLiveAccount(accountId, expectedSessionEpoch)) return@withTransaction false
-        val active = database.workoutDao().getWorkoutFull(workoutId)?.workout
-        if (active?.finishedAt != null || active == null) return@withTransaction false
-        val existing =
-            database.coachDao().context(workoutId)
-                ?: CoachSessionContextEntity(workoutId, accountId)
-        if (existing.accountId != accountId) return@withTransaction false
-        database
-            .coachDao()
-            .saveContext(
-                existing.copy(initiativeEnabled = enabled, initiativePendingInteraction = false)
-            )
-        if (!enabled) {
-          pendingRequests.values
-              .filter { it.workoutId == workoutId && it.automatic }
-              .forEach { latestRequests.remove(workoutId, it.messageId) }
+    val saved =
+        writes.write {
+          database.withTransaction {
+            if (!belongsToLiveAccount(accountId, expectedSessionEpoch)) return@withTransaction false
+            val active = database.workoutDao().getWorkoutFull(workoutId)?.workout
+            if (active?.finishedAt != null || active == null) return@withTransaction false
+            val existing =
+                database.coachDao().context(workoutId)
+                    ?: CoachSessionContextEntity(workoutId, accountId)
+            if (existing.accountId != accountId) return@withTransaction false
+            database
+                .coachDao()
+                .saveContext(
+                    existing.copy(initiativeEnabled = enabled, initiativePendingInteraction = false)
+                )
+            if (!enabled) {
+              pendingRequests.values
+                  .filter { it.workoutId == workoutId && it.automatic }
+                  .forEach { latestRequests.remove(workoutId, it.messageId) }
+            }
+            true
+          }
         }
-        true
-      }
-    }
+    if (hasRemote && saved) remote.changed(workoutId)
+    return saved
   }
 
   suspend fun appendMessage(
@@ -936,6 +972,10 @@ constructor(
   ): CoachInitiativeDecision? {
     fun skip(reason: String): CoachInitiativeDecision? {
       CoachDiagnostics.event("initiative.skipped", "reason" to reason)
+      return null
+    }
+    if (hasRemote) {
+      remote.changed(workoutId)
       return null
     }
     if (!belongsToLiveAccount(accountId, expectedSessionEpoch)) return skip("owner_changed")

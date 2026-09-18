@@ -103,6 +103,9 @@ interface CoachDao {
   @Query("SELECT * FROM coach_proposals WHERE id=:id AND state='PENDING' LIMIT 1")
   suspend fun pendingProposalForId(id: String): CoachProposalEntity?
 
+  @Query("SELECT * FROM coach_proposals WHERE id=:id LIMIT 1")
+  suspend fun proposalForId(id: String): CoachProposalEntity?
+
   @Insert(onConflict = OnConflictStrategy.REPLACE)
   suspend fun saveProposal(proposal: CoachProposalEntity)
 
@@ -138,7 +141,18 @@ interface CoachDao {
   fun observeContext(workoutId: String): Flow<CoachSessionContextEntity?>
 
   @Insert(onConflict = OnConflictStrategy.REPLACE)
-  suspend fun saveContext(context: CoachSessionContextEntity)
+  suspend fun insertContext(context: CoachSessionContextEntity)
+
+  @Query(
+      "INSERT INTO coach_dirty_sessions(workoutId,generation) VALUES(:workoutId,1) ON CONFLICT(workoutId) DO UPDATE SET generation=generation+1"
+  )
+  suspend fun markContextDirty(workoutId: String)
+
+  @androidx.room.Transaction
+  suspend fun saveContext(context: CoachSessionContextEntity) {
+    insertContext(context)
+    markContextDirty(context.workoutId)
+  }
 
   @Query("DELETE FROM coach_session_context WHERE accountId=:accountId")
   suspend fun clearContext(accountId: String)
@@ -155,8 +169,26 @@ interface CoachDao {
   @Query("DELETE FROM coach_journal WHERE accountId=:accountId")
   suspend fun clearJournal(accountId: String)
 
+  @Query(
+      "DELETE FROM coach_dirty_sessions WHERE workoutId IN (SELECT workoutId FROM coach_session_outbox WHERE accountId=:accountId UNION SELECT workoutId FROM coach_runs WHERE accountId=:accountId UNION SELECT workoutId FROM coach_session_context WHERE accountId=:accountId)"
+  )
+  suspend fun clearDirtySessions(accountId: String)
+
+  @Query("DELETE FROM coach_runs WHERE accountId=:accountId")
+  suspend fun clearRemoteRuns(accountId: String)
+
+  @Query("DELETE FROM coach_session_outbox WHERE accountId=:accountId")
+  suspend fun clearRemoteSessions(accountId: String)
+
+  @Query("DELETE FROM coach_receipt_outbox WHERE accountId=:accountId")
+  suspend fun clearRemoteReceipts(accountId: String)
+
   @androidx.room.Transaction
   suspend fun clearAccount(accountId: String) {
+    clearDirtySessions(accountId)
+    clearRemoteRuns(accountId)
+    clearRemoteSessions(accountId)
+    clearRemoteReceipts(accountId)
     clearMessages(accountId)
     clearProposals(accountId)
     clearReceipts(accountId)

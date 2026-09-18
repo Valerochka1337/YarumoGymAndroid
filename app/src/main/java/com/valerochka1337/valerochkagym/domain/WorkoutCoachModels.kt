@@ -20,12 +20,15 @@ data class WorkoutSnapshot(
     val elapsedSeconds: Long = 0,
     val availableTimeMinutes: Int? = null,
     val excludedExerciseIds: Set<Long> = emptySet(),
+    /** Portable exclusions include exercises absent from the current workout. */
+    val excludedExerciseSyncIds: Set<String> = emptySet(),
     val feelings: Set<String> = emptySet(),
     val pulse: SnapshotPulse? = null,
     val futureRestSeconds: Int? = null,
     val profile: CoachProfile = CoachProfile(),
     val coachDecisions: List<CoachDecisionMemory> = emptyList(),
     val observedAtMillis: Long = System.currentTimeMillis(),
+    val availableTimeEndsAtMillis: Long? = null,
     val autoregulationOptions:
         com.valerochka1337.valerochkagym.domain.autoregulation.AutoregulationOptions =
         com.valerochka1337.valerochkagym.domain.autoregulation.AutoregulationOptions(),

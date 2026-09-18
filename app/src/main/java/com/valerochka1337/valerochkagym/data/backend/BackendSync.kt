@@ -366,6 +366,10 @@ constructor(
             "backend_conflict_copies",
             "backend_rejected_operations",
             "coach_sync_state",
+            "coach_runs",
+            "coach_session_outbox",
+            "coach_receipt_outbox",
+            "coach_dirty_sessions",
         )
         .forEach {
           val personal =

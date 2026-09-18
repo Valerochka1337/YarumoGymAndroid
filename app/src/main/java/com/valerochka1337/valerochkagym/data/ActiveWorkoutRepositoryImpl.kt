@@ -382,11 +382,17 @@ constructor(
             if (remaining.isEmpty()) workoutDao.deleteWorkoutExercise(exercise.workoutExercise.id)
           }
           workoutDao.setFinishedAt(workoutId, now())
+          database.coachRunDao().markDirty(workoutId)
         }
       }
 
   override suspend fun discard(workoutId: String) =
-      writes.write { database.withTransaction { workoutDao.deleteWorkout(workoutId) } }
+      writes.write {
+        database.withTransaction {
+          database.coachRunDao().markDirty(workoutId)
+          workoutDao.deleteWorkout(workoutId)
+        }
+      }
 
   private suspend fun startEmptyInTransaction(): String {
     workoutDao.getActiveWorkoutId()?.let {
@@ -425,11 +431,12 @@ constructor(
           )
           .use { row -> if (row.moveToFirst()) row.getString(0) else null }
 
-  private fun incrementCoachRevision(workoutId: String) {
+  private suspend fun incrementCoachRevision(workoutId: String) {
     database.openHelper.writableDatabase.execSQL(
         "UPDATE workouts SET coachRevision = coachRevision + 1 WHERE id=?",
         arrayOf<Any?>(workoutId),
     )
+    database.coachRunDao().markDirty(workoutId)
   }
 
   private fun newId(): String = UUID.randomUUID().toString()
