@@ -169,10 +169,7 @@ constructor(
                 ProfileEquipmentPreferenceEntity(target.scope, it)
               }
           )
-          if (
-              keyExercises != null &&
-                  selectedExercises != null
-          ) {
+          if (keyExercises != null && selectedExercises != null) {
             val strengthPlannerProfileDao = database.strengthPlannerProfileDao()
             val existingStrength = strengthPlannerProfileDao.get(target.scope)
             if (!targetStillCurrent(target)) throw StaleProfileTargetException()

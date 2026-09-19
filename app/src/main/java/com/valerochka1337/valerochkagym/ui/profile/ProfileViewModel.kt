@@ -221,8 +221,10 @@ constructor(
     else next[candidate.syncId] = PlannerExerciseChoice(candidate.id, candidate.syncId, preference)
     copy(
         keyExercises =
-            if (preference == PlannerExercisePreference.LESS ||
-                preference == PlannerExercisePreference.NEVER)
+            if (
+                preference == PlannerExercisePreference.LESS ||
+                    preference == PlannerExercisePreference.NEVER
+            )
                 keyExercises.filterNot { it.exerciseSyncId == candidate.syncId }
             else keyExercises,
         plannerPreferences = next.values.sortedBy { it.exerciseSyncId },

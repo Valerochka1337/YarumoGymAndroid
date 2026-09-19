@@ -175,7 +175,8 @@ class ProfileScreenTest {
                               StrengthExerciseCandidate(2, "run", "Бег"),
                               StrengthExerciseCandidate(1, "press", "Жим"),
                           ),
-                      keyExercises = listOf(KeyExerciseChoice(1, "press", KeyExercisePriority.HIGH)),
+                      keyExercises =
+                          listOf(KeyExerciseChoice(1, "press", KeyExercisePriority.HIGH)),
                       plannerPreferences =
                           listOf(
                               PlannerExerciseChoice(

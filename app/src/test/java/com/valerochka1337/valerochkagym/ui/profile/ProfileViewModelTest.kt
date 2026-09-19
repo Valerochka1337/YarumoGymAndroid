@@ -173,7 +173,10 @@ class ProfileViewModelTest {
 
         viewModel.setGoal(com.valerochka1337.valerochkagym.domain.TrainingGoal.STRENGTH)
         viewModel.setExerciseAccent(7, ExerciseAccent.ACCENT)
-        assertEquals(listOf("sync-7"), viewModel.uiState.value.keyExercises.map { it.exerciseSyncId })
+        assertEquals(
+            listOf("sync-7"),
+            viewModel.uiState.value.keyExercises.map { it.exerciseSyncId },
+        )
         assertTrue(viewModel.uiState.value.plannerPreferences.isEmpty())
 
         viewModel.setExerciseAccent(8, ExerciseAccent.ACCENT)
@@ -334,8 +337,7 @@ private class FakeStrengthPlannerRepository(
           )
       )
 
-  override fun observe(target: ProfileEditTarget): Flow<List<KeyExerciseChoice>?> =
-      flowOf(keys)
+  override fun observe(target: ProfileEditTarget): Flow<List<KeyExerciseChoice>?> = flowOf(keys)
 
   override suspend fun save(
       target: ProfileEditTarget,
