@@ -50,6 +50,7 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.EditNote
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
@@ -102,6 +103,7 @@ import com.valerochka1337.valerochkagym.data.db.entity.ExerciseType
 import com.valerochka1337.valerochkagym.data.db.entity.WorkoutSetEntity
 import com.valerochka1337.valerochkagym.data.db.relation.WorkoutExerciseWithSets
 import com.valerochka1337.valerochkagym.domain.SetEffort
+import com.valerochka1337.valerochkagym.domain.canAddSet
 import com.valerochka1337.valerochkagym.domain.currentFocus
 import com.valerochka1337.valerochkagym.service.RestTimerState
 import com.valerochka1337.valerochkagym.service.heartrate.HeartRateConnectionState
@@ -429,13 +431,6 @@ internal fun ActiveWorkoutContent(
     if (missingRirSetId == setId) missingRirSetId = null
     setActions.setEffort(setId, effort)
   }
-  val focusedWorkoutExerciseId =
-      activeSetId?.let { setId ->
-        exercises
-            .firstOrNull { exercise -> exercise.sets.any { it.id == setId } }
-            ?.workoutExercise
-            ?.id
-      }
   val currentIndex =
       activeSetId?.let { setId ->
         exercises.indexOfFirst { exercise -> exercise.sets.any { it.id == setId } }
@@ -525,8 +520,7 @@ internal fun ActiveWorkoutContent(
               missingRirSetId = missingRirSetId,
               onEffortSelect = selectEffort,
               showAddSet =
-                  localOrder == roomOrder &&
-                      exercise.workoutExercise.id == focusedWorkoutExerciseId,
+                  localOrder == roomOrder && workout.canAddSet(exercise.workoutExercise.id),
               onAddSet = { setActions.addSet(exercise.workoutExercise.id) },
               dragHandle = {
                 DragHandle(
@@ -1199,6 +1193,16 @@ private fun ExerciseSection(
           modifier = Modifier.weight(1f),
           style = MaterialTheme.typography.labelLarge,
       )
+      if (showAddSet) {
+        IconButton(
+            onClick = {
+              haptics.step()
+              onAddSet()
+            }
+        ) {
+          Icon(Icons.Rounded.Add, contentDescription = "Добавить подход: ${exercise.exercise.name}")
+        }
+      }
       Icon(
           if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
           contentDescription = "Подходы: ${exercise.exercise.name}",
@@ -1244,14 +1248,6 @@ private fun ExerciseSection(
           )
         }
         Spacer(Modifier.height(8.dp))
-      }
-
-      if (showAddSet) {
-        TextButton(onClick = onAddSet) {
-          Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-          Spacer(Modifier.width(6.dp))
-          Text("Подход")
-        }
       }
     }
   }

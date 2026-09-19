@@ -22,6 +22,7 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
 import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -29,6 +30,8 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 data class ProfileEditorUiState(
     val isLoading: Boolean = true,
@@ -64,6 +67,9 @@ constructor(
   private val _uiState = MutableStateFlow(ProfileEditorUiState())
   val uiState: StateFlow<ProfileEditorUiState> = _uiState.asStateFlow()
 
+  private val saveMutex = Mutex()
+  private var editRevision = 0L
+
   init {
     viewModelScope.launch {
       val snapshot = profileRepository.openEditor()
@@ -95,7 +101,11 @@ constructor(
             }
           }
           .collectLatest { next ->
-            if (!_uiState.value.isSaving || next.target == null) _uiState.value = next
+            if (next.target == null) {
+              _uiState.value = next
+            } else if (!_uiState.value.isSaving) {
+              _uiState.value = next.copy(error = _uiState.value.error)
+            }
           }
     }
   }
@@ -166,41 +176,63 @@ constructor(
     copy(keyExercises = keyExercises.filterNot { it.exerciseSyncId == exerciseSyncId })
   }
 
-  fun setKeyExerciseSheet(visible: Boolean) = update { copy(showKeyExercises = visible) }
+  fun setKeyExerciseSheet(visible: Boolean) {
+    _uiState.value = _uiState.value.copy(showKeyExercises = visible)
+    _uiState.value.saveDraft(savedStateHandle)
+  }
 
   fun save() {
     val state = _uiState.value
     val target = state.target ?: return
     val profile = state.toProfileOrNull(clock.nowMillis())
     if (profile == null) {
-      _uiState.value = state.copy(error = "Проверьте дату и числовые значения")
+      _uiState.value = state.copy(isSaving = false, error = "Проверьте дату и числовые значения")
       return
     }
     _uiState.value = state.copy(isSaving = true, error = null)
+    val revision = editRevision
     viewModelScope.launch {
-      val saveResult =
-          if (profile.trainingGoal == TrainingGoal.STRENGTH)
-              profileRepository.saveWithStrength(target, profile, state.keyExercises)
-          else profileRepository.save(target, profile)
-      when (saveResult) {
-        ProfileSaveResult.Saved -> {
-          _uiState.value = _uiState.value.copy(isSaving = false)
+      saveMutex.withLock {
+        val saveResult =
+            try {
+              if (profile.trainingGoal == TrainingGoal.STRENGTH)
+                  profileRepository.saveWithStrength(target, profile, state.keyExercises)
+              else profileRepository.save(target, profile)
+            } catch (cancelled: CancellationException) {
+              throw cancelled
+            } catch (_: Exception) {
+              if (revision == editRevision) {
+                _uiState.value =
+                    _uiState.value.copy(
+                        isSaving = false,
+                        error = "Не удалось сохранить профиль. Измените значение, чтобы повторить.",
+                    )
+              }
+              return@withLock
+            }
+        if (revision != editRevision || _uiState.value.target != target) return@withLock
+        when (saveResult) {
+          ProfileSaveResult.Saved -> {
+            _uiState.value = _uiState.value.copy(isSaving = false)
+          }
+          ProfileSaveResult.Invalid ->
+              _uiState.value =
+                  _uiState.value.copy(isSaving = false, error = "Проверьте данные профиля")
+          ProfileSaveResult.StaleTarget ->
+              _uiState.value =
+                  ProfileEditorUiState(isLoading = false, error = "Профиль больше недоступен")
         }
-        ProfileSaveResult.Invalid ->
-            _uiState.value =
-                _uiState.value.copy(isSaving = false, error = "Проверьте данные профиля")
-        ProfileSaveResult.StaleTarget ->
-            _uiState.value =
-                ProfileEditorUiState(isLoading = false, error = "Профиль больше недоступен")
       }
     }
   }
 
   private fun update(block: ProfileEditorUiState.() -> ProfileEditorUiState) {
-    if (_uiState.value.isLoading || _uiState.value.isSaving) return
+    if (_uiState.value.isLoading || _uiState.value.target == null) return
     val next = _uiState.value.block()
     next.saveDraft(savedStateHandle)
     _uiState.value = next
+    editRevision++
+    save()
   }
 }
 

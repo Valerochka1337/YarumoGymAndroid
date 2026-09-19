@@ -367,6 +367,29 @@ class ActiveWorkoutRepositoryTest : RoomDaoTest() {
   // region set and exercise editing
 
   @Test
+  fun `extra set returns focus to the previous exercise and rejects it after the next starts`() =
+      runTest {
+        val workout = repository.startEmpty()
+        val first = repository.addExercise(workout, addExercise("Первое"))
+        val second = repository.addExercise(workout, addExercise("Второе"))
+        val firstSet = workoutDao.getSetsForWorkoutExercise(first).single()
+        repository.toggleSetCompleted(firstSet.id, true)
+        repository.addSet(first)
+        val extra = workoutDao.getSetsForWorkoutExercise(first).last()
+        assertFalse(extra.isCompleted)
+        assertEquals(2, workoutDao.getSetsForWorkoutExercise(first).size)
+        repository.toggleSetCompleted(extra.id, true)
+        repository.toggleSetCompleted(
+            workoutDao.getSetsForWorkoutExercise(second).single().id,
+            true,
+        )
+        repository.addSet(first)
+        assertEquals(2, workoutDao.getSetsForWorkoutExercise(first).size)
+        repository.addSet(second)
+        assertEquals(2, workoutDao.getSetsForWorkoutExercise(second).size)
+      }
+
+  @Test
   fun `addSet copies the last set with the next index`() = runTest {
     val squat = addExercise("Присед")
     val workoutId = repository.startEmpty()

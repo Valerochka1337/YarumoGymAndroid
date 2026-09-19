@@ -167,8 +167,10 @@ constructor(
                 profile?.experienceLevel,
                 profile?.manualConstraints,
                 profileEquipment,
-                profile?.preferredRepMin,
-                profile?.preferredRepMax,
+                if (profile == null) BasicProfile.initial().preferredRepMin
+                else profile.preferredRepMin,
+                if (profile == null) BasicProfile.initial().preferredRepMax
+                else profile.preferredRepMax,
             ),
         coachDecisions = CoachDecisionMemory.decode(context?.decisionMemoryJson ?: "[]"),
         currentSetId = current,

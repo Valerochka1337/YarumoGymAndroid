@@ -423,7 +423,7 @@ class ActiveWorkoutViewModelTest {
       }
 
   @Test
-  fun `adding a set ignores nonfocus missing and completed workouts`() =
+  fun `adding a set ignores nonfocus and missing workouts but allows the final exercise`() =
       runTest(mainDispatcherRule.testDispatcher.scheduler) {
         val nonfocusHarness = harness(active = workoutWithTwoIncompleteExercises())
         collectUiState(nonfocusHarness.viewModel)
@@ -440,7 +440,7 @@ class ActiveWorkoutViewModelTest {
 
         assertTrue(nonfocusHarness.repository.addedSetTo.isEmpty())
         assertTrue(missingHarness.repository.addedSetTo.isEmpty())
-        assertTrue(completedHarness.repository.addedSetTo.isEmpty())
+        assertEquals(listOf(WORKOUT_EXERCISE_ID), completedHarness.repository.addedSetTo)
       }
 
   @Test

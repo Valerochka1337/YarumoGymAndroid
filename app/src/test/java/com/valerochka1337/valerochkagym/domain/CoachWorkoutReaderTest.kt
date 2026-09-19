@@ -36,6 +36,8 @@ class CoachWorkoutReaderTest : RoomDaoTest() {
         CoachWorkoutReader(db, RestTimerEngine(backgroundScope) { 0L }, session)
             .snapshot("user", workout)!!
     assertTrue(snapshot.exercises.isEmpty())
+    assertEquals(8, snapshot.profile.preferredRepMin)
+    assertEquals(14, snapshot.profile.preferredRepMax)
     assertEquals(
         setOf(db.exerciseDao().getById(excluded)!!.syncId),
         snapshot.excludedExerciseSyncIds,
@@ -86,6 +88,10 @@ class CoachWorkoutReaderTest : RoomDaoTest() {
     assertEquals("MUSCLE_GAIN", snapshot.profile.trainingGoal)
     assertEquals(listOf(decision), snapshot.coachDecisions)
     assertNull(reader.snapshot("other", workout))
+    db.profileDao()
+        .upsert(com.valerochka1337.valerochkagym.data.db.entity.ProfileEntity("user", "profile"))
+    assertNull(reader.snapshot("user", workout)!!.profile.preferredRepMin)
+    assertNull(reader.snapshot("user", workout)!!.profile.preferredRepMax)
   }
 
   @Test

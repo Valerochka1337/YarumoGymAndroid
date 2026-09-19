@@ -11,6 +11,7 @@ import androidx.compose.ui.test.assertHeightIsAtLeast
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
@@ -398,17 +399,18 @@ class ActiveWorkoutScreenTest {
     composeRule
         .onNodeWithContentDescription("Выполнено, нажмите чтобы изменить фактические значения")
         .assertIsDisplayed()
-    assertAddSetIsAvailable()
+    assertAddSetIsAvailable(count = 2)
 
     completeFocusedSet()
     assertEquals(listOf(FIRST_SET_ID, SECOND_SET_ID), completedSetIds)
-    assertAddSetIsAvailable()
+    assertAddSetIsAvailable(count = 2)
 
     completeFocusedSet()
     assertEquals(listOf(FIRST_SET_ID, SECOND_SET_ID, THIRD_SET_ID), completedSetIds)
     composeRule.onAllNodesWithText("Подход выполнен").assertCountEquals(0)
-    composeRule.onAllNodesWithText("Подход").assertCountEquals(0)
-    assertEquals(emptyList<Long>(), addedSetTo)
+    assertAddSetIsAvailable()
+    composeRule.onNodeWithContentDescription("Добавить подход: Присед").performClick()
+    assertEquals(listOf(13L), addedSetTo)
   }
 
   @Test
@@ -522,7 +524,9 @@ class ActiveWorkoutScreenTest {
         .also { action -> composeRule.runOnIdle { action.action() } }
     composeRule.waitForIdle()
 
-    composeRule.onAllNodesWithText("Подход").assertCountEquals(0)
+    composeRule
+        .onAllNodesWithContentDescription("Добавить подход:", substring = true)
+        .assertCountEquals(0)
     assertEquals(emptyList<Long>(), addedSetTo)
     assertEquals(listOf(listOf(12L, 11L, 13L)), persistedOrders)
 
@@ -530,7 +534,7 @@ class ActiveWorkoutScreenTest {
     composeRule.waitForIdle()
 
     assertAddSetIsAvailable()
-    composeRule.onNodeWithText("Подход").performClick()
+    composeRule.onNodeWithContentDescription("Добавить подход: Тяга блока").performClick()
     assertEquals(listOf(12L), addedSetTo)
   }
 
@@ -828,8 +832,10 @@ class ActiveWorkoutScreenTest {
           unpinPersonalHint = unpinPersonalHint,
       )
 
-  private fun assertAddSetIsAvailable() {
-    composeRule.onAllNodesWithText("Подход").assertCountEquals(1)
+  private fun assertAddSetIsAvailable(count: Int = 1) {
+    composeRule
+        .onAllNodesWithContentDescription("Добавить подход:", substring = true)
+        .assertCountEquals(count)
   }
 
   private fun customActionsFor(name: String) =
