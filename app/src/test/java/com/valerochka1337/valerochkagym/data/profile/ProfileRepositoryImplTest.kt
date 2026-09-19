@@ -6,12 +6,17 @@ import com.valerochka1337.valerochkagym.data.backend.BackendSync
 import com.valerochka1337.valerochkagym.data.backend.BackendTokens
 import com.valerochka1337.valerochkagym.data.backend.BackendTransport
 import com.valerochka1337.valerochkagym.data.db.LocalEquipmentCatalog
+import com.valerochka1337.valerochkagym.data.db.entity.ExerciseEntity
+import com.valerochka1337.valerochkagym.data.db.entity.ExerciseType
 import com.valerochka1337.valerochkagym.data.db.entity.KeyExercisePriority
+import com.valerochka1337.valerochkagym.data.db.entity.MuscleGroup
+import com.valerochka1337.valerochkagym.data.db.entity.PlannerExercisePreference
 import com.valerochka1337.valerochkagym.data.db.entity.ProfileEntity
 import com.valerochka1337.valerochkagym.data.db.entity.ProfileEquipmentPreferenceEntity
 import com.valerochka1337.valerochkagym.domain.BasicProfile
 import com.valerochka1337.valerochkagym.domain.ExperienceLevel
 import com.valerochka1337.valerochkagym.domain.KeyExerciseChoice
+import com.valerochka1337.valerochkagym.domain.PlannerExerciseChoice
 import com.valerochka1337.valerochkagym.domain.ProfileSaveResult
 import com.valerochka1337.valerochkagym.domain.ProfileSex
 import com.valerochka1337.valerochkagym.domain.TrainingGoal
@@ -144,6 +149,61 @@ class ProfileRepositoryImplTest : RoomDaoTest() {
 
     assertNull(db.profileDao().get("GUEST"))
     assertNull(db.strengthPlannerProfileDao().get("GUEST"))
+  }
+
+  @Test
+  fun `key exercises save for every goal and never cannot contradict a key`() = runTest {
+    val (repository, _) = repository(Store())
+    val target = requireNotNull(repository.openEditor()).target
+    val exerciseId =
+        db.exerciseDao()
+            .insert(
+                ExerciseEntity(
+                    name = "Жим",
+                    muscleGroup = MuscleGroup.CHEST,
+                    type = ExerciseType.STRENGTH,
+                    syncId = "00000000-0000-0000-0000-000000000001",
+                )
+            )
+    val key =
+        KeyExerciseChoice(
+            exerciseId = exerciseId,
+            exerciseSyncId = "00000000-0000-0000-0000-000000000001",
+            priority = KeyExercisePriority.NORMAL,
+        )
+
+    assertEquals(
+        ProfileSaveResult.Saved,
+        repository.saveWithStrength(
+            target,
+            BasicProfile(trainingGoal = TrainingGoal.ENDURANCE),
+            listOf(key),
+        ),
+    )
+    assertEquals(
+        listOf(key.exerciseSyncId),
+        db.strengthPlannerProfileDao().keyExercises("GUEST").map { it.exerciseSyncId },
+    )
+
+    assertEquals(
+        ProfileSaveResult.Invalid,
+        repository.saveWithStrength(
+            target,
+            BasicProfile(trainingGoal = TrainingGoal.ENDURANCE),
+            listOf(key),
+            listOf(
+                PlannerExerciseChoice(
+                    exerciseId,
+                    key.exerciseSyncId,
+                    PlannerExercisePreference.NEVER,
+                )
+            ),
+        ),
+    )
+    assertEquals(
+        listOf(key.exerciseSyncId),
+        db.strengthPlannerProfileDao().keyExercises("GUEST").map { it.exerciseSyncId },
+    )
   }
 
   @Test

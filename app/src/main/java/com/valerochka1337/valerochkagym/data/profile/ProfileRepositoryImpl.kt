@@ -6,6 +6,7 @@ import com.valerochka1337.valerochkagym.data.backend.BackendSync
 import com.valerochka1337.valerochkagym.data.db.GymDatabase
 import com.valerochka1337.valerochkagym.data.db.dao.ProfileDao
 import com.valerochka1337.valerochkagym.data.db.entity.ExerciseType
+import com.valerochka1337.valerochkagym.data.db.entity.PlannerExercisePreference
 import com.valerochka1337.valerochkagym.data.db.entity.PlannerExercisePreferenceEntity
 import com.valerochka1337.valerochkagym.data.db.entity.ProfileEntity
 import com.valerochka1337.valerochkagym.data.db.entity.ProfileEquipmentPreferenceEntity
@@ -94,14 +95,21 @@ constructor(
         keyExercises != null &&
             (keyExercises.size > 5 ||
                 keyExercises.map(KeyExerciseChoice::exerciseSyncId).distinct().size !=
-                    keyExercises.size ||
-                (normalized.trainingGoal != TrainingGoal.STRENGTH && keyExercises.isNotEmpty()))
+                    keyExercises.size)
     )
         return ProfileSaveResult.Invalid
     if (
         plannerPreferences != null &&
             plannerPreferences.map(PlannerExerciseChoice::exerciseSyncId).distinct().size !=
                 plannerPreferences.size
+    )
+        return ProfileSaveResult.Invalid
+    if (
+        keyExercises != null &&
+            plannerPreferences.orEmpty().any { preference ->
+              preference.preference == PlannerExercisePreference.NEVER &&
+                  keyExercises.any { it.exerciseSyncId == preference.exerciseSyncId }
+            }
     )
         return ProfileSaveResult.Invalid
     return mutationMutex.withLock {
@@ -161,11 +169,7 @@ constructor(
                 ProfileEquipmentPreferenceEntity(target.scope, it)
               }
           )
-          if (
-              keyExercises != null &&
-                  selectedExercises != null &&
-                  normalized.trainingGoal == TrainingGoal.STRENGTH
-          ) {
+          if (keyExercises != null && selectedExercises != null) {
             val strengthPlannerProfileDao = database.strengthPlannerProfileDao()
             val existingStrength = strengthPlannerProfileDao.get(target.scope)
             if (!targetStillCurrent(target)) throw StaleProfileTargetException()
