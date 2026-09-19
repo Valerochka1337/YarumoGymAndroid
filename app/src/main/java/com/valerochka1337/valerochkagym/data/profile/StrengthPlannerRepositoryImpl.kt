@@ -7,6 +7,7 @@ import com.valerochka1337.valerochkagym.data.db.GymDatabase
 import com.valerochka1337.valerochkagym.data.db.dao.ExerciseDao
 import com.valerochka1337.valerochkagym.data.db.dao.StrengthPlannerProfileDao
 import com.valerochka1337.valerochkagym.data.db.entity.ExerciseType
+import com.valerochka1337.valerochkagym.data.db.entity.PlannerExercisePreference
 import com.valerochka1337.valerochkagym.data.db.entity.PlannerExercisePreferenceEntity
 import com.valerochka1337.valerochkagym.data.db.entity.StrengthPlannerKeyExerciseEntity
 import com.valerochka1337.valerochkagym.data.db.entity.StrengthPlannerProfileEntity
@@ -106,9 +107,13 @@ constructor(
           if (!targetStillCurrent(target))
               return@withTransaction StrengthPlannerSaveResult.StaleTarget
           val live = exerciseDao.getAllOnce().filterNot { it.archived }.associateBy { it.syncId }
+          val keys = profileDao.keyExercises(target.scope).map { it.exerciseSyncId }.toSet()
           if (
               choices.map { it.exerciseSyncId }.distinct().size != choices.size ||
-                  choices.any { it.exerciseSyncId !in live }
+                  choices.any { it.exerciseSyncId !in live } ||
+                  choices.any {
+                    it.preference == PlannerExercisePreference.NEVER && it.exerciseSyncId in keys
+                  }
           )
               return@withTransaction StrengthPlannerSaveResult.Invalid
           database.plannerExercisePreferenceDao().delete(target.scope)
@@ -134,20 +139,26 @@ constructor(
       profileGoal: TrainingGoal?,
       choices: List<KeyExerciseChoice>,
   ): StrengthPlannerSaveResult {
-    if (profileGoal != TrainingGoal.STRENGTH || !validShape(choices))
-        return StrengthPlannerSaveResult.Invalid
+    if (!validShape(choices)) return StrengthPlannerSaveResult.Invalid
     return mutationMutex.withLock {
       database.withTransaction {
         if (!targetStillCurrent(target))
             return@withTransaction StrengthPlannerSaveResult.StaleTarget
         val exercises = exerciseDao.getAllOnce().associateBy { it.id }
+        val excludedIds =
+            database
+                .plannerExercisePreferenceDao()
+                .get(target.scope)
+                .filter { it.preference == PlannerExercisePreference.NEVER }
+                .map { it.exerciseSyncId }
+                .toSet()
         // Existing stale rows are removable, but a new save never retains a non-live selection.
         if (
             choices.any { choice ->
               choice.exerciseId
                   ?.let { exercises[it] }
                   ?.let { it.type != ExerciseType.STRENGTH || it.archived } != false
-            }
+            } || choices.any { it.exerciseSyncId in excludedIds }
         )
             return@withTransaction StrengthPlannerSaveResult.Invalid
         val existing = profileDao.get(target.scope)

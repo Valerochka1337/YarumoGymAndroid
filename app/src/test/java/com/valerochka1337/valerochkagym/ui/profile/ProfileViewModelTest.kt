@@ -4,6 +4,8 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.lifecycle.SavedStateHandle
+import com.valerochka1337.valerochkagym.data.db.entity.KeyExercisePriority
+import com.valerochka1337.valerochkagym.data.db.entity.PlannerExercisePreference
 import com.valerochka1337.valerochkagym.data.profile.AiProfilePromptGate
 import com.valerochka1337.valerochkagym.data.settings.SettingsRepository
 import com.valerochka1337.valerochkagym.domain.BasicProfile
@@ -142,6 +144,70 @@ class ProfileViewModelTest {
       }
 
   @Test
+  fun `exercise accents use keys only for strength goal and remain mutually consistent`() =
+      runTest(mainDispatcherRule.testDispatcher.scheduler) {
+        val repository = FakeProfileRepository()
+        val viewModel =
+            ProfileViewModel(
+                repository,
+                gate(repository),
+                SavedStateHandle(),
+                strengthPlannerRepository = FakeStrengthPlannerRepository(),
+            )
+        advanceUntilIdle()
+
+        viewModel.setGoal(com.valerochka1337.valerochkagym.domain.TrainingGoal.ENDURANCE)
+        viewModel.setExerciseAccent(7, ExerciseAccent.ACCENT)
+        assertTrue(viewModel.uiState.value.keyExercises.isEmpty())
+        assertEquals(
+            PlannerExercisePreference.MORE,
+            viewModel.uiState.value.plannerPreferences.single().preference,
+        )
+
+        viewModel.setExerciseAccent(7, ExerciseAccent.EXCLUDE)
+        assertTrue(viewModel.uiState.value.keyExercises.isEmpty())
+        assertEquals(
+            PlannerExercisePreference.NEVER,
+            viewModel.uiState.value.plannerPreferences.single().preference,
+        )
+
+        viewModel.setGoal(com.valerochka1337.valerochkagym.domain.TrainingGoal.STRENGTH)
+        viewModel.setExerciseAccent(7, ExerciseAccent.ACCENT)
+        assertEquals(listOf("sync-7"), viewModel.uiState.value.keyExercises.map { it.exerciseSyncId })
+        assertTrue(viewModel.uiState.value.plannerPreferences.isEmpty())
+
+        viewModel.setExerciseAccent(8, ExerciseAccent.ACCENT)
+        assertEquals(
+            PlannerExercisePreference.MORE,
+            viewModel.uiState.value.plannerPreferences.first { it.exerciseId == 8L }.preference,
+        )
+        viewModel.setExerciseAccent(8, ExerciseAccent.NORMAL)
+        assertTrue(viewModel.uiState.value.plannerPreferences.isEmpty())
+      }
+
+  @Test
+  fun `unavailable selected exercise remains removable from accents`() =
+      runTest(mainDispatcherRule.testDispatcher.scheduler) {
+        val repository = FakeProfileRepository()
+        val viewModel =
+            ProfileViewModel(
+                repository,
+                gate(repository),
+                SavedStateHandle(),
+                strengthPlannerRepository =
+                    FakeStrengthPlannerRepository(
+                        keys = listOf(KeyExerciseChoice(null, "deleted", KeyExercisePriority.HIGH))
+                    ),
+            )
+        advanceUntilIdle()
+
+        val unavailable = viewModel.uiState.value.plannerExercises.single { it.syncId == "deleted" }
+        assertTrue(unavailable.id < 0)
+        viewModel.setExerciseAccent(unavailable.id, ExerciseAccent.NORMAL)
+        assertTrue(viewModel.uiState.value.keyExercises.isEmpty())
+      }
+
+  @Test
   fun `edits save automatically and invalid input keeps the last saved value`() =
       runTest(mainDispatcherRule.testDispatcher.scheduler) {
         val repository = FakeProfileRepository()
@@ -254,12 +320,22 @@ private class FakeDataStore : DataStore<Preferences> {
       transform(data.value).also { data.value = it }
 }
 
-private class FakeStrengthPlannerRepository : StrengthPlannerRepository {
+private class FakeStrengthPlannerRepository(
+    private val keys: List<KeyExerciseChoice> = emptyList(),
+) : StrengthPlannerRepository {
   override fun observeLiveStrengthExercises(): Flow<List<StrengthExerciseCandidate>> =
       flowOf(listOf(StrengthExerciseCandidate(7, "sync-7", "Жим")))
 
+  override fun observeLivePlannerExercises(): Flow<List<StrengthExerciseCandidate>> =
+      flowOf(
+          listOf(
+              StrengthExerciseCandidate(8, "sync-8", "Бег"),
+              StrengthExerciseCandidate(7, "sync-7", "Жим"),
+          )
+      )
+
   override fun observe(target: ProfileEditTarget): Flow<List<KeyExerciseChoice>?> =
-      flowOf(emptyList())
+      flowOf(keys)
 
   override suspend fun save(
       target: ProfileEditTarget,

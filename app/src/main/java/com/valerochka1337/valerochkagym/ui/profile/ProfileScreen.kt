@@ -6,15 +6,20 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -42,11 +47,12 @@ import com.valerochka1337.valerochkagym.data.db.entity.KeyExercisePriority
 import com.valerochka1337.valerochkagym.data.db.entity.PlannerExercisePreference
 import com.valerochka1337.valerochkagym.domain.ExperienceLevel
 import com.valerochka1337.valerochkagym.domain.ProfileSex
+import com.valerochka1337.valerochkagym.domain.StrengthExerciseCandidate
 import com.valerochka1337.valerochkagym.domain.TrainingGoal
 import com.valerochka1337.valerochkagym.ui.components.GlowBackground
+import com.valerochka1337.valerochkagym.ui.components.GymFilterChip
 import com.valerochka1337.valerochkagym.ui.components.GymCard
 import com.valerochka1337.valerochkagym.ui.components.PillButton
-import com.valerochka1337.valerochkagym.ui.components.PlanningChoiceSheet
 import com.valerochka1337.valerochkagym.ui.haptics.gymHaptics
 import java.time.Instant
 import java.time.LocalDate
@@ -97,6 +103,10 @@ fun ProfileScreen(
         haptics.tap()
         viewModel.setPlannerPreferenceSheet(it)
       },
+      onExerciseAccent = { id, accent ->
+        haptics.tap()
+        viewModel.setExerciseAccent(id, accent)
+      },
       modifier = modifier,
   )
 }
@@ -121,6 +131,7 @@ internal fun ProfileScreenContent(
     onKeySheet: (Boolean) -> Unit = {},
     onPlannerPreference: (Long, PlannerExercisePreference?) -> Unit = { _, _ -> },
     onPlannerPreferenceSheet: (Boolean) -> Unit = {},
+    onExerciseAccent: (Long, ExerciseAccent) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier,
 ) {
   GlowBackground(modifier = modifier) {
@@ -209,75 +220,21 @@ internal fun ProfileScreenContent(
               )
             }
           }
-          if (state.trainingGoal == TrainingGoal.STRENGTH) {
-            GymCard(modifier = Modifier.fillMaxWidth()) {
-              Text(
-                  "Ключевые упражнения",
-                  style = MaterialTheme.typography.titleMedium,
-                  fontWeight = FontWeight.SemiBold,
-              )
-              Text(
-                  "Необязательно. Выберите до пяти упражнений для планирования.",
-                  style = MaterialTheme.typography.bodySmall,
-                  color = MaterialTheme.colorScheme.onSurfaceVariant,
-              )
-              Spacer(Modifier.height(8.dp))
-              PillButton(
-                  text = "Выбрать упражнения (${state.keyExercises.size}/5)",
-                  onClick = { onKeySheet(true) },
-                  compact = true,
-              )
-              state.keyExercises.forEach { choice ->
-                val name =
-                    state.strengthExercises.firstOrNull { it.id == choice.exerciseId }?.name
-                        ?: "Недоступное упражнение"
-                Column(modifier = Modifier.fillMaxWidth()) {
-                  Text(name)
-                  FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (choice.exerciseId != null) {
-                      FilterChip(
-                          selected = choice.priority == KeyExercisePriority.HIGH,
-                          onClick = {
-                            onKeyPriority(
-                                choice.exerciseId,
-                                if (choice.priority == KeyExercisePriority.HIGH)
-                                    KeyExercisePriority.NORMAL
-                                else KeyExercisePriority.HIGH,
-                            )
-                          },
-                          label = {
-                            Text(
-                                if (choice.priority == KeyExercisePriority.HIGH) "Высокий"
-                                else "Обычный"
-                            )
-                          },
-                      )
-                    }
-                    androidx.compose.material3.TextButton(
-                        onClick = { onRemoveKeyExercise(choice.exerciseSyncId) },
-                        modifier = Modifier.sizeIn(minHeight = 48.dp),
-                    ) {
-                      Text("Удалить")
-                    }
-                  }
-                }
-              }
-            }
-          }
           GymCard(modifier = Modifier.fillMaxWidth()) {
             Text(
-                "Предпочтения упражнений",
+                "Акценты упражнений",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
             )
             Text(
-                "Выберите чаще, реже или никогда для любого доступного упражнения.",
+                "Выберите акцент, обычный режим, реже или исключить для любого доступного упражнения.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.height(8.dp))
             PillButton(
-                text = "Настроить (${state.plannerPreferences.size})",
+                text =
+                    "Настроить (${state.plannerExercises.count { it.accent(state) != ExerciseAccent.NORMAL }})",
                 onClick = { onPlannerPreferenceSheet(true) },
                 compact = true,
             )
@@ -323,7 +280,6 @@ internal fun ProfileScreenContent(
                 minLines = 3,
             )
           }
-          EquipmentDropdown(state.equipmentIds, onEquipment)
           accountContent()
           state.error?.let {
             Text(
@@ -341,67 +297,132 @@ internal fun ProfileScreenContent(
       }
     }
   }
-  if (state.showKeyExercises && state.trainingGoal == TrainingGoal.STRENGTH) {
-    PlanningChoiceSheet(
-        title = "Ключевые упражнения",
-        choices = state.strengthExercises.map { it.id.toString() to it.name },
-        selected = state.keyExercises.mapNotNull { it.exerciseId?.toString() }.toSet(),
-        onToggle = { id -> onKeyExercise(id.toLong()) },
-        onDismiss = { onKeySheet(false) },
-    )
-  }
   if (state.showPlannerPreferences) {
-    androidx.compose.material3.AlertDialog(
-        onDismissRequest = { onPlannerPreferenceSheet(false) },
-        title = { Text("Предпочтения упражнений") },
-        text = {
-          Column(Modifier.verticalScroll(rememberScrollState())) {
-            state.plannerExercises.forEach { exercise ->
-              val selected =
-                  state.plannerPreferences.firstOrNull { it.exerciseId == exercise.id }?.preference
-              Text(exercise.name, style = MaterialTheme.typography.titleSmall)
-              FlowRow(
-                  horizontalArrangement = Arrangement.spacedBy(8.dp),
-                  verticalArrangement = Arrangement.spacedBy(8.dp),
-              ) {
-                PlannerExercisePreference.entries.forEach { preference ->
-                  FilterChip(
-                      selected = selected == preference,
-                      onClick = {
-                        onPlannerPreference(
-                            exercise.id,
-                            if (selected == preference) null else preference,
-                        )
-                      },
-                      label = { Text(plannerPreferenceLabel(preference)) },
-                      modifier =
-                          Modifier.semantics {
-                            contentDescription =
-                                "${exercise.name}: ${plannerPreferenceLabel(preference)}"
-                          },
-                  )
-                }
-              }
-              Spacer(Modifier.height(12.dp))
-            }
-          }
-        },
-        confirmButton = {
-          PillButton(
-              text = "Готово",
-              onClick = { onPlannerPreferenceSheet(false) },
-              compact = true,
-          )
-        },
+    ExerciseAccentSheet(
+        state = state,
+        onAccent = onExerciseAccent,
+        onDismiss = { onPlannerPreferenceSheet(false) },
     )
   }
 }
 
-private fun plannerPreferenceLabel(value: PlannerExercisePreference) =
-    when (value) {
-      PlannerExercisePreference.MORE -> "Чаще"
-      PlannerExercisePreference.LESS -> "Реже"
-      PlannerExercisePreference.NEVER -> "Никогда"
+private fun StrengthExerciseCandidate.accent(state: ProfileEditorUiState): ExerciseAccent {
+  val preference = state.plannerPreferences.firstOrNull { it.exerciseSyncId == syncId }?.preference
+  return when {
+    preference == PlannerExercisePreference.NEVER -> ExerciseAccent.EXCLUDE
+    preference == PlannerExercisePreference.LESS -> ExerciseAccent.LESS
+    preference == PlannerExercisePreference.MORE ||
+        state.keyExercises.any { it.exerciseSyncId == syncId } -> ExerciseAccent.ACCENT
+    else -> ExerciseAccent.NORMAL
+  }
+}
+
+@Composable
+private fun ExerciseAccentSheet(
+    state: ProfileEditorUiState,
+    onAccent: (Long, ExerciseAccent) -> Unit,
+    onDismiss: () -> Unit,
+) {
+  var query by rememberSaveable { mutableStateOf("") }
+  var selectedOnly by rememberSaveable { mutableStateOf(false) }
+  val visible =
+      remember(
+          state.plannerExercises,
+          state.plannerPreferences,
+          state.keyExercises,
+          query,
+          selectedOnly,
+      ) {
+        state.plannerExercises
+            .map { it to it.accent(state) }
+            .filter { (_, accent) -> !selectedOnly || accent != ExerciseAccent.NORMAL }
+            .filter { (exercise, _) -> exercise.name.contains(query.trim(), ignoreCase = true) }
+            .sortedWith(
+                compareBy<Pair<StrengthExerciseCandidate, ExerciseAccent>>(
+                    { if (it.second == ExerciseAccent.NORMAL) 1 else 0 },
+                    { it.first.name.lowercase() },
+                )
+            )
+      }
+  ModalBottomSheet(
+      onDismissRequest = onDismiss,
+      sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+  ) {
+    Column(
+        Modifier.fillMaxWidth().fillMaxHeight(0.9f).imePadding().padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+      Text("Акценты упражнений", style = MaterialTheme.typography.titleLarge)
+      Text(
+          "Силовой акцент сохраняется как ключевое упражнение (до пяти). Для остальных упражнений он означает «чаще».",
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+      )
+      OutlinedTextField(
+          value = query,
+          onValueChange = { query = it },
+          modifier = Modifier.fillMaxWidth(),
+          singleLine = true,
+          label = { Text("Поиск упражнений") },
+      )
+      GymFilterChip(
+          selected = selectedOnly,
+          onClick = { selectedOnly = !selectedOnly },
+          label =
+              "Выбрано: ${state.plannerExercises.count { it.accent(state) != ExerciseAccent.NORMAL }}",
+      )
+      LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(bottom = 12.dp)) {
+        if (visible.isEmpty()) {
+          item {
+            Text(
+                if (state.plannerExercises.isEmpty()) "Список пока пуст"
+                else "Ничего не найдено. Измените поиск или фильтр.",
+                Modifier.padding(vertical = 24.dp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+          }
+        }
+        items(visible, key = { it.first.syncId }) { (exercise, selectedAccent) ->
+          Column(
+              Modifier.fillMaxWidth().heightIn(min = 56.dp),
+              verticalArrangement = Arrangement.spacedBy(4.dp),
+          ) {
+            Text(exercise.name, style = MaterialTheme.typography.titleSmall)
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+              ExerciseAccent.entries.forEach { accent ->
+                FilterChip(
+                    selected = selectedAccent == accent,
+                    onClick = { onAccent(exercise.id, accent) },
+                    enabled = exercise.id >= 0 || accent == ExerciseAccent.NORMAL,
+                    label = { Text(accent.label()) },
+                    modifier =
+                        Modifier.sizeIn(minHeight = 48.dp).semantics {
+                          contentDescription = "${exercise.name}: ${accent.label()}"
+                        },
+                )
+              }
+            }
+          }
+        }
+      }
+      PillButton(
+          text = "Готово",
+          onClick = onDismiss,
+          modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+      )
+    }
+  }
+}
+
+private fun ExerciseAccent.label() =
+    when (this) {
+      ExerciseAccent.ACCENT -> "Акцент"
+      ExerciseAccent.NORMAL -> "Обычный"
+      ExerciseAccent.LESS -> "Реже"
+      ExerciseAccent.EXCLUDE -> "Исключить"
     }
 
 @Composable

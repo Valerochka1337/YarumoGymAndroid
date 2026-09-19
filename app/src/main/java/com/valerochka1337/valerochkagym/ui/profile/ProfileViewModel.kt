@@ -59,6 +59,14 @@ data class ProfileEditorUiState(
     val preferredRepMax: String = "",
 )
 
+/** The single user-facing state for a planner exercise. */
+enum class ExerciseAccent {
+  ACCENT,
+  NORMAL,
+  LESS,
+  EXCLUDE,
+}
+
 @HiltViewModel
 class ProfileViewModel
 @Inject
@@ -97,16 +105,31 @@ constructor(
             } else {
               val draft = profileDraftFrom(savedStateHandle, snapshot.target)
               val ids = candidates.associateBy { it.syncId }
+              val keyChoices =
+                  (draft?.keyExercises ?: choices).map {
+                    it.copy(exerciseId = ids[it.exerciseSyncId]?.id)
+                  }
+              val preferenceChoices = draft?.plannerPreferences ?: preferences.orEmpty()
+              val livePlannerIds = plannerCandidates.map { it.syncId }.toSet()
+              val unavailableChoices =
+                  (keyChoices.map { it.exerciseSyncId } +
+                          preferenceChoices.map { it.exerciseSyncId })
+                      .distinct()
+                      .filterNot { it in livePlannerIds }
+                      .mapIndexed { index, syncId ->
+                        StrengthExerciseCandidate(
+                            id = -(index.toLong() + 1L),
+                            syncId = syncId,
+                            name = "Недоступное упражнение",
+                        )
+                      }
               profile
                   .toUi(snapshot.target, savedStateHandle, promptDisabled)
                   .copy(
-                      keyExercises =
-                          (draft?.keyExercises ?: choices).map {
-                            it.copy(exerciseId = ids[it.exerciseSyncId]?.id)
-                          },
+                      keyExercises = keyChoices,
                       strengthExercises = candidates,
-                      plannerPreferences = draft?.plannerPreferences ?: preferences.orEmpty(),
-                      plannerExercises = plannerCandidates,
+                      plannerPreferences = preferenceChoices,
+                      plannerExercises = plannerCandidates + unavailableChoices,
                   )
             }
           }
@@ -196,7 +219,72 @@ constructor(
     val next = plannerPreferences.associateBy { it.exerciseSyncId }.toMutableMap()
     if (preference == null) next.remove(candidate.syncId)
     else next[candidate.syncId] = PlannerExerciseChoice(candidate.id, candidate.syncId, preference)
-    copy(plannerPreferences = next.values.sortedBy { it.exerciseSyncId }, error = null)
+    copy(
+        keyExercises =
+            if (preference == PlannerExercisePreference.LESS ||
+                preference == PlannerExercisePreference.NEVER)
+                keyExercises.filterNot { it.exerciseSyncId == candidate.syncId }
+            else keyExercises,
+        plannerPreferences = next.values.sortedBy { it.exerciseSyncId },
+        error = null,
+    )
+  }
+
+  fun setExerciseAccent(exerciseId: Long, accent: ExerciseAccent) = update {
+    val candidate = plannerExercises.firstOrNull { it.id == exerciseId } ?: return@update this
+    val preferences = plannerPreferences.associateBy { it.exerciseSyncId }.toMutableMap()
+    var keys = keyExercises.filterNot { it.exerciseSyncId == candidate.syncId }
+    if (candidate.id < 0 && accent != ExerciseAccent.NORMAL)
+        return@update copy(error = "Недоступное упражнение можно только вернуть в обычный режим")
+    val usesStrengthKey =
+        trainingGoal == TrainingGoal.STRENGTH &&
+            strengthExercises.any { it.syncId == candidate.syncId }
+    when (accent) {
+      ExerciseAccent.ACCENT -> {
+        if (usesStrengthKey) {
+          val existingKey = keyExercises.firstOrNull { it.exerciseSyncId == candidate.syncId }
+          if (existingKey == null && keys.size >= 5)
+              return@update copy(error = "Можно выбрать до пяти силовых акцентов")
+          preferences.remove(candidate.syncId)
+          keys =
+              (keys +
+                      (existingKey
+                          ?: KeyExerciseChoice(
+                              exerciseId = candidate.id,
+                              exerciseSyncId = candidate.syncId,
+                              priority = KeyExercisePriority.NORMAL,
+                          )))
+                  .sortedWith(keyExerciseComparator)
+        } else {
+          preferences[candidate.syncId] =
+              PlannerExerciseChoice(
+                  exerciseId = candidate.id,
+                  exerciseSyncId = candidate.syncId,
+                  preference = PlannerExercisePreference.MORE,
+              )
+        }
+      }
+      ExerciseAccent.NORMAL -> preferences.remove(candidate.syncId)
+      ExerciseAccent.LESS ->
+          preferences[candidate.syncId] =
+              PlannerExerciseChoice(
+                  candidate.id,
+                  candidate.syncId,
+                  PlannerExercisePreference.LESS,
+              )
+      ExerciseAccent.EXCLUDE ->
+          preferences[candidate.syncId] =
+              PlannerExerciseChoice(
+                  candidate.id,
+                  candidate.syncId,
+                  PlannerExercisePreference.NEVER,
+              )
+    }
+    copy(
+        keyExercises = keys.sortedWith(keyExerciseComparator),
+        plannerPreferences = preferences.values.sortedBy { it.exerciseSyncId },
+        error = null,
+    )
   }
 
   fun setPlannerPreferenceSheet(visible: Boolean) {
