@@ -1,8 +1,8 @@
 {
   "formatVersion": 1,
   "database": {
-    "version": 35,
-    "identityHash": "a2c7baadb81ff2226bce8a4855916b22",
+    "version": 36,
+    "identityHash": "b8bdf8c09513ec609aa327de99b85f01",
     "entities": [
       {
         "tableName": "backend_state",
@@ -1530,6 +1530,48 @@
             "referencedColumns": [
               "scope"
             ]
+          }
+        ]
+      },
+      {
+        "tableName": "planner_exercise_preferences",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`scope` TEXT NOT NULL, `exerciseSyncId` TEXT NOT NULL, `preference` TEXT NOT NULL, PRIMARY KEY(`scope`, `exerciseSyncId`))",
+        "fields": [
+          {
+            "fieldPath": "scope",
+            "columnName": "scope",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "exerciseSyncId",
+            "columnName": "exerciseSyncId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "preference",
+            "columnName": "preference",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "scope",
+            "exerciseSyncId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_planner_exercise_preferences_exerciseSyncId",
+            "unique": false,
+            "columnNames": [
+              "exerciseSyncId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_planner_exercise_preferences_exerciseSyncId` ON `${TABLE_NAME}` (`exerciseSyncId`)"
           }
         ]
       },
@@ -4067,7 +4109,7 @@
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'a2c7baadb81ff2226bce8a4855916b22')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'b8bdf8c09513ec609aa327de99b85f01')"
     ]
   }
 }

@@ -149,10 +149,11 @@ import kotlinx.serialization.json.JsonPrimitive
             CoachSyncStateEntity::class,
             com.valerochka1337.valerochkagym.data.db.entity.CoachRunEntity::class,
             com.valerochka1337.valerochkagym.data.db.entity.CoachDirtyEntity::class,
+            com.valerochka1337.valerochkagym.data.db.entity.CoachEventCursorEntity::class,
             com.valerochka1337.valerochkagym.data.db.entity.CoachSessionOutboxEntity::class,
             com.valerochka1337.valerochkagym.data.db.entity.CoachReceiptOutboxEntity::class,
         ],
-    version = 35,
+    version = 36,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -1097,6 +1098,21 @@ abstract class GymDatabase : RoomDatabase() {
           }
         }
 
+    val MIGRATION_34_35: Migration =
+        object : Migration(34, 35) {
+          override fun migrate(db: SupportSQLiteDatabase) {
+            addColumnIfMissing(db, "coach_runs", "origin TEXT NOT NULL DEFAULT 'USER'")
+            addColumnIfMissing(db, "coach_runs", "stage TEXT")
+            addColumnIfMissing(db, "coach_runs", "draft TEXT")
+            db.execSQL(
+                "UPDATE coach_runs SET origin='COACH' WHERE requestJson='' OR (json_valid(requestJson) AND json_extract(requestJson,'$.automatic')=1)"
+            )
+            db.execSQL(
+                "CREATE TABLE IF NOT EXISTS coach_event_cursors (accountId TEXT NOT NULL, workoutId TEXT NOT NULL, sequence INTEGER NOT NULL, PRIMARY KEY(accountId,workoutId))"
+            )
+          }
+        }
+
     val MIGRATION_33_34: Migration =
         object : Migration(33, 34) {
           override fun migrate(db: SupportSQLiteDatabase) {
@@ -1499,9 +1515,9 @@ abstract class GymDatabase : RoomDatabase() {
           }
         }
 
-    /** v34 → v35: owner-scoped aggregate source for agentic planner preferences. */
-    val MIGRATION_34_35: Migration =
-        object : Migration(34, 35) {
+    /** v35 → v36: owner-scoped aggregate source for agentic planner preferences. */
+    val MIGRATION_35_36: Migration =
+        object : Migration(35, 36) {
           override fun migrate(db: SupportSQLiteDatabase) {
             db.execSQL(
                 "CREATE TABLE IF NOT EXISTS `planner_exercise_preferences` (`scope` TEXT NOT NULL, `exerciseSyncId` TEXT NOT NULL, `preference` TEXT NOT NULL, PRIMARY KEY(`scope`, `exerciseSyncId`))"
@@ -1550,6 +1566,7 @@ abstract class GymDatabase : RoomDatabase() {
             MIGRATION_32_33,
             MIGRATION_33_34,
             MIGRATION_34_35,
+            MIGRATION_35_36,
         )
 
     private val legacyCoachJson = Json {

@@ -38,12 +38,22 @@ constructor(
   @Inject lateinit var deliveryScheduler: CoachDeliveryScheduler
 
   private fun schedule() {
+    wake.trySend(Unit)
+    runWake.trySend(Unit)
     if (::deliveryScheduler.isInitialized) deliveryScheduler.enqueue()
   }
 
   private val mutex = Mutex()
   private val deliveryMutex = Mutex()
   private var worker: Job? = null
+  private var eventsWorker: Job? = null
+  private var pollingWorker: Job? = null
+  private val wake =
+      kotlinx.coroutines.channels.Channel<Unit>(kotlinx.coroutines.channels.Channel.CONFLATED)
+  private val runWake =
+      kotlinx.coroutines.channels.Channel<Unit>(kotlinx.coroutines.channels.Channel.CONFLATED)
+  private var streaming: Pair<String, String>? = null
+  private val statusMutex = Mutex()
   private var sessionGuard: Job? = null
   private var displayedSession: Pair<String, Long>? = null
   private val lastDiscoveryAttempt = mutableMapOf<Triple<String, String, Boolean>, Long>()
@@ -64,25 +74,163 @@ constructor(
             }
           }
         }
+    attachEvents(scope)
     worker =
         scope.launch {
           while (isActive) {
             val session = sessions.snapshot()
             if (session != null) {
               try {
-                deliverPending()
+                deliveryMutex.withLock { pumpState(session.tokens.userId, session.epoch) }
               } catch (cancelled: CancellationException) {
                 throw cancelled
               } catch (error: Exception) {
                 CoachDiagnostics.failure("runs.delivery.retry", error)
               }
             }
-            delay(2_000)
+            withTimeoutOrNull(1_000) { wake.receive() }
           }
         }
   }
 
+  private fun attachEvents(scope: CoroutineScope) {
+    eventsWorker =
+        scope.launch {
+          var retry = 1_000L
+          while (isActive) {
+            val session = sessions.snapshot()
+            val workout = database.workoutDao().getActiveWorkoutId()
+            if (session == null || workout == null) {
+              delay(1_000)
+              continue
+            }
+            val owner = session.tokens.userId
+            val epoch = session.epoch
+            try {
+              streaming = owner to workout
+              coroutineScope {
+                val readerJob = launch {
+                  client
+                      .sessionEvents(workout, dao.eventCursor(owner, workout) ?: 0, owner, epoch)
+                      .collect { event ->
+                        if (!current(owner, epoch)) throw CancellationException()
+                        val sequence =
+                            event["sequence"]?.jsonPrimitive?.longOrNull ?: return@collect
+                        statusMutex.withLock {
+                          database.withTransaction {
+                            if (!current(owner, epoch)) return@withTransaction
+                            if (sequence <= (dao.eventCursor(owner, workout) ?: 0))
+                                return@withTransaction
+                            val status = event["run"] as? JsonObject
+                            if (status != null) {
+                              discoverRun(status, owner, workout)
+                              importStatus(status, owner, epoch)
+                            }
+                            val id = event.string("runId")
+                            val stored = id?.let { dao.run(it) }
+                            if (
+                                event.string("origin") == "USER" &&
+                                    stored != null &&
+                                    !stored.imported
+                            ) {
+                              dao.update(
+                                  stored.copy(
+                                      stage = event.string("stage") ?: stored.stage,
+                                      draft = event.string("text") ?: stored.draft,
+                                  )
+                              )
+                            }
+                            check(current(owner, epoch))
+                            dao.saveEventCursor(CoachEventCursorEntity(owner, workout, sequence))
+                          }
+                          refreshRunning(owner)
+                        }
+                        retry = 1_000L
+                      }
+                }
+                while (
+                    readerJob.isActive &&
+                        current(owner, epoch) &&
+                        database.workoutDao().getActiveWorkoutId() == workout
+                ) delay(500)
+                readerJob.cancelAndJoin()
+              }
+            } catch (cancelled: CancellationException) {
+              if (!isActive) throw cancelled
+            } catch (error: Exception) {
+              CoachDiagnostics.failure("runs.sse.polling_fallback", error)
+              retry = maxOf(retry, (error as? BackendException)?.retryAfterMillis ?: 0)
+            } finally {
+              streaming = null
+            }
+            delay(retry + kotlin.random.Random.nextLong(0, 500))
+            retry = (retry * 2).coerceAtMost(30_000)
+          }
+        }
+    pollingWorker =
+        scope.launch {
+          var interval = 2_000L
+          while (isActive) {
+            val session = sessions.snapshot()
+            if (session != null)
+                attempt { statusMutex.withLock { pumpRuns(session.tokens.userId, session.epoch) } }
+            withTimeoutOrNull(interval + kotlin.random.Random.nextLong(0, 500)) {
+              runWake.receive()
+            }
+            interval = (interval * 2).coerceAtMost(30_000)
+          }
+        }
+  }
+
+  private suspend fun refreshRunning(owner: String) {
+    val session = sessions.snapshot() ?: return
+    if (session.tokens.userId != owner) return
+    val pending = dao.pending(owner).filter { it.origin == "USER" }
+    if (!current(owner, session.epoch)) return
+    running.value = pending.map { it.workoutId }.toSet()
+    val visible = pending.groupBy { it.workoutId }.mapValues { it.value.first() }
+    stages.value = visible.mapValues { stageLabel(it.value.stage ?: "queued") }
+    drafts.value =
+        visible
+            .mapNotNull { (workout, run) ->
+              run.draft?.let {
+                workout to
+                    CoachDraft(
+                        answerId(run.requestId),
+                        run.requestId,
+                        workout,
+                        owner,
+                        session.epoch,
+                        it,
+                    )
+              }
+            }
+            .toMap()
+  }
+
+  private suspend fun discoverRun(status: JsonObject, owner: String, workout: String) {
+    val id = status.string("runId") ?: return
+    if (dao.run(id) == null)
+        dao.insert(
+            CoachRunEntity(
+                id,
+                owner,
+                workout,
+                "",
+                status.string("contextVersion") ?: "",
+                System.currentTimeMillis(),
+                submitted = true,
+                origin = status.string("origin") ?: "COACH",
+            )
+        )
+  }
+
   fun detach() {
+    eventsWorker?.cancel()
+    pollingWorker?.cancel()
+    eventsWorker = null
+    pollingWorker = null
+    streaming = null
     worker?.cancel()
     sessionGuard?.cancel()
     sessionGuard = null
@@ -115,37 +263,12 @@ constructor(
                 reader.snapshot(owner, workoutId, session.epoch) ?: return@withTransaction false
             val requestId = UUID.randomUUID().toString()
             val version = CoachToolCodec.contextVersion(snapshot)
-            val history =
-                database
-                    .coachDao()
-                    .messages(workoutId)
-                    .filter { it.role in setOf("user", "assistant") && it.status != "ERROR" }
-                    .takeLast(40)
             val payload =
                 buildJsonObject {
                       put("requestId", requestId)
-                      put("workoutId", workoutId)
-                      put("contextVersion", version)
-                      put(
-                          "snapshot",
-                          Json.parseToJsonElement(CoachToolCodec.snapshotJson(snapshot)),
-                      )
                       put("message", text)
-                      put("automatic", false)
                       selectedModel?.let { put("model", it) }
-                      put(
-                          "history",
-                          buildJsonArray {
-                            history.forEach { row ->
-                              add(
-                                  buildJsonObject {
-                                    put("role", row.role)
-                                    put("text", row.text)
-                                  }
-                              )
-                            }
-                          },
-                      )
+                      put("state", messageState(snapshot, owner, workoutId))
                     }
                     .toString()
             val now = nextCreatedAt(owner, workoutId)
@@ -202,17 +325,12 @@ constructor(
             val id = UUID.randomUUID().toString()
             val version = CoachToolCodec.contextVersion(snapshot)
             val payload =
-                JsonObject(
-                        original.toMutableMap().apply {
-                          put("requestId", JsonPrimitive(id))
-                          put("contextVersion", JsonPrimitive(version))
-                          put(
-                              "snapshot",
-                              Json.parseToJsonElement(CoachToolCodec.snapshotJson(snapshot)),
-                          )
-                          put("message", JsonPrimitive(text))
-                        }
-                    )
+                buildJsonObject {
+                      put("requestId", id)
+                      put("message", text)
+                      original["model"]?.let { put("model", it) }
+                      put("state", messageState(snapshot, owner, workoutId))
+                    }
                     .toString()
             dao.insert(
                 CoachRunEntity(
@@ -232,14 +350,43 @@ constructor(
         .also { if (it) schedule() }
   }
 
-  suspend fun changed(workoutId: String): Boolean {
+  suspend fun changed(workoutId: String, immediate: Boolean = true): Boolean {
     val session = sessions.snapshot() ?: return false
     val workout = database.workoutDao().getWorkoutFull(workoutId) ?: return false
     val context = database.coachDao().context(workoutId)
     if (context != null && context.accountId != session.tokens.userId) return false
     dao.markDirty(workout.workout.id)
-    schedule()
+    if (immediate) schedule()
     return true
+  }
+
+  private suspend fun nextSequence(owner: String, workout: String): Long =
+      maxOf(
+          dao.session(workout)?.sequence ?: 0,
+          dao.runsForWorkout(owner, workout).maxOfOrNull { run ->
+            runCatching {
+                  Json.parseToJsonElement(run.requestJson)
+                      .jsonObject["state"]
+                      ?.jsonObject
+                      ?.get("sequence")
+                      ?.jsonPrimitive
+                      ?.longOrNull ?: 0
+                }
+                .getOrDefault(0)
+          } ?: 0,
+      ) + 1
+
+  private suspend fun messageState(
+      snapshot: WorkoutSnapshot,
+      owner: String,
+      workout: String,
+  ): JsonObject = buildJsonObject {
+    put("eventId", UUID.randomUUID().toString())
+    put("sequence", nextSequence(owner, workout))
+    put("contextVersion", CoachToolCodec.contextVersion(snapshot))
+    put("snapshot", Json.parseToJsonElement(CoachToolCodec.snapshotJson(snapshot)))
+    put("initiativeEnabled", database.coachDao().context(workout)?.initiativeEnabled ?: true)
+    put("active", true)
   }
 
   private suspend fun capture(workoutId: String, owner: String, epoch: Long) =
@@ -267,9 +414,11 @@ constructor(
                     return@withTransaction
                   }
           val version = snapshot?.let(CoachToolCodec::contextVersion) ?: old!!.contextVersion
-          val sequence = (old?.sequence ?: 0) + 1
+          val sequence = nextSequence(owner, workoutId)
+          val selectedModel = settings?.coachModel(owner)?.first()
           val payload =
               buildJsonObject {
+                    put("model", selectedModel?.let(::JsonPrimitive) ?: JsonNull)
                     put("eventId", UUID.randomUUID().toString())
                     put("sequence", sequence)
                     put("contextVersion", version)
@@ -287,33 +436,33 @@ constructor(
       }
 
   /** One recoverable delivery pass, also used by WorkManager when the foreground service stops. */
-  suspend fun deliverPending(): Boolean =
-      deliveryMutex.withLock {
-        val session = sessions.snapshot() ?: return@withLock false
-        val owner = session.tokens.userId
-        val epoch = session.epoch
-        if (displayedSession != (owner to epoch)) {
-          displayedSession = owner to epoch
-          drafts.value = emptyMap()
-          stages.value = emptyMap()
-          running.value = emptySet()
-        }
-        try {
-          pump(owner, epoch)
-        } finally {
-          if (!current(owner, epoch)) {
-            drafts.value = emptyMap()
-            stages.value = emptyMap()
-            running.value = emptySet()
-          }
-        }
-        current(owner, epoch) &&
-            (dao.pending(owner).isNotEmpty() ||
-                dao.pendingSessions(owner).isNotEmpty() ||
-                dao.receipts(owner).isNotEmpty() ||
-                dao.dirtySessions().isNotEmpty() ||
-                dao.sessionsNeedingDiscovery(owner).any { !isActiveSession(it) })
+  suspend fun deliverPending(): Boolean {
+    val session = sessions.snapshot() ?: return false
+    val owner = session.tokens.userId
+    val epoch = session.epoch
+    if (displayedSession != (owner to epoch)) {
+      displayedSession = owner to epoch
+      drafts.value = emptyMap()
+      stages.value = emptyMap()
+      running.value = emptySet()
+    }
+    try {
+      deliveryMutex.withLock { pumpState(owner, epoch) }
+      statusMutex.withLock { pumpRuns(owner, epoch) }
+    } finally {
+      if (!current(owner, epoch)) {
+        drafts.value = emptyMap()
+        stages.value = emptyMap()
+        running.value = emptySet()
       }
+    }
+    return current(owner, epoch) &&
+        (dao.pending(owner).isNotEmpty() ||
+            dao.pendingSessions(owner).isNotEmpty() ||
+            dao.receipts(owner).isNotEmpty() ||
+            dao.dirtySessions().isNotEmpty() ||
+            dao.sessionsNeedingDiscovery(owner).any { !isActiveSession(it) })
+  }
 
   private suspend fun attempt(block: suspend () -> Unit) {
     try {
@@ -325,7 +474,7 @@ constructor(
     }
   }
 
-  private suspend fun pump(owner: String, epoch: Long) {
+  private suspend fun pumpState(owner: String, epoch: Long) {
     if (!current(owner, epoch)) return
     val activeId = database.workoutDao().getActiveWorkoutId()
     // Rescan on attachment also covers changes made while no service was running.
@@ -347,8 +496,12 @@ constructor(
             } ?: 0L
         // Freshness is separate from semantic context. A long unchanged rest still permits a
         // server time reminder while this device continues to publish its current state.
+        val selectedModel = settings?.coachModel(owner)?.first()
+        val priorModel =
+            prior?.payload?.let { Json.parseToJsonElement(it).jsonObject.string("model") }
         if (
-            prior?.contextVersion != CoachToolCodec.contextVersion(snapshot) ||
+            priorModel != selectedModel ||
+                prior?.contextVersion != CoachToolCodec.contextVersion(snapshot) ||
                 System.currentTimeMillis() - observed >= 60_000L
         )
             dao.markDirty(activeId)
@@ -359,16 +512,30 @@ constructor(
       if (!current(owner, epoch)) return
       attempt {
         client.putSession(outbox.workoutId, outbox.payload, owner, epoch)
-        if (current(owner, epoch)) dao.delivered(outbox.workoutId, outbox.sequence)
+        database.withTransaction {
+          if (!current(owner, epoch)) return@withTransaction
+          dao.delivered(outbox.workoutId, outbox.sequence)
+          check(current(owner, epoch))
+          if (dao.dirtySessions().any { it.workoutId == outbox.workoutId }) wake.trySend(Unit)
+        }
       }
     }
     for (receipt in dao.receipts(owner)) {
       if (!current(owner, epoch)) return
       attempt {
         client.receipt(receipt.runId, receipt.payload, owner, epoch)
-        if (current(owner, epoch)) dao.deliveredReceipt(receipt.receiptId)
+        database.withTransaction {
+          if (!current(owner, epoch)) return@withTransaction
+          dao.deliveredReceipt(receipt.receiptId)
+          check(current(owner, epoch))
+        }
       }
     }
+  }
+
+  private suspend fun pumpRuns(owner: String, epoch: Long) {
+    if (!current(owner, epoch)) return
+    val activeId = database.workoutDao().getActiveWorkoutId()
     // Closed sessions need one successful final discovery, persisted across app launches.
     // Bound discovery separately from status polling so a long history cannot exhaust rate limits.
     val discoveryCandidates = dao.sessionsNeedingDiscovery(owner)
@@ -376,6 +543,7 @@ constructor(
     val candidates =
         discoveryCandidates
             .filter { session ->
+              if (streaming == (owner to session.workoutId)) return@filter false
               val last =
                   lastDiscoveryAttempt[Triple(owner, session.workoutId, isActiveSession(session))]
                       ?: Long.MIN_VALUE
@@ -398,28 +566,18 @@ constructor(
       for (status in discovered) {
         if (!current(owner, epoch)) return
         val id = status.string("runId") ?: continue
-        if (dao.run(id) == null)
-            dao.insert(
-                CoachRunEntity(
-                    id,
-                    owner,
-                    discoveryId,
-                    "",
-                    status.string("contextVersion") ?: "",
-                    System.currentTimeMillis(),
-                    submitted = true,
-                )
-            )
+        discoverRun(status, owner, discoveryId)
         importStatus(status, owner, epoch)
       }
       if (current(owner, epoch) && !isActiveSession(discovery))
           dao.discoveryComplete(discoveryId, discovery.sequence)
     }
     val pending = dao.pending(owner)
-    running.value = pending.map { it.workoutId }.toSet()
+    running.value = pending.filter { it.origin == "USER" }.map { it.workoutId }.toSet()
     // Submission order is durable. The server serializes execution within the workout.
     for (stored in pending) {
       if (!current(owner, epoch)) return
+      if (stored.submitted && streaming == (owner to stored.workoutId)) continue
       val status =
           try {
             if (!stored.submitted) client.submit(stored.requestJson, owner, epoch)
@@ -448,59 +606,48 @@ constructor(
       val latest = dao.run(stored.requestId) ?: continue
       dao.update(latest.copy(submitted = true))
       importStatus(status, owner, epoch)
-      val run = dao.run(stored.requestId) ?: continue
-      if (!run.imported) {
-        try {
-          withTimeoutOrNull(2_000) {
-            client.events(run.requestId, run.cursor, owner, epoch).collect { event ->
-              if (!current(owner, epoch)) return@collect
-              val sequence = event["sequence"]?.jsonPrimitive?.longOrNull ?: return@collect
-              val fresh = dao.run(run.requestId) ?: return@collect
-              if (sequence <= fresh.cursor) return@collect
-              event.string("stage")?.let { stages.value += run.workoutId to stageLabel(it) }
-              event
-                  .string("text")
-                  ?.takeIf { run.requestJson.isNotBlank() }
-                  ?.let { text ->
-                    drafts.value +=
-                        run.workoutId to
-                            CoachDraft(
-                                answerId(run.requestId),
-                                run.requestId,
-                                run.workoutId,
-                                owner,
-                                epoch,
-                                text,
-                            )
-                  }
-              (event["run"] as? JsonObject)?.let { importStatus(it, owner, epoch) }
-              val after = dao.run(run.requestId) ?: return@collect
-              dao.update(after.copy(cursor = maxOf(after.cursor, sequence)))
-            }
-          }
-        } catch (cancelled: CancellationException) {
-          throw cancelled
-        } catch (error: Exception) {
-          CoachDiagnostics.failure("runs.sse.polling_fallback", error)
-        }
-      }
     }
-    running.value = dao.pending(owner).map { it.workoutId }.toSet()
+    refreshRunning(owner)
   }
 
   private suspend fun importStatus(status: JsonObject, owner: String, epoch: Long) {
     if (!current(owner, epoch)) return
     val id = status.string("runId") ?: return
-    val run = dao.run(id) ?: return
-    if (run.accountId != owner || run.imported || status.string("workoutId") != run.workoutId)
+    val storedRun = dao.run(id) ?: return
+    if (
+        storedRun.accountId != owner ||
+            storedRun.imported ||
+            status.string("workoutId") != storedRun.workoutId
+    )
         return
-    status.string("stage")?.let { stages.value += run.workoutId to stageLabel(it) }
+    val origin =
+        status.string("origin")?.takeIf { it == "USER" || it == "COACH" } ?: storedRun.origin
+    val run = storedRun.copy(origin = origin)
+    if (run != storedRun) dao.update(run)
+    if (run.origin == "USER")
+        status.string("stage")?.let { stages.value += run.workoutId to stageLabel(it) }
     val state = status.string("state") ?: return
-    if (state !in setOf("SUCCEEDED", "FAILED", "CANCELLED", "SUPERSEDED")) return
+    if (state !in setOf("SUCCEEDED", "FAILED", "CANCELLED", "SUPERSEDED")) {
+      database.withTransaction {
+        if (!current(owner, epoch)) return@withTransaction
+        val latest = dao.run(id) ?: return@withTransaction
+        if (!latest.imported && latest.origin == "USER")
+            dao.update(latest.copy(stage = status.string("stage") ?: latest.stage))
+        check(current(owner, epoch))
+      }
+      return
+    }
     val result = status["result"] as? JsonObject
     val proposal = result?.get("proposal") as? JsonObject
     var proposalId: String? = null
-    var staleProposal = false
+    val automaticStale =
+        if (run.origin == "COACH") {
+          val snapshot = reader.snapshot(owner, run.workoutId, epoch)
+          snapshot == null ||
+              CoachToolCodec.contextVersion(snapshot) != run.contextVersion ||
+              database.coachDao().context(run.workoutId)?.initiativeEnabled == false
+        } else false
+    var staleProposal = automaticStale
     var invalidResult = false
     try {
       if (state == "SUCCEEDED") {
@@ -547,7 +694,8 @@ constructor(
         val saved =
             if (alreadySaved) null
             else if (
-                decoded.operations.any { it is CoachChangeIntent.Autoregulate } ||
+                automaticStale ||
+                    decoded.operations.any { it is CoachChangeIntent.Autoregulate } ||
                     version != run.contextVersion ||
                     expires <= System.currentTimeMillis()
             )
@@ -592,7 +740,12 @@ constructor(
               result?.string("text")
                   ?: if (state == "FAILED") "Не удалось завершить анализ. Можно повторить запрос."
                   else ""
-      if (workoutExists && text.isNotBlank() && result?.string("kind") != "no_change") {
+      if (
+          workoutExists &&
+              text.isNotBlank() &&
+              result?.string("kind") != "no_change" &&
+              (run.origin == "USER" || (state == "SUCCEEDED" && !staleProposal && !invalidResult))
+      ) {
         val replies =
             (result?.get("quickReplies") as? JsonArray)?.mapNotNull {
               (it as? JsonPrimitive)?.contentOrNull
@@ -612,11 +765,16 @@ constructor(
         visible = true
       }
       database.coachDao().setMessageStatus(id, "DELIVERED")
-      dao.update(latest.copy(imported = true, proposalId = proposalId))
+      dao.update(latest.copy(imported = true, proposalId = proposalId, stage = null, draft = null))
       check(current(owner, epoch))
     }
-    drafts.value -= run.workoutId
-    stages.value -= run.workoutId
+    if (
+        run.origin == "USER" &&
+            dao.pending(owner).none { it.workoutId == run.workoutId && it.origin == "USER" }
+    ) {
+      drafts.value -= run.workoutId
+      stages.value -= run.workoutId
+    }
     if (visible) alerts.tryEmit(run.workoutId)
   }
 

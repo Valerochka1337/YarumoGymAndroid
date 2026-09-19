@@ -2,8 +2,7 @@ package com.valerochka1337.valerochkagym.data.db
 
 import androidx.room.testing.MigrationTestHelper
 import androidx.test.platform.app.InstrumentationRegistry
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
+import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -18,25 +17,31 @@ class Migration34To35Test {
       MigrationTestHelper(InstrumentationRegistry.getInstrumentation(), GymDatabase::class.java)
 
   @Test
-  fun `migration preserves durable coach rows and creates planner preferences table`() {
-    val name = "planner-preferences-34-35.db"
+  fun `migration preserves exact queued bytes and classifies prior automatic runs`() {
+    val name = "coach-session-stream-34-35.db"
     helper.createDatabase(name, 34).use { db ->
-      db.execSQL("INSERT INTO coach_dirty_sessions(workoutId,generation) VALUES('workout',7)")
+      db.execSQL("INSERT INTO coach_runs VALUES('user','owner','w','{  }','v',1,0,0,4,NULL)")
+      db.execSQL("INSERT INTO coach_runs VALUES('auto','owner','w','','v',2,1,0,2,NULL)")
+      db.execSQL("INSERT INTO coach_session_outbox VALUES('w','owner',7,'v','{  }',0,0)")
+      db.execSQL("INSERT INTO coach_dirty_sessions VALUES('w',3)")
     }
-
     helper.runMigrationsAndValidate(name, 35, true, GymDatabase.MIGRATION_34_35).use { db ->
-      db.query("SELECT generation FROM coach_dirty_sessions WHERE workoutId='workout'").use {
+      db.query("SELECT requestJson,origin,cursor FROM coach_runs WHERE requestId='user'").use {
         assertTrue(it.moveToFirst())
-        assertEquals(7, it.getInt(0))
+        assertEquals("{  }", it.getString(0))
+        assertEquals("USER", it.getString(1))
+        assertEquals(4L, it.getLong(2))
       }
-      db.query(
-              "SELECT name FROM sqlite_master WHERE type='table' AND name='planner_exercise_preferences'"
-          )
-          .use { assertEquals(1, it.count) }
-      db.execSQL(
-          "INSERT INTO planner_exercise_preferences(scope,exerciseSyncId,preference) VALUES('owner','exercise','MORE')"
-      )
-      db.query("PRAGMA foreign_key_check").use { assertEquals(0, it.count) }
+      db.query("SELECT origin FROM coach_runs WHERE requestId='auto'").use {
+        assertTrue(it.moveToFirst())
+        assertEquals("COACH", it.getString(0))
+      }
+      db.query("SELECT sequence,payload FROM coach_session_outbox").use {
+        assertTrue(it.moveToFirst())
+        assertEquals(7L, it.getLong(0))
+        assertEquals("{  }", it.getString(1))
+      }
+      db.execSQL("INSERT INTO coach_event_cursors VALUES('owner','w',9)")
     }
   }
 }

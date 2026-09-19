@@ -14,11 +14,11 @@ import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
 @Config(application = android.app.Application::class)
-class Migration1To35Test {
+class Migration1To36Test {
   @get:Rule
   val helper =
       MigrationTestHelper(InstrumentationRegistry.getInstrumentation(), GymDatabase::class.java)
-  private val name = "planner-preferences-1-35.db"
+  private val name = "planner-preferences-1-36.db"
 
   @After
   fun cleanup() {
@@ -31,7 +31,7 @@ class Migration1To35Test {
       it.execSQL("INSERT INTO routines(id,name,note) VALUES(1,'Ноги','')")
     }
 
-    helper.runMigrationsAndValidate(name, 35, true, *GymDatabase.ALL_MIGRATIONS).use { db ->
+    helper.runMigrationsAndValidate(name, 36, true, *GymDatabase.ALL_MIGRATIONS).use { db ->
       db.query("SELECT COUNT(*) FROM routines WHERE id=1").use { cursor ->
         cursor.moveToFirst()
         assertEquals(1, cursor.getInt(0))

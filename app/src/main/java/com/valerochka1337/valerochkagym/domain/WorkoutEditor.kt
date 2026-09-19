@@ -657,9 +657,28 @@ constructor(
     val receiptId =
         java.util.UUID.nameUUIDFromBytes("${run.requestId}:$proposalId:$status".toByteArray())
             .toString()
+    val snapshot =
+        CoachWorkoutReader(database, restTimer, sessions).snapshot(accountId, run.workoutId)
+    val decision =
+        coachDao.context(run.workoutId)?.let {
+          CoachDecisionMemory.decode(it.decisionMemoryJson).lastOrNull { d ->
+            d.proposalId == proposalId
+          }
+        }
     val payload =
         kotlinx.serialization.json
             .buildJsonObject {
+              snapshot?.let {
+                put(
+                    "snapshot",
+                    kotlinx.serialization.json.Json.parseToJsonElement(
+                        com.valerochka1337.valerochkagym.data.ai.CoachToolCodec.snapshotJson(it)
+                    ),
+                )
+              }
+              decision?.reason?.let {
+                put("reason", kotlinx.serialization.json.JsonPrimitive(it.name))
+              }
               put("proposalId", kotlinx.serialization.json.JsonPrimitive(proposalId))
               put("status", kotlinx.serialization.json.JsonPrimitive(status))
               put("receiptId", kotlinx.serialization.json.JsonPrimitive(receiptId))
