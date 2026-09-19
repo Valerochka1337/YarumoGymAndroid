@@ -11,14 +11,11 @@ import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.valerochka1337.valerochkagym.R
 import com.valerochka1337.valerochkagym.data.backend.*
-import com.valerochka1337.valerochkagym.data.settings.CalendarAccountIdentity
-import com.valerochka1337.valerochkagym.data.settings.normalizeCalendarEmail
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.*
@@ -31,7 +28,6 @@ constructor(
     private val tokens: BackendSessionStore,
     private val sync: BackendSync,
     private val scheduler: BackendSyncScheduler,
-    private val calendarIdentity: CalendarAccountIdentity = NoOpCalendarAccountIdentity,
 ) : ViewModel() {
   val mode = MutableStateFlow("login")
   val session =
@@ -150,11 +146,11 @@ constructor(
                 GetCredentialRequest.Builder().addCredentialOption(option).build(),
             )
     val credential = GoogleIdTokenCredential.createFrom(response.credential.data)
-    acceptGoogleCredential(credential.id, credential.idToken, nonce)
+    acceptGoogleCredential(credential.idToken, nonce)
   }
 
-  /** Backend acceptance is deliberately completed before the email becomes a Calendar hint. */
-  internal suspend fun acceptGoogleCredential(email: String, idToken: String, nonce: String) {
+  /** Google ID token is exchanged only for a Yarumo session. */
+  internal suspend fun acceptGoogleCredential(idToken: String, nonce: String) {
     accept(
         api.public(
             "POST",
@@ -166,7 +162,6 @@ constructor(
             },
         )
     )
-    calendarIdentity.setPreferredCalendarEmail(requireNotNull(normalizeCalendarEmail(email)))
   }
 
   fun synchronize(choice: String? = null) = task { sync.run(choice) }
@@ -206,20 +201,4 @@ constructor(
     mode.value = "login"
     message.value = "Аккаунт удалён"
   }
-}
-
-private object NoOpCalendarAccountIdentity : CalendarAccountIdentity {
-  override val preferredCalendarEmail = flowOf<String?>(null)
-  override val connectedCalendarEmail = flowOf<String?>(null)
-
-  override suspend fun setPreferredCalendarEmail(email: String) = Unit
-
-  override suspend fun setConnectedCalendarEmail(email: String) = Unit
-
-  override suspend fun commitConnectedCalendarEmail(
-      email: String,
-      canCommit: () -> Boolean,
-  ): Boolean = false
-
-  override suspend fun clearConnectedCalendarEmail(expectedEmail: String): Boolean = false
 }

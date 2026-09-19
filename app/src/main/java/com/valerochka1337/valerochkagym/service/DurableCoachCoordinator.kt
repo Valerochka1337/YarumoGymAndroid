@@ -250,11 +250,13 @@ constructor(
   private fun current(owner: String, epoch: Long): Boolean =
       sessions.snapshot()?.let { it.tokens.userId == owner && it.epoch == epoch } == true
 
+  private suspend fun enabled(): Boolean = settings?.settings?.first()?.liveCoachEnabled != false
+
   suspend fun send(workoutId: String, text: String): Boolean {
+    if (!enabled()) return false
     if (text.isBlank() || text.length > 4_000) return false
     val session = sessions.snapshot() ?: return false
     val owner = session.tokens.userId
-    val selectedModel = settings?.coachModel(owner)?.first()
     return mutex
         .withLock {
           database.withTransaction {
@@ -267,7 +269,6 @@ constructor(
                 buildJsonObject {
                       put("requestId", requestId)
                       put("message", text)
-                      selectedModel?.let { put("model", it) }
                       put("state", messageState(snapshot, owner, workoutId))
                     }
                     .toString()
@@ -297,6 +298,7 @@ constructor(
   }
 
   suspend fun retry(workoutId: String, messageId: String): Boolean {
+    if (!enabled()) return false
     val session = sessions.snapshot() ?: return false
     val owner = session.tokens.userId
     val stored =
@@ -385,8 +387,11 @@ constructor(
     put("sequence", nextSequence(owner, workout))
     put("contextVersion", CoachToolCodec.contextVersion(snapshot))
     put("snapshot", Json.parseToJsonElement(CoachToolCodec.snapshotJson(snapshot)))
-    put("initiativeEnabled", database.coachDao().context(workout)?.initiativeEnabled ?: true)
-    put("active", true)
+    put(
+        "initiativeEnabled",
+        enabled() && (database.coachDao().context(workout)?.initiativeEnabled ?: true),
+    )
+    put("active", enabled())
   }
 
   private suspend fun capture(workoutId: String, owner: String, epoch: Long) =
@@ -401,7 +406,7 @@ constructor(
           // Do not overwrite an unacknowledged payload: its idempotency identity is immutable.
           if (old != null && !old.delivered) return@withTransaction
           val snapshot = reader.snapshot(owner, workoutId, epoch)
-          val active = full != null && full.workout.finishedAt == null
+          val active = enabled() && full != null && full.workout.finishedAt == null
           if (snapshot == null && active) return@withTransaction
           val snapshotJson =
               snapshot?.let { Json.parseToJsonElement(CoachToolCodec.snapshotJson(it)) }
@@ -415,15 +420,14 @@ constructor(
                   }
           val version = snapshot?.let(CoachToolCodec::contextVersion) ?: old!!.contextVersion
           val sequence = nextSequence(owner, workoutId)
-          val selectedModel = settings?.coachModel(owner)?.first()
           val payload =
               buildJsonObject {
-                    put("model", selectedModel?.let(::JsonPrimitive) ?: JsonNull)
+                    put("model", JsonNull)
                     put("eventId", UUID.randomUUID().toString())
                     put("sequence", sequence)
                     put("contextVersion", version)
                     put("snapshot", snapshotJson)
-                    put("initiativeEnabled", context?.initiativeEnabled ?: true)
+                    put("initiativeEnabled", active && (context?.initiativeEnabled ?: true))
                     put("active", active)
                   }
                   .toString()
@@ -496,11 +500,11 @@ constructor(
             } ?: 0L
         // Freshness is separate from semantic context. A long unchanged rest still permits a
         // server time reminder while this device continues to publish its current state.
-        val selectedModel = settings?.coachModel(owner)?.first()
         val priorModel =
             prior?.payload?.let { Json.parseToJsonElement(it).jsonObject.string("model") }
         if (
-            priorModel != selectedModel ||
+            priorModel != null ||
+                prior?.let(::isActiveSession) != enabled() ||
                 prior?.contextVersion != CoachToolCodec.contextVersion(snapshot) ||
                 System.currentTimeMillis() - observed >= 60_000L
         )
@@ -577,6 +581,7 @@ constructor(
     // Submission order is durable. The server serializes execution within the workout.
     for (stored in pending) {
       if (!current(owner, epoch)) return
+      if (!stored.submitted && !enabled()) continue
       if (stored.submitted && streaming == (owner to stored.workoutId)) continue
       val status =
           try {
@@ -643,7 +648,8 @@ constructor(
     val automaticStale =
         if (run.origin == "COACH") {
           val snapshot = reader.snapshot(owner, run.workoutId, epoch)
-          snapshot == null ||
+          !enabled() ||
+              snapshot == null ||
               CoachToolCodec.contextVersion(snapshot) != run.contextVersion ||
               database.coachDao().context(run.workoutId)?.initiativeEnabled == false
         } else false
@@ -775,7 +781,7 @@ constructor(
       drafts.value -= run.workoutId
       stages.value -= run.workoutId
     }
-    if (visible) alerts.tryEmit(run.workoutId)
+    if (visible && enabled()) alerts.tryEmit(run.workoutId)
   }
 
   private fun isActiveSession(session: CoachSessionOutboxEntity): Boolean =

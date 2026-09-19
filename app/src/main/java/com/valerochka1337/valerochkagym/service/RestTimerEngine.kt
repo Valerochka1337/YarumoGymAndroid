@@ -29,6 +29,8 @@ sealed interface RestTimerState {
       val totalSec: Int,
       val remainingSec: Int,
       val endsAtMillis: Long,
+      val heartRateThresholdBpm: Int? = null,
+      val heartRateHoldSeconds: Int = 0,
   ) : RestTimerState
 
   data class HeartRate(
@@ -62,7 +64,7 @@ constructor(
   private var activeStartId: String? = null
 
   /** Запускает (перезапускает) таймерный отдых на [sec] секунд. */
-  fun start(sec: Int): String =
+  fun start(sec: Int, heartRateThresholdBpm: Int? = null, heartRateHoldSeconds: Int = 0): String =
       synchronized(stateLock) {
         tickerJob?.cancel()
         val myGeneration = ++generation
@@ -76,7 +78,13 @@ constructor(
         val startId = "$myGeneration:$endsAt"
         activeStartId = startId
         _state.value =
-            RestTimerState.Timed(totalSec = sec, remainingSec = sec, endsAtMillis = endsAt)
+            RestTimerState.Timed(
+                totalSec = sec,
+                remainingSec = sec,
+                endsAtMillis = endsAt,
+                heartRateThresholdBpm = heartRateThresholdBpm,
+                heartRateHoldSeconds = heartRateHoldSeconds,
+            )
         tickerJob = scope.launch { tick(myGeneration) }
         startId
       }
@@ -90,6 +98,15 @@ constructor(
             val timed = _state.value as? RestTimerState.Timed ?: return
             val updated =
                 timed.copy(remainingSec = remainingSeconds(timed.endsAtMillis, clock.nowMillis()))
+            if (updated.remainingSec == 0 && updated.heartRateThresholdBpm != null) {
+              _state.value =
+                  RestTimerState.HeartRate(
+                      updated.heartRateThresholdBpm,
+                      updated.heartRateHoldSeconds,
+                      clock.nowMillis(),
+                  )
+              return
+            }
             _state.value = updated
             updated.remainingSec == 0
           }

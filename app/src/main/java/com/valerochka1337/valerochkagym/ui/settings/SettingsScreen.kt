@@ -1,10 +1,5 @@
 package com.valerochka1337.valerochkagym.ui.settings
 
-import android.app.Activity
-import androidx.activity.compose.LocalActivity
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.IntentSenderRequest
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,13 +9,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -28,15 +20,12 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.CloudUpload
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FitnessCenter
-import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.PlayCircle
 import androidx.compose.material.icons.rounded.SystemUpdate
-import androidx.compose.material.icons.rounded.TableChart
 import androidx.compose.material.icons.rounded.Timer
 import androidx.compose.material.icons.rounded.Vibration
 import androidx.compose.material3.FilterChip
@@ -45,12 +34,10 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -63,9 +50,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
@@ -86,10 +71,9 @@ internal enum class SettingsCategory(
     val label: String,
     val supportingText: String,
 ) {
-  ACCOUNT("Аккаунт", "Email, устройства и выход из аккаунта"),
+  ACCOUNT("Профиль и аккаунт", "Цели, опыт, оборудование и вход"),
   WORKOUT("Тренировка", "Отдых, пульс, звук и уведомления"),
   APPEARANCE("Вид и отклик", "Тема, палитра и виброотклик"),
-  CONNECTIONS("Подключения", "Календарь и распознавание InBody"),
   DATA_APP("О приложении", "Обновления и версия"),
 }
 
@@ -98,11 +82,7 @@ private const val REST_STEP_SECONDS = 15
 private const val HEART_RATE_REST_THRESHOLD_STEP_BPM = 5
 private const val HEART_RATE_REST_HOLD_STEP_SECONDS = 5
 
-/**
- * Настройки аккаунта, тренировок, внешнего вида и подключений. Вход в Calendar и запрос доступа
- * требуют Activity (берём из [LocalActivity]); согласие на OAuth-доступ запускается через launcher,
- * а результат возвращается во ViewModel для повторной авторизации.
- */
+/** Настройки тренировок, профиля и внешнего вида. */
 @Composable
 fun SettingsScreen(
     onBack: () -> Unit,
@@ -117,33 +97,9 @@ fun SettingsScreen(
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
   val state by viewModel.uiState.collectAsStateWithLifecycle()
-  val activity = LocalActivity.current
   val snackbarHostState = remember { SnackbarHostState() }
   var selectedCategory by rememberSaveable { mutableStateOf<SettingsCategory?>(null) }
-  var consentNonce by rememberSaveable { mutableStateOf<String?>(null) }
-
   LaunchedEffect(viewModel) { viewModel.messages.collect { snackbarHostState.showSnackbar(it) } }
-
-  val consentLauncher =
-      rememberLauncherForActivityResult(
-          contract = ActivityResultContracts.StartIntentSenderForResult(),
-      ) { result ->
-        // Повторяем авторизацию только если пользователь дал согласие; отмена — без повтора,
-        // иначе получился бы бесконечный цикл запросов согласия.
-        val nonce = consentNonce ?: return@rememberLauncherForActivityResult
-        activity?.let {
-          viewModel.consentResolved(it, nonce, result.resultCode == Activity.RESULT_OK)
-        }
-        consentNonce = null
-      }
-
-  LaunchedEffect(viewModel) {
-    viewModel.consentRequests.collect { request ->
-      consentNonce = request.operationNonce
-      consentLauncher.launch(IntentSenderRequest.Builder(request.intentSender).build())
-    }
-  }
-  LaunchedEffect(viewModel, activity) { activity?.let(viewModel::resumePendingCalendarOperation) }
 
   GlowBackground(modifier = modifier) {
     Box(modifier = Modifier.fillMaxSize()) {
@@ -184,25 +140,10 @@ fun SettingsScreen(
                         onToggleSound = viewModel::toggleSound,
                         onToggleVibration = viewModel::toggleVibration,
                     )
-                    CoachModelCard(
-                        state = state.coachModel,
-                        onSelect = viewModel::selectCoachModel,
-                        onVerify = viewModel::verifyCoachModel,
-                        onRefresh = viewModel::refreshCoachModels,
-                    )
+                    LiveCoachCard(settings.liveCoachEnabled, viewModel::toggleLiveCoach)
                   }
 
-              SettingsCategory.ACCOUNT -> com.valerochka1337.valerochkagym.ui.account.AccountCard()
-
-              SettingsCategory.CONNECTIONS -> {
-                GoogleAccountCard(
-                    connectedEmail = settings.connectedCalendarEmail,
-                    authBusy = state.authBusy,
-                    authError = state.authError,
-                    onConnect = { activity?.let(viewModel::connectCalendar) },
-                    onDisconnect = viewModel::disconnectCalendar,
-                )
-              }
+              SettingsCategory.ACCOUNT -> Unit
 
               SettingsCategory.APPEARANCE ->
                   AppearanceCard(
@@ -244,100 +185,14 @@ private fun GymsSettingsCard(onOpen: () -> Unit) {
 }
 
 @Composable
-private fun ProfileSettingsCard(onOpen: () -> Unit) {
-  SettingsNavigationCard(
-      label = "Профиль",
-      supportingText = "Цели, опыт и оборудование",
-      icon = Icons.Rounded.AccountCircle,
-      onClick = onOpen,
-  )
-}
-
-@Composable
-internal fun CoachModelCard(
-    state: CoachModelUiState,
-    onSelect: (String?) -> Unit,
-    onVerify: () -> Unit,
-    onRefresh: () -> Unit,
-) {
-  val haptics = gymHaptics()
+internal fun LiveCoachCard(enabled: Boolean, onToggle: (Boolean) -> Unit) {
   SectionCard(title = "Live Coach", icon = Icons.Rounded.PlayCircle) {
-    when {
-      state.loading -> {
-        Text("Получаем доступные модели…", color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Spacer(Modifier.height(8.dp))
-        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-      }
-      state.available != true -> {
-        Text(
-            state.status ?: "Серверный тренер пока не настроен.",
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        TextButton(
-            onClick = {
-              haptics.tap()
-              onRefresh()
-            }
-        ) {
-          Text("Повторить")
-        }
-      }
-      else -> {
-        Text(
-            "Модель обрабатывается на сервере. Чат и журнал тренировки синхронизируются между вашими устройствами.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.height(12.dp))
-        val active = state.selectedModel ?: state.defaultModel
-        Text(
-            "Текущая модель: ${active ?: "сервер выберет автоматически"}",
-            style = MaterialTheme.typography.titleSmall,
-        )
-        TextButton(
-            onClick = {
-              haptics.tap()
-              onSelect(null)
-            },
-            enabled = state.selectedModel != null && !state.checking && !state.savingSelection,
-        ) {
-          Text("Использовать модель сервера")
-        }
-        state.models.forEach { model ->
-          FilterChip(
-              selected = state.selectedModel == model,
-              onClick = {
-                haptics.tap()
-                onSelect(model)
-              },
-              enabled = !state.checking && !state.savingSelection,
-              label = { Text(model, maxLines = 1) },
-              modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-          )
-        }
-        Spacer(Modifier.height(8.dp))
-        OutlinedButton(
-            onClick = {
-              haptics.tap()
-              onVerify()
-            },
-            enabled = !state.checking && !state.savingSelection,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-          Text(
-              when {
-                state.checking -> "Проверяем модель…"
-                state.savingSelection -> "Сохраняем модель…"
-                else -> "Проверить модель тренера"
-              },
-          )
-        }
-        state.status?.let {
-          Spacer(Modifier.height(8.dp))
-          Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-      }
-    }
+    ToggleRow(
+        label = "Тренер во время тренировки",
+        icon = Icons.Rounded.PlayCircle,
+        checked = enabled,
+        onCheckedChange = onToggle,
+    )
   }
 }
 
@@ -379,16 +234,16 @@ internal fun SettingsCategoryList(
             when (category) {
               SettingsCategory.WORKOUT -> Icons.Rounded.Timer
               SettingsCategory.ACCOUNT -> Icons.Rounded.AccountCircle
-              SettingsCategory.CONNECTIONS -> Icons.Rounded.Link
               SettingsCategory.APPEARANCE -> Icons.Rounded.Palette
               SettingsCategory.DATA_APP -> Icons.Rounded.SystemUpdate
             },
-        onClick = { onSelect(category) },
+        onClick = {
+          if (category == SettingsCategory.ACCOUNT) onOpenProfile() else onSelect(category)
+        },
     )
     if (category == SettingsCategory.WORKOUT) {
       GymsSettingsCard(onOpen = onOpenGyms)
     }
-    if (category == SettingsCategory.ACCOUNT) ProfileSettingsCard(onOpen = onOpenProfile)
   }
 }
 
@@ -433,144 +288,6 @@ private fun SettingsNavigationCard(
           contentDescription = null,
           tint = MaterialTheme.colorScheme.onSurfaceVariant,
       )
-    }
-  }
-}
-
-@Composable
-internal fun GoogleAccountCard(
-    connectedEmail: String?,
-    authBusy: Boolean,
-    authError: String?,
-    onConnect: () -> Unit,
-    onDisconnect: () -> Unit,
-) {
-  val haptics = gymHaptics()
-  SectionCard(title = "Google Calendar", icon = Icons.Rounded.AccountCircle) {
-    if (connectedEmail == null) {
-      Text(
-          text =
-              "Выберите Google-аккаунт для календаря. Он может отличаться от аккаунта входа в приложение.",
-          style = MaterialTheme.typography.bodyMedium,
-          color = MaterialTheme.colorScheme.onSurfaceVariant,
-      )
-      Spacer(Modifier.height(12.dp))
-      PillButton(
-          text = "Подключить календарь",
-          onClick = {
-            haptics.tap()
-            onConnect()
-          },
-          enabled = !authBusy,
-          modifier =
-              Modifier.fillMaxWidth().semantics {
-                contentDescription = "Подключить Google Calendar"
-                stateDescription = "Календарь не подключён"
-              },
-      )
-    } else {
-      Text("Подключённый аккаунт", style = MaterialTheme.typography.labelMedium)
-      Text(
-          text = connectedEmail,
-          style = MaterialTheme.typography.titleMedium,
-          fontWeight = FontWeight.SemiBold,
-          color = MaterialTheme.colorScheme.onSurface,
-      )
-      Spacer(Modifier.height(4.dp))
-      TextButton(
-          onClick = {
-            haptics.tap()
-            onDisconnect()
-          },
-          enabled = !authBusy,
-          modifier =
-              Modifier.semantics {
-                contentDescription = "Отключить Google Calendar"
-                stateDescription = "Подключён к $connectedEmail"
-              },
-      ) {
-        Text("Отключить календарь")
-      }
-    }
-    if (connectedEmail != null) {
-      Spacer(Modifier.height(4.dp))
-      TextButton(
-          onClick = {
-            haptics.tap()
-            onConnect()
-          },
-          enabled = !authBusy,
-          modifier =
-              Modifier.semantics {
-                contentDescription = "Подключить другой Google-аккаунт"
-                stateDescription = "Подключён к $connectedEmail"
-              },
-      ) {
-        Text("Сменить аккаунт")
-      }
-    }
-    if (authError != null) {
-      Spacer(Modifier.height(8.dp))
-      Text(
-          text = authError,
-          style = MaterialTheme.typography.bodySmall,
-          color = MaterialTheme.colorScheme.error,
-      )
-    }
-  }
-}
-
-@Composable
-private fun SpreadsheetCard(
-    currentId: String?,
-    error: Boolean,
-    onSave: (String) -> Unit,
-    onExportAll: () -> Unit,
-) {
-  SectionCard(title = "Google Sheets", icon = Icons.Rounded.TableChart) {
-    var input by rememberSaveable(currentId) { mutableStateOf(currentId.orEmpty()) }
-    OutlinedTextField(
-        value = input,
-        onValueChange = { input = it },
-        modifier = Modifier.fillMaxWidth(),
-        singleLine = true,
-        label = { Text("Ссылка или ID таблицы") },
-        leadingIcon = {
-          Icon(
-              imageVector = Icons.Rounded.Link,
-              contentDescription = null,
-              tint = MaterialTheme.colorScheme.onSurfaceVariant,
-          )
-        },
-        isError = error,
-        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-        keyboardActions = KeyboardActions(onDone = { onSave(input) }),
-        supportingText = {
-          Text(
-              if (error) {
-                "Не похоже на ссылку или ID"
-              } else {
-                "Вставьте ссылку на таблицу или её ID из адресной строки"
-              },
-          )
-        },
-    )
-    Spacer(Modifier.height(12.dp))
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-      OutlinedButton(onClick = { onSave(input) }) { Text("Сохранить") }
-      OutlinedButton(onClick = onExportAll, enabled = currentId != null) {
-        Icon(
-            imageVector = Icons.Rounded.CloudUpload,
-            contentDescription = null,
-            modifier = Modifier.size(18.dp),
-        )
-        Spacer(Modifier.width(8.dp))
-        Text("Выгрузить всё")
-      }
     }
   }
 }
@@ -625,7 +342,7 @@ private fun RestTimerCard(
         onCheckedChange = onToggleAutostart,
     )
     ToggleRow(
-        label = "Отдых по пульсу",
+        label = "Ждать снижения пульса после таймера",
         icon = Icons.Rounded.Favorite,
         checked = settings.heartRateRestEnabled,
         onCheckedChange = onToggleHeartRateRest,
@@ -967,7 +684,7 @@ private fun ToggleRow(
       horizontalArrangement = Arrangement.SpaceBetween,
       verticalAlignment = Alignment.CenterVertically,
   ) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
+    Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
       Icon(
           imageVector = icon,
           contentDescription = null,
@@ -986,7 +703,11 @@ private fun ToggleRow(
           color = MaterialTheme.colorScheme.onSurface,
       )
     }
-    Switch(checked = checked, onCheckedChange = onCheckedChange)
+    Switch(
+        checked = checked,
+        onCheckedChange = onCheckedChange,
+        modifier = Modifier.semantics { contentDescription = label },
+    )
   }
 }
 

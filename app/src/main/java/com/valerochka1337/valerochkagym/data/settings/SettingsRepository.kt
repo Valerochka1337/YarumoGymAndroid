@@ -32,10 +32,9 @@ data class AiProfilePromptState(
 
 data class GymSettings(
     val googleEmail: String? = null,
-    val preferredCalendarEmail: String? = null,
-    val connectedCalendarEmail: String? = null,
     val spreadsheetId: String? = null,
     val defaultRestSeconds: Int = DEFAULT_REST_SECONDS,
+    val liveCoachEnabled: Boolean = true,
     val soundEnabled: Boolean = true,
     val vibrationEnabled: Boolean = true,
     /**
@@ -47,7 +46,7 @@ data class GymSettings(
      * Автостарт таймера отдыха после отметки подхода; выключен — отдых только не запускается сам.
      */
     val restAutostart: Boolean = true,
-    /** Завершать автостартованный отдых по свежему пульсу вместо заданной длительности. */
+    /** Завершать автостартованный отдых по свежему пульсу после заданной длительности. */
     val heartRateRestEnabled: Boolean = false,
     /** Порог завершения отдыха по пульсу. */
     val heartRateRestThresholdBpm: Int = DEFAULT_HEART_RATE_REST_THRESHOLD_BPM,
@@ -77,14 +76,13 @@ class SettingsRepository
 @Inject
 constructor(
     private val dataStore: DataStore<Preferences>,
-) : CalendarAccountIdentity {
+) {
 
   private object Keys {
     val GOOGLE_EMAIL = stringPreferencesKey("google_email")
-    val PREFERRED_CALENDAR_EMAIL = stringPreferencesKey("preferred_calendar_email")
-    val CONNECTED_CALENDAR_EMAIL = stringPreferencesKey("connected_calendar_email")
     val SPREADSHEET_ID = stringPreferencesKey("spreadsheet_id")
     val DEFAULT_REST_SECONDS = intPreferencesKey("default_rest_seconds")
+    val LIVE_COACH_ENABLED = booleanPreferencesKey("live_coach_enabled")
     val SOUND_ENABLED = booleanPreferencesKey("sound_enabled")
     val VIBRATION_ENABLED = booleanPreferencesKey("vibration_enabled")
     val HAPTICS_ENABLED = booleanPreferencesKey("haptics_enabled")
@@ -109,14 +107,10 @@ constructor(
           .map { prefs ->
             GymSettings(
                 googleEmail = prefs[Keys.GOOGLE_EMAIL],
-                preferredCalendarEmail =
-                    normalizeCalendarEmail(prefs[Keys.PREFERRED_CALENDAR_EMAIL])
-                        ?: normalizeCalendarEmail(prefs[Keys.GOOGLE_EMAIL]),
-                connectedCalendarEmail =
-                    normalizeCalendarEmail(prefs[Keys.CONNECTED_CALENDAR_EMAIL]),
                 spreadsheetId = prefs[Keys.SPREADSHEET_ID],
                 defaultRestSeconds =
                     prefs[Keys.DEFAULT_REST_SECONDS] ?: GymSettings.DEFAULT_REST_SECONDS,
+                liveCoachEnabled = prefs[Keys.LIVE_COACH_ENABLED] ?: true,
                 soundEnabled = prefs[Keys.SOUND_ENABLED] ?: true,
                 vibrationEnabled = prefs[Keys.VIBRATION_ENABLED] ?: true,
                 hapticsEnabled = prefs[Keys.HAPTICS_ENABLED] ?: true,
@@ -147,46 +141,6 @@ constructor(
             )
           }
 
-  override val preferredCalendarEmail: Flow<String?> = settings.map { it.preferredCalendarEmail }
-
-  override val connectedCalendarEmail: Flow<String?> = settings.map { it.connectedCalendarEmail }
-
-  override suspend fun setPreferredCalendarEmail(email: String) {
-    val normalized = requireNotNull(normalizeCalendarEmail(email))
-    dataStore.edit { it[Keys.PREFERRED_CALENDAR_EMAIL] = normalized }
-  }
-
-  override suspend fun setConnectedCalendarEmail(email: String) {
-    commitConnectedCalendarEmail(email) { true }
-  }
-
-  override suspend fun commitConnectedCalendarEmail(
-      email: String,
-      canCommit: () -> Boolean,
-  ): Boolean {
-    val normalized = requireNotNull(normalizeCalendarEmail(email))
-    var committed = false
-    dataStore.edit { preferences ->
-      if (canCommit()) {
-        preferences[Keys.CONNECTED_CALENDAR_EMAIL] = normalized
-        committed = true
-      }
-    }
-    return committed
-  }
-
-  override suspend fun clearConnectedCalendarEmail(expectedEmail: String): Boolean {
-    val expected = requireNotNull(normalizeCalendarEmail(expectedEmail))
-    var cleared = false
-    dataStore.edit { prefs ->
-      if (normalizeCalendarEmail(prefs[Keys.CONNECTED_CALENDAR_EMAIL]) == expected) {
-        prefs.remove(Keys.CONNECTED_CALENDAR_EMAIL)
-        cleared = true
-      }
-    }
-    return cleared
-  }
-
   suspend fun setGoogleEmail(value: String?) =
       dataStore.edit { prefs ->
         if (value == null) prefs.remove(Keys.GOOGLE_EMAIL) else prefs[Keys.GOOGLE_EMAIL] = value
@@ -199,6 +153,9 @@ constructor(
 
   suspend fun setDefaultRestSeconds(value: Int) =
       dataStore.edit { prefs -> prefs[Keys.DEFAULT_REST_SECONDS] = value }
+
+  suspend fun setLiveCoachEnabled(value: Boolean) =
+      dataStore.edit { it[Keys.LIVE_COACH_ENABLED] = value }
 
   suspend fun setSoundEnabled(value: Boolean) =
       dataStore.edit { prefs -> prefs[Keys.SOUND_ENABLED] = value }
