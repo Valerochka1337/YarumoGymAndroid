@@ -1,6 +1,6 @@
 # Explicit worktree mode
 
-Read and apply this reference only after the user explicitly asks to use a worktree or to run parallel root sessions in separate worktrees. Without that explicit request, stay in the current checkout and do not suggest or create a worktree.
+Use this reference for explicitly requested parallel isolated sessions. For routine branch isolation, follow AGENTS.md; do not create worktrees merely to run subagents.
 
 ## Isolation model
 
@@ -21,7 +21,7 @@ Read and apply this reference only after the user explicitly asks to use a workt
 
 Prefer the Codex app's Worktree selector when the user is launching parallel sessions. It creates a managed detached-HEAD worktree from the selected branch and keeps that chat associated with the worktree.
 
-If the user explicitly asks this session to create a manual worktree, resolve and validate the exact base, target directory, and unique branch name first. Use a stable convention such as `codex/<feature>-<lane>` and one sibling directory per lane. Branch creation is authorized only by that explicit worktree request; commits, pushes, merges, rebases, cherry-picks, and deletion still require their own explicit request when not already included.
+If the user explicitly asks this session to create a manual worktree, resolve and validate the exact base, target directory, and unique branch name first. Follow the branch naming and isolation rules in AGENTS.md and use one directory per lane. Local isolation does not authorize integration; commits, pushes, merges, rebases, cherry-picks, and deletion still require their own explicit request when not already included.
 
 After creation, verify with `git worktree list --porcelain`, `git -C <path> status --short --branch`, and `git -C <path> rev-parse HEAD`. Start the corresponding root Codex session from that worktree, not from the original checkout.
 

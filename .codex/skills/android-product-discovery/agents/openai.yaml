@@ -1,7 +1,7 @@
 interface:
   display_name: "Android Product Discovery"
-  short_description: "Исследование и согласование Android-фич"
-  default_prompt: "Use $android-product-discovery to research this feature idea, challenge it with broader alternatives, debate trade-offs with me, and finalize the agreed product brief."
+  short_description: "Focused product decisions and feature briefs"
+  default_prompt: "Use $android-product-discovery to compare relevant options and recommend behavior within the requested scope."
 
 policy:
   allow_implicit_invocation: true

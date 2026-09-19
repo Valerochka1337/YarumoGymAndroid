@@ -1,13 +1,13 @@
 # Android quality gates
 
-Read this reference when researching, planning, implementing, testing, or reviewing an Android feature. Apply only the sections affected by the feature. Project instructions and established local contracts override generic platform advice.
+Read only sections relevant to the changed behavior; routine edits do not require this reference. Project instructions and established local contracts override generic platform advice.
 
 ## Always
 
 - Preserve the single `:app` module unless the user explicitly requests modularization.
-- Trace each `AC-###` through a plan task, implementation evidence, an automated check where feasible, and review status.
+- When an existing plan uses AC IDs, retain their verification evidence. Routine changes do not require new IDs or a traceability matrix.
 - Prefer the smallest reliable test layer and add tests during implementation, not only after it.
-- Keep final verification sequential in one checkout: `./gradlew :app:testDebugUnitTest`, then `./gradlew :app:assembleDebug`. Run this pair once after the final stable diff; earlier agents use targeted gates only.
+- Follow AGENTS.md for final full unit/debug gates, reuse of test evidence, documentation-only exclusions and serialization of Gradle. Use targeted checks between internal stages.
 - Do not add logs, mock libraries, destructive database fallback, or dependencies that the feature does not require.
 
 ## Architecture, Flow, and coroutines
@@ -37,7 +37,7 @@ Primary reference: [Room database migrations](https://developer.android.com/trai
 - Cover loading, empty, content, validation, and error states. Preserve only minimal UI state with `rememberSaveable`/`SavedStateHandle`; persist domain state in Room.
 - Verify compact, medium/expanded behavior, insets, navigation/back behavior, stable list identity where needed, and no expensive work inside composition.
 - Verify `fontScale = 2.0`, meaningful semantics/state/action labels, non-color-only meaning, alternative actions for interactive Canvas/gestures, and touch targets of at least 48dp.
-- For chart changes, inspect `app/build/reports/analysis-render/` snapshots after `AnalysisRenderTest`.
+- For chart changes, run `AnalysisRenderTest` unless already covered by the full suite. Inspect its snapshots only when the user explicitly requests visual inspection, as required by AGENTS.md.
 
 Primary references: [Compose semantics](https://developer.android.com/develop/ui/compose/accessibility/semantics), [accessibility testing](https://developer.android.com/develop/ui/compose/accessibility/testing), [state saving](https://developer.android.com/develop/ui/compose/state-saving), [adaptive apps](https://developer.android.com/develop/adaptive-apps/guides/get-started-with-adaptive-apps), [Compose performance](https://developer.android.com/develop/ui/compose/performance/bestpractices).
 
@@ -55,6 +55,6 @@ Primary references: [manage WorkManager work](https://developer.android.com/deve
 - Keep AGP 9 built-in Kotlin; never apply `kotlin.android`. Use KSP, never kapt. Put versions only in `gradle/libs.versions.toml`.
 - Justify a new dependency against existing APIs, Compose BOM compatibility, the pinned Material3 alpha, APK/R8 impact, maintenance, and testability.
 - Match Hilt scopes to Android lifetime. Prefer direct construction plus handwritten fakes for unit tests; use Hilt test bindings only for integration behavior.
-- For dependency, R8, resource-shrinking, manifest, serialization, or other release-sensitive changes, additionally run `./gradlew :app:assembleRelease` when signing inputs are available or report the exact signing blocker.
+- For dependency, R8, resource-shrinking, manifest, serialization, or other release-sensitive changes, additionally run `./gradlew :app:assembleRelease` when signing inputs are available or report the exact signing blocker once. A version-only bump does not require this gate. Do not retry a known blocker until its conditions change.
 
 Primary references: [Hilt testing](https://developer.android.com/training/dependency-injection/hilt-testing), [Android testing strategies](https://developer.android.com/training/testing/fundamentals/strategies), [test doubles](https://developer.android.com/training/testing/fundamentals/test-doubles), [kotlinx-coroutines-test](https://kotlinlang.org/api/kotlinx.coroutines/kotlinx-coroutines-test/).
