@@ -77,3 +77,16 @@ fun WorkoutFull.completedSetCount(): Int =
 
 /** Сколько всего подходов в тренировке. */
 fun WorkoutFull.totalSetCount(): Int = exercises.sumOf { it.sets.size }
+
+/** Дополнительный подход не возвращает к упражнению после начала следующего. */
+fun WorkoutFull.canAddSet(workoutExerciseId: Long): Boolean {
+  val index = exercises.indexOfFirst { it.workoutExercise.id == workoutExerciseId }
+  if (index < 0 || workout.finishedAt != null) return false
+  val focusIndex = exercises.indexOfFirst { exercise -> exercise.sets.any { !it.isCompleted } }
+  if (index == focusIndex) return true
+  val previousIndex = if (focusIndex < 0) exercises.lastIndex else focusIndex - 1
+  return index == previousIndex &&
+      exercises[index].sets.isNotEmpty() &&
+      exercises[index].sets.all { it.isCompleted } &&
+      exercises.drop(index + 1).all { exercise -> exercise.sets.none { it.isCompleted } }
+}

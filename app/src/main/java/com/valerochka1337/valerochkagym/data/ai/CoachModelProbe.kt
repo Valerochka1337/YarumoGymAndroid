@@ -27,6 +27,8 @@ class CoachModelProbe @Inject constructor(private val agent: CoachAgent) {
                 return@reply CoachToolOutcome("{\"error\":\"invalid_arguments\"}")
               }
           when (request) {
+            is CoachToolRequest.Autoregulation ->
+                CoachToolOutcome("Расчёт доступен в активной тренировке.")
             CoachToolRequest.State -> {
               readState = true
               CoachToolOutcome(

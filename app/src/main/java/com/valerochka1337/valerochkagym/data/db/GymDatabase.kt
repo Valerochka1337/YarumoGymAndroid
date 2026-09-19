@@ -19,8 +19,8 @@ import com.valerochka1337.valerochkagym.data.db.dao.HealthAiConsentDao
 import com.valerochka1337.valerochkagym.data.db.dao.HealthDao
 import com.valerochka1337.valerochkagym.data.db.dao.HealthSyncDao
 import com.valerochka1337.valerochkagym.data.db.dao.MuscleLoadUpgradeNoticeDao
-import com.valerochka1337.valerochkagym.data.db.dao.ProfileDao
 import com.valerochka1337.valerochkagym.data.db.dao.PlannerExercisePreferenceDao
+import com.valerochka1337.valerochkagym.data.db.dao.ProfileDao
 import com.valerochka1337.valerochkagym.data.db.dao.RoutineDao
 import com.valerochka1337.valerochkagym.data.db.dao.ScheduledWorkoutDao
 import com.valerochka1337.valerochkagym.data.db.dao.StrengthPlannerProfileDao
@@ -60,9 +60,9 @@ import com.valerochka1337.valerochkagym.data.db.entity.HealthSyncOutboxEntity
 import com.valerochka1337.valerochkagym.data.db.entity.HealthSyncStagingEntity
 import com.valerochka1337.valerochkagym.data.db.entity.HealthSyncStateEntity
 import com.valerochka1337.valerochkagym.data.db.entity.MuscleLoadUpgradeNoticeEntity
+import com.valerochka1337.valerochkagym.data.db.entity.PlannerExercisePreferenceEntity
 import com.valerochka1337.valerochkagym.data.db.entity.ProfileEntity
 import com.valerochka1337.valerochkagym.data.db.entity.ProfileEquipmentPreferenceEntity
-import com.valerochka1337.valerochkagym.data.db.entity.PlannerExercisePreferenceEntity
 import com.valerochka1337.valerochkagym.data.db.entity.RoutineEntity
 import com.valerochka1337.valerochkagym.data.db.entity.RoutineExerciseEntity
 import com.valerochka1337.valerochkagym.data.db.entity.RoutineGymEntity
@@ -147,8 +147,12 @@ import kotlinx.serialization.json.JsonPrimitive
             CoachJournalEntity::class,
             CoachSessionContextEntity::class,
             CoachSyncStateEntity::class,
+            com.valerochka1337.valerochkagym.data.db.entity.CoachRunEntity::class,
+            com.valerochka1337.valerochkagym.data.db.entity.CoachDirtyEntity::class,
+            com.valerochka1337.valerochkagym.data.db.entity.CoachSessionOutboxEntity::class,
+            com.valerochka1337.valerochkagym.data.db.entity.CoachReceiptOutboxEntity::class,
         ],
-    version = 31,
+    version = 35,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -196,6 +200,8 @@ abstract class GymDatabase : RoomDatabase() {
   abstract fun workoutEffortDao(): WorkoutEffortDao
 
   abstract fun coachDao(): CoachDao
+
+  abstract fun coachRunDao(): com.valerochka1337.valerochkagym.data.db.dao.CoachRunDao
 
   abstract fun scheduledWorkoutDao(): ScheduledWorkoutDao
 
@@ -1091,6 +1097,63 @@ abstract class GymDatabase : RoomDatabase() {
           }
         }
 
+    val MIGRATION_33_34: Migration =
+        object : Migration(33, 34) {
+          override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                "CREATE TABLE IF NOT EXISTS coach_dirty_sessions (workoutId TEXT NOT NULL PRIMARY KEY, generation INTEGER NOT NULL)"
+            )
+            db.execSQL(
+                "CREATE TABLE IF NOT EXISTS coach_runs (requestId TEXT NOT NULL PRIMARY KEY, accountId TEXT NOT NULL, workoutId TEXT NOT NULL, requestJson TEXT NOT NULL, contextVersion TEXT NOT NULL, createdAt INTEGER NOT NULL, submitted INTEGER NOT NULL, imported INTEGER NOT NULL, cursor INTEGER NOT NULL, proposalId TEXT)"
+            )
+            db.execSQL(
+                "CREATE TABLE IF NOT EXISTS coach_session_outbox (workoutId TEXT NOT NULL PRIMARY KEY, accountId TEXT NOT NULL, sequence INTEGER NOT NULL, contextVersion TEXT NOT NULL, payload TEXT NOT NULL, delivered INTEGER NOT NULL, discoveryComplete INTEGER NOT NULL)"
+            )
+            db.execSQL(
+                "CREATE TABLE IF NOT EXISTS coach_receipt_outbox (receiptId TEXT NOT NULL PRIMARY KEY, accountId TEXT NOT NULL, runId TEXT NOT NULL, payload TEXT NOT NULL)"
+            )
+          }
+        }
+
+    val MIGRATION_32_33: Migration =
+        object : Migration(32, 33) {
+          override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE profiles ADD COLUMN preferredRepMin INTEGER")
+            db.execSQL("ALTER TABLE profiles ADD COLUMN preferredRepMax INTEGER")
+            db.execSQL(
+                "ALTER TABLE coach_session_context ADD COLUMN decisionMemoryJson TEXT NOT NULL DEFAULT '[]'"
+            )
+          }
+        }
+
+    val MIGRATION_31_32: Migration =
+        object : Migration(31, 32) {
+          override fun migrate(db: SupportSQLiteDatabase) {
+            addColumnIfMissing(
+                db,
+                "workout_sets",
+                "actualRirAtLeastFour INTEGER NOT NULL DEFAULT 0",
+            )
+          }
+        }
+
+    /** v30 → v31: add nullable RIR and persisted autoregulation options. */
+    val MIGRATION_30_31: Migration =
+        object : Migration(30, 31) {
+          override fun migrate(db: SupportSQLiteDatabase) {
+            addColumnIfMissing(db, "workout_sets", "targetRir INTEGER")
+            addColumnIfMissing(db, "workout_sets", "actualRir INTEGER")
+            addColumnIfMissing(
+                db,
+                "coach_session_context",
+                "autoregulationOptionsJson TEXT NOT NULL DEFAULT '{}'",
+            )
+            // Local autoregulation builds also used v30 before personalization reached main.
+            // Its tables and sync triggers must exist for either v30 schema.
+            MIGRATION_29_30.migrate(db)
+          }
+        }
+
     /** v28 → v29: remove the retired inter-account relation queue and its cached proposals. */
     val MIGRATION_28_29: Migration =
         object : Migration(28, 29) {
@@ -1436,9 +1499,9 @@ abstract class GymDatabase : RoomDatabase() {
           }
         }
 
-    /** v30 → v31: owner-scoped aggregate source for agentic planner preferences. */
-    val MIGRATION_30_31: Migration =
-        object : Migration(30, 31) {
+    /** v34 → v35: owner-scoped aggregate source for agentic planner preferences. */
+    val MIGRATION_34_35: Migration =
+        object : Migration(34, 35) {
           override fun migrate(db: SupportSQLiteDatabase) {
             db.execSQL(
                 "CREATE TABLE IF NOT EXISTS `planner_exercise_preferences` (`scope` TEXT NOT NULL, `exerciseSyncId` TEXT NOT NULL, `preference` TEXT NOT NULL, PRIMARY KEY(`scope`, `exerciseSyncId`))"
@@ -1483,6 +1546,10 @@ abstract class GymDatabase : RoomDatabase() {
             MIGRATION_28_29,
             MIGRATION_29_30,
             MIGRATION_30_31,
+            MIGRATION_31_32,
+            MIGRATION_32_33,
+            MIGRATION_33_34,
+            MIGRATION_34_35,
         )
 
     private val legacyCoachJson = Json {

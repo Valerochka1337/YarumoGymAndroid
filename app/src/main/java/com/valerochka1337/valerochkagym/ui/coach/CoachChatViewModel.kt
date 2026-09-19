@@ -32,6 +32,7 @@ constructor(
   private val status = MutableStateFlow<String?>(null)
   private val error = MutableStateFlow<String?>(null)
   private val busyAction = MutableStateFlow(false)
+  private val highlightedIds = MutableStateFlow<Set<String>>(emptySet())
 
   private val persisted =
       combine(
@@ -39,7 +40,8 @@ constructor(
           coachDao.observePendingProposal(workoutId),
           coachDao.observeContext(workoutId),
           draft,
-      ) { messages, proposal, context, draftValue ->
+          highlightedIds,
+      ) { messages, proposal, context, draftValue, highlighted ->
         PersistedChat(
             messages.map {
               CoachChatMessage(
@@ -50,6 +52,11 @@ constructor(
                   else it.text,
                   it.status.toUiStatus(),
                   it.quickRepliesJson?.let(CoachReply::decodeQuickReplies),
+                  unread = it.role == "assistant" && it.readAt == null && it.status == "DELIVERED",
+                  isNew =
+                      it.role == "assistant" &&
+                          it.status == "DELIVERED" &&
+                          (it.readAt == null || it.id in highlighted),
                   failed =
                       it.role == "assistant" &&
                           (it.status == "ERROR" ||
@@ -158,14 +165,30 @@ constructor(
 
   fun cancel(id: String) = action { conversation.cancel(workoutId, id) }
 
+  fun cancelWithReason(
+      id: String,
+      reason: com.valerochka1337.valerochkagym.domain.CoachRejectionReason,
+  ) = action { conversation.cancel(workoutId, id, reason) }
+
   fun undo() = action { conversation.undo(workoutId) }
 
   fun disableInitiative() = action { conversation.disableInitiative(workoutId) }
 
-  /** Called by the visible chat host, including when a reply arrives while it is open. */
+  fun chatResumed(host: Any) = coachAlertNotifier.chatResumed(workoutId, host)
+
+  fun chatPaused(host: Any) = coachAlertNotifier.chatPaused(host)
+
+  fun clearNewMessageHighlights() {
+    highlightedIds.value = emptySet()
+  }
+
+  /** Capture before marking read; new arrivals outside this UI snapshot stay unread. */
   fun markAssistantMessagesRead() {
     coachAlertNotifier.chatViewed(workoutId)
-    viewModelScope.launch { coachDao.markAssistantMessagesRead(workoutId) }
+    val ids = uiState.value.messages.filter { it.unread }.map { it.id }
+    if (ids.isEmpty()) return
+    highlightedIds.value = highlightedIds.value + ids
+    viewModelScope.launch { coachDao.markAssistantMessagesReadByIds(workoutId, ids) }
   }
 
   private fun action(block: suspend () -> Boolean) {

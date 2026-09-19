@@ -6,18 +6,18 @@ import com.valerochka1337.valerochkagym.data.backend.BackendSync
 import com.valerochka1337.valerochkagym.data.db.GymDatabase
 import com.valerochka1337.valerochkagym.data.db.dao.ProfileDao
 import com.valerochka1337.valerochkagym.data.db.entity.ExerciseType
-import com.valerochka1337.valerochkagym.data.db.entity.ProfileEntity
 import com.valerochka1337.valerochkagym.data.db.entity.PlannerExercisePreferenceEntity
+import com.valerochka1337.valerochkagym.data.db.entity.ProfileEntity
 import com.valerochka1337.valerochkagym.data.db.entity.ProfileEquipmentPreferenceEntity
 import com.valerochka1337.valerochkagym.data.db.entity.StrengthPlannerKeyExerciseEntity
 import com.valerochka1337.valerochkagym.data.db.entity.StrengthPlannerProfileEntity
 import com.valerochka1337.valerochkagym.domain.BasicProfile
 import com.valerochka1337.valerochkagym.domain.ExperienceLevel
 import com.valerochka1337.valerochkagym.domain.KeyExerciseChoice
+import com.valerochka1337.valerochkagym.domain.PlannerExerciseChoice
 import com.valerochka1337.valerochkagym.domain.ProfileEditTarget
 import com.valerochka1337.valerochkagym.domain.ProfileEditorSnapshot
 import com.valerochka1337.valerochkagym.domain.ProfileRepository
-import com.valerochka1337.valerochkagym.domain.PlannerExerciseChoice
 import com.valerochka1337.valerochkagym.domain.ProfileSaveResult
 import com.valerochka1337.valerochkagym.domain.ProfileSex
 import com.valerochka1337.valerochkagym.domain.TrainingGoal
@@ -68,7 +68,8 @@ constructor(
           sync.transfer,
           sessions.session,
       ) { entity, equipmentIds, _, _ ->
-        if (!targetStillCurrent(target)) null else entity?.toProfile(equipmentIds) ?: BasicProfile()
+        if (!targetStillCurrent(target)) null
+        else entity?.toProfile(equipmentIds) ?: BasicProfile.initial()
       }
 
   override suspend fun save(target: ProfileEditTarget, profile: BasicProfile): ProfileSaveResult =
@@ -101,7 +102,8 @@ constructor(
         plannerPreferences != null &&
             plannerPreferences.map(PlannerExerciseChoice::exerciseSyncId).distinct().size !=
                 plannerPreferences.size
-    ) return ProfileSaveResult.Invalid
+    )
+        return ProfileSaveResult.Invalid
     return mutationMutex.withLock {
       try {
         database.withTransaction {
@@ -148,6 +150,8 @@ constructor(
                   plannedSessionsPerWeek = normalized.plannedSessionsPerWeek,
                   preferredSessionDurationMinutes = normalized.preferredSessionDurationMinutes,
                   manualConstraints = normalized.manualConstraints,
+                  preferredRepMin = normalized.preferredRepMin,
+                  preferredRepMax = normalized.preferredRepMax,
                   updatedAt = clock.nowMillis().coerceAtLeast(0),
               )
           )
@@ -157,7 +161,11 @@ constructor(
                 ProfileEquipmentPreferenceEntity(target.scope, it)
               }
           )
-          if (keyExercises != null && selectedExercises != null && normalized.trainingGoal == TrainingGoal.STRENGTH) {
+          if (
+              keyExercises != null &&
+                  selectedExercises != null &&
+                  normalized.trainingGoal == TrainingGoal.STRENGTH
+          ) {
             val strengthPlannerProfileDao = database.strengthPlannerProfileDao()
             val existingStrength = strengthPlannerProfileDao.get(target.scope)
             if (!targetStillCurrent(target)) throw StaleProfileTargetException()
@@ -185,18 +193,30 @@ constructor(
             )
           }
           if (plannerPreferences != null) {
-            val catalog = database.exerciseDao().getAllOnce().filterNot { it.archived }.associateBy { it.syncId }
+            val catalog =
+                database
+                    .exerciseDao()
+                    .getAllOnce()
+                    .filterNot { it.archived }
+                    .associateBy { it.syncId }
             if (plannerPreferences.any { it.exerciseSyncId !in catalog })
-              return@withTransaction ProfileSaveResult.Invalid
+                return@withTransaction ProfileSaveResult.Invalid
             val preferences = database.plannerExercisePreferenceDao()
             preferences.delete(target.scope)
             preferences.upsert(
-                plannerPreferences.sortedBy { it.exerciseSyncId }.map {
-                  PlannerExercisePreferenceEntity(target.scope, it.exerciseSyncId, it.preference)
-                }
+                plannerPreferences
+                    .sortedBy { it.exerciseSyncId }
+                    .map {
+                      PlannerExercisePreferenceEntity(
+                          target.scope,
+                          it.exerciseSyncId,
+                          it.preference,
+                      )
+                    }
             )
           }
           if (!targetStillCurrent(target)) throw StaleProfileTargetException()
+          database.workoutDao().getActiveWorkoutId()?.let { database.coachRunDao().markDirty(it) }
           ProfileSaveResult.Saved
         }
       } catch (_: StaleProfileTargetException) {
@@ -206,7 +226,7 @@ constructor(
   }
 
   private suspend fun profileFor(scope: String): BasicProfile =
-      profileDao.get(scope)?.toProfile(profileDao.equipmentIds(scope)) ?: BasicProfile()
+      profileDao.get(scope)?.toProfile(profileDao.equipmentIds(scope)) ?: BasicProfile.initial()
 
   private fun currentTarget(): ProfileEditTarget? {
     val initialOwner = sync.owner()
@@ -231,6 +251,8 @@ constructor(
           preferredSessionDurationMinutes = preferredSessionDurationMinutes,
           equipmentIds = equipmentIds.toSet(),
           manualConstraints = manualConstraints,
+          preferredRepMin = preferredRepMin,
+          preferredRepMax = preferredRepMax,
       )
 
   private fun profileSyncId(owner: String): String =

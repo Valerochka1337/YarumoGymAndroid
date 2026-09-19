@@ -25,6 +25,7 @@ import com.valerochka1337.valerochkagym.R
 import com.valerochka1337.valerochkagym.data.db.entity.ExerciseType
 import com.valerochka1337.valerochkagym.data.db.relation.WorkoutFull
 import com.valerochka1337.valerochkagym.data.settings.SettingsRepository
+import com.valerochka1337.valerochkagym.diagnostics.CoachDiagnostics
 import com.valerochka1337.valerochkagym.domain.ActiveWorkoutRepository
 import com.valerochka1337.valerochkagym.domain.SessionFocus
 import com.valerochka1337.valerochkagym.domain.WorkoutEditor
@@ -36,8 +37,6 @@ import com.valerochka1337.valerochkagym.domain.parseQuickSetEdit
 import com.valerochka1337.valerochkagym.service.heartrate.HeartRateConnectionState
 import com.valerochka1337.valerochkagym.service.heartrate.HeartRateMonitor
 import com.valerochka1337.valerochkagym.service.heartrate.freshAt
-import com.valerochka1337.valerochkagym.service.wear.XiaomiWearWorkoutBridge
-import com.valerochka1337.valerochkagym.service.wear.XiaomiWearWorkoutBridge.WatchCommand
 import com.valerochka1337.valerochkagym.ui.navigation.GymRoutes
 import com.valerochka1337.valerochkagym.ui.theme.AccentColor
 import dagger.hilt.android.AndroidEntryPoint
@@ -86,8 +85,6 @@ class WorkoutSessionService : LifecycleService() {
   @Inject lateinit var setMutator: WorkoutSetMutator
 
   @Inject lateinit var workoutEditor: WorkoutEditor
-
-  @Inject lateinit var xiaomiWearWorkoutBridge: XiaomiWearWorkoutBridge
 
   @Inject lateinit var heartRateMonitor: HeartRateMonitor
 
@@ -141,9 +138,7 @@ class WorkoutSessionService : LifecycleService() {
         },
         RECEIVER_NOT_EXPORTED,
     )
-    observeWearCommands()
     coachConversation.attach(lifecycleScope)
-    xiaomiWearWorkoutBridge.start()
     observeHeartRate()
     observeState()
     observeCoachAlerts()
@@ -166,12 +161,21 @@ class WorkoutSessionService : LifecycleService() {
   override fun onDestroy() {
     coachConversation.detach()
     heartRateMonitor.stop()
-    xiaomiWearWorkoutBridge.stop()
     unregisterReceiver(actionReceiver)
     super.onDestroy()
   }
 
   private fun observeState() {
+    val coachTrigger = CoachInitiativeTrigger()
+    lifecycleScope.launch {
+      while (true) {
+        kotlinx.coroutines.delay(60_000)
+        currentWorkout?.workout?.id?.let {
+          CoachDiagnostics.event("initiative.trigger", "source" to "minute_timer")
+          coachConversation.considerInitiative(it)
+        }
+      }
+    }
     // Один collect на все источники уведомления: combine конфлейтит одновременные изменения
     // (закрытие подхода сразу запускает отдых), и уведомление пересобирается один раз, а не
     // по разу на каждый затронутый поток.
@@ -184,18 +188,22 @@ class WorkoutSessionService : LifecycleService() {
             Triple(workout, rest, accentValue)
           }
           .collect { (workout, rest, accentValue) ->
+            val coachInputsChanged = coachTrigger.changed(workout, rest)
             currentRest = rest
             accent = accentValue
             if (workout == null) {
               currentWorkout?.workout?.id?.let(coachConversation::stopWorkout)
-              xiaomiWearWorkoutBridge.publish(workout = null, rest = null)
               heartRateMonitor.stop()
               stopSelf()
               return@collect
             }
             currentWorkout = workout
-            xiaomiWearWorkoutBridge.publish(workout, rest)
-            lifecycleScope.launch { coachConversation.considerInitiative(workout.workout.id) }
+            if (coachInputsChanged) {
+              lifecycleScope.launch {
+                CoachDiagnostics.event("initiative.trigger", "source" to "workout_or_rest_changed")
+                coachConversation.considerInitiative(workout.workout.id)
+              }
+            }
             // Обновляем и во время отдыха: там подписан только что закрытый подход, а его
             // правят кнопкой «Изменить» прямо из этого уведомления.
             updateForegroundNotification()
@@ -211,24 +219,10 @@ class WorkoutSessionService : LifecycleService() {
     }
   }
 
-  /** Команды RPK проходят через те же движки, что и действия системного уведомления. */
-  private fun observeWearCommands() {
-    lifecycleScope.launch {
-      xiaomiWearWorkoutBridge.commands.collect { command ->
-        when (command) {
-          is WatchCommand.AddRestSeconds -> restTimerEngine.addSeconds(command.seconds)
-          WatchCommand.SkipRest -> restTimerEngine.skip()
-          WatchCommand.CompleteSet -> completeCurrentSet()
-        }
-      }
-    }
-  }
-
-  /** Live HR не сохраняем: сервис зеркалит свежий пакет на RPK и завершает подходящий отдых. */
+  /** Live HR не сохраняем: свежие измерения управляют завершением отдыха по пульсу. */
   private fun observeHeartRate() {
     lifecycleScope.launch {
       heartRateMonitor.reading.collect { reading ->
-        xiaomiWearWorkoutBridge.publishHeartRate(reading)
         val fresh = reading.freshAt(System.currentTimeMillis())
         if (fresh != null) {
           restTimerEngine.onHeartRate(fresh.bpm, fresh.updatedAtMillis)

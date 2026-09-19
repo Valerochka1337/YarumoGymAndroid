@@ -119,6 +119,7 @@ class WorkoutSetMutatorTest {
           SET_ID,
           ExerciseType.STRENGTH,
           CompletedSetNumbers(weightKg = 72.5, reps = 8),
+          effort = SetEffort.FOUR_PLUS,
       )
     }
     runCurrent()
@@ -127,6 +128,9 @@ class WorkoutSetMutatorTest {
     assertEquals(72.5, repository.current.weightKg!!, EPS)
     assertEquals(8, repository.current.reps)
     assertEquals(120, repository.current.durationSec)
+    assertEquals("WORK", repository.current.setType)
+    assertEquals(null, repository.current.actualRir)
+    assertTrue(repository.current.actualRirAtLeastFour)
     assertTrue(repository.current.isCompleted)
   }
 

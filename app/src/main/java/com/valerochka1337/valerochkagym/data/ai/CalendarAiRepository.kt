@@ -135,7 +135,11 @@ constructor(
     private val db: GymDatabase,
     private val clock: WallClock,
 ) {
-  internal data class Prepared(val ready: SyncReady.Ready, val request: CalendarRequest, val allowed: Set<String>)
+  internal data class Prepared(
+      val ready: SyncReady.Ready,
+      val request: CalendarRequest,
+      val allowed: Set<String>,
+  )
 
   internal suspend fun prepare(
       intent: CalendarAiIntent,
@@ -256,16 +260,24 @@ constructor(
   ) {
     val projection = result.agenticProjection
     val never =
-        db.plannerExercisePreferenceDao().get(ready.owner)
-            .filter { it.preference == com.valerochka1337.valerochkagym.data.db.entity.PlannerExercisePreference.NEVER }
+        db.plannerExercisePreferenceDao()
+            .get(ready.owner)
+            .filter {
+              it.preference ==
+                  com.valerochka1337.valerochkagym.data.db.entity.PlannerExercisePreference.NEVER
+            }
             .map { it.exerciseSyncId }
             .toSet()
     val allowed = locallyAllowed - never
     val proposalExercises = result.proposal.snapshot.draft.exercises
-    fun duration(exercises: List<com.valerochka1337.valerochkagym.data.trainingproposal.ProposalPlannedExercise>): Long =
+    fun duration(
+        exercises:
+            List<com.valerochka1337.valerochkagym.data.trainingproposal.ProposalPlannedExercise>
+    ): Long =
         exercises.sumOf { exercise ->
           exercise.plannedSets.sumOf { (it.durationSec ?: 45).toLong() } +
-              (exercise.plannedSets.size - 1).coerceAtLeast(0).toLong() * (exercise.restSeconds ?: 90)
+              (exercise.plannedSets.size - 1).coerceAtLeast(0).toLong() *
+                  (exercise.restSeconds ?: 90)
         } + (exercises.size - 1).coerceAtLeast(0) * 90L
     val focusSlot = projection.skeleton.slots.firstOrNull { it.slotId == "focus" }
     val accessorySlot = projection.skeleton.slots.firstOrNull { it.slotId == "accessory" }
@@ -278,9 +290,11 @@ constructor(
             ProposalWire.uuid(projection.skeleton.focusExerciseId) &&
             projection.skeleton.focusExerciseId in projection.candidateIds &&
             projection.skeleton.minDurationSec in 0..intent.availableDurationMinutes * 60 &&
-            projection.skeleton.maxDurationSec in projection.skeleton.minDurationSec..intent.availableDurationMinutes * 60 &&
+            projection.skeleton.maxDurationSec in
+                projection.skeleton.minDurationSec..intent.availableDurationMinutes * 60 &&
             projection.skeleton.slots.isNotEmpty() &&
-            projection.skeleton.slots.map { it.slotId }.distinct().size == projection.skeleton.slots.size &&
+            projection.skeleton.slots.map { it.slotId }.distinct().size ==
+                projection.skeleton.slots.size &&
             projection.skeleton.slots.all { slot ->
               slot.slotId.isNotBlank() &&
                   slot.allowedExerciseIds.isNotEmpty() &&
@@ -292,11 +306,19 @@ constructor(
             focusExercise?.exerciseId == projection.skeleton.focusExerciseId &&
             focusSlot != null &&
             projection.skeleton.focusExerciseId in focusSlot.allowedExerciseIds &&
-            focusExercise?.let { duration(listOf(it)) in focusSlot.minDurationSec.toLong()..focusSlot.maxDurationSec.toLong() } == true &&
-            totalDuration in projection.skeleton.minDurationSec.toLong()..projection.skeleton.maxDurationSec.toLong() &&
-            proposalExercises.drop(1).all { exercise -> accessorySlot?.allowedExerciseIds?.contains(exercise.exerciseId) == true } &&
+            focusExercise?.let {
+              duration(listOf(it)) in
+                  focusSlot.minDurationSec.toLong()..focusSlot.maxDurationSec.toLong()
+            } == true &&
+            totalDuration in
+                projection.skeleton.minDurationSec.toLong()..projection.skeleton.maxDurationSec
+                        .toLong() &&
+            proposalExercises.drop(1).all { exercise ->
+              accessorySlot?.allowedExerciseIds?.contains(exercise.exerciseId) == true
+            } &&
             (accessorySlot == null ||
-                duration(proposalExercises.drop(1)) in accessorySlot.minDurationSec.toLong()..accessorySlot.maxDurationSec.toLong())
+                duration(proposalExercises.drop(1)) in
+                    accessorySlot.minDurationSec.toLong()..accessorySlot.maxDurationSec.toLong())
     )
   }
 

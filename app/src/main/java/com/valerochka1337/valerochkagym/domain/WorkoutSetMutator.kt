@@ -23,6 +23,7 @@ private data class CompletedSetNumberEdit(
     val setId: Long,
     val type: ExerciseType,
     val values: CompletedSetNumbers,
+    val effort: SetEffort?,
     val reply: CompletableDeferred<CompletedSetEditResult>,
 ) : WorkoutSetMutationRequest
 
@@ -72,7 +73,9 @@ constructor(
                     CompletedSetEditResult.MissingOrInactive
                   } else {
                     repository.updateCompletedSetNumbers(
-                        current.withCompletedNumbers(mutation.type, mutation.values),
+                        current
+                            .withCompletedNumbers(mutation.type, mutation.values)
+                            .withCompletedEffort(mutation.type, mutation.effort),
                         mutation.type,
                     )
                   }
@@ -139,9 +142,10 @@ constructor(
       setId: Long,
       type: ExerciseType,
       values: CompletedSetNumbers,
+      effort: SetEffort? = null,
   ): CompletedSetEditResult {
     val reply = CompletableDeferred<CompletedSetEditResult>()
-    mutations.send(CompletedSetNumberEdit(setId, type, values, reply))
+    mutations.send(CompletedSetNumberEdit(setId, type, values, effort, reply))
     return reply.await()
   }
 
@@ -164,6 +168,12 @@ private fun WorkoutSetEntity.withCompletedNumbers(
               inclinePct = values.inclinePct,
           )
     }
+
+private fun WorkoutSetEntity.withCompletedEffort(
+    type: ExerciseType,
+    effort: SetEffort?,
+): WorkoutSetEntity =
+    if (type == ExerciseType.STRENGTH && effort != null) effort.applyTo(this) else this
 
 /** Округление веса/скорости/наклона до сотых, чтобы шаги ±0.5/±2.5 не накапливали дрейф double. */
 private fun Double.round2(): Double = (this * 100).roundToInt() / 100.0

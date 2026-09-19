@@ -18,6 +18,7 @@ import com.valerochka1337.valerochkagym.domain.CompletedSetEditResult
 import com.valerochka1337.valerochkagym.domain.NoteSaveResult
 import com.valerochka1337.valerochkagym.domain.RoutineGymConflictException
 import com.valerochka1337.valerochkagym.domain.WorkoutWriteQueue
+import com.valerochka1337.valerochkagym.domain.canAddSet
 import java.util.UUID
 import javax.inject.Inject
 import kotlinx.coroutines.flow.Flow
@@ -127,7 +128,26 @@ constructor(
         database.withTransaction {
           val current = workoutDao.getSet(setId) ?: return@withTransaction false
           val workoutId = activeWorkoutIdForSet(setId) ?: return@withTransaction false
-          workoutDao.updateSet(transform(current).copy(id = current.id, note = current.note))
+          val changed = transform(current).copy(id = current.id, note = current.note)
+          workoutDao.updateSet(
+              if (changed.isCompleted)
+                  changed.copy(
+                      actualWeightKg = changed.weightKg,
+                      actualReps = changed.reps,
+                      actualDurationSec = changed.durationSec,
+                      actualSpeedKmh = changed.speedKmh,
+                      actualInclinePct = changed.inclinePct,
+                  )
+              else
+                  changed.copy(
+                      targetWeightKg = changed.weightKg,
+                      targetReps = changed.reps,
+                      targetDurationSec = changed.durationSec,
+                      targetSpeedKmh = changed.speedKmh,
+                      targetInclinePct = changed.inclinePct,
+                      actualRir = changed.actualRir,
+                  )
+          )
           incrementCoachRevision(workoutId)
           true
         }
@@ -207,6 +227,9 @@ constructor(
   override suspend fun addSet(workoutExerciseId: Long) =
       writes.write {
         database.withTransaction {
+          val activeId = workoutDao.getActiveWorkoutId() ?: return@withTransaction
+          val active = workoutDao.getWorkoutFull(activeId) ?: return@withTransaction
+          if (!sortedWorkoutFull(active).canAddSet(workoutExerciseId)) return@withTransaction
           val existing = workoutDao.getSetsForWorkoutExercise(workoutExerciseId)
           val nextIndex = (existing.maxOfOrNull { it.setIndex } ?: -1) + 1
           val last = existing.lastOrNull()
@@ -363,11 +386,17 @@ constructor(
             if (remaining.isEmpty()) workoutDao.deleteWorkoutExercise(exercise.workoutExercise.id)
           }
           workoutDao.setFinishedAt(workoutId, now())
+          database.coachRunDao().markDirty(workoutId)
         }
       }
 
   override suspend fun discard(workoutId: String) =
-      writes.write { database.withTransaction { workoutDao.deleteWorkout(workoutId) } }
+      writes.write {
+        database.withTransaction {
+          database.coachRunDao().markDirty(workoutId)
+          workoutDao.deleteWorkout(workoutId)
+        }
+      }
 
   private suspend fun startEmptyInTransaction(): String {
     workoutDao.getActiveWorkoutId()?.let {
@@ -406,11 +435,12 @@ constructor(
           )
           .use { row -> if (row.moveToFirst()) row.getString(0) else null }
 
-  private fun incrementCoachRevision(workoutId: String) {
+  private suspend fun incrementCoachRevision(workoutId: String) {
     database.openHelper.writableDatabase.execSQL(
         "UPDATE workouts SET coachRevision = coachRevision + 1 WHERE id=?",
         arrayOf<Any?>(workoutId),
     )
+    database.coachRunDao().markDirty(workoutId)
   }
 
   private fun newId(): String = UUID.randomUUID().toString()

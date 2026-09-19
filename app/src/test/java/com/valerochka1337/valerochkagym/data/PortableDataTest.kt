@@ -27,6 +27,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
@@ -103,9 +104,7 @@ class PortableDataTest : RoomDaoTest() {
         sql.execSQL("UPDATE backend_state SET owner=?,phase='OWNED' WHERE id=1", arrayOf(owner))
 
         assertFalse(
-            PortableData(sql)
-                .snapshot()
-                .containsKey("planner_exercise_preferences:$recordId")
+            PortableData(sql).snapshot().containsKey("planner_exercise_preferences:$recordId")
         )
 
         sql.execSQL(
@@ -130,9 +129,7 @@ class PortableDataTest : RoomDaoTest() {
 
         sql.execSQL("DELETE FROM planner_exercise_preferences WHERE scope=?", arrayOf(owner))
         assertFalse(
-            PortableData(sql)
-                .snapshot()
-                .containsKey("planner_exercise_preferences:$recordId")
+            PortableData(sql).snapshot().containsKey("planner_exercise_preferences:$recordId")
         )
       }
 
@@ -172,6 +169,88 @@ class PortableDataTest : RoomDaoTest() {
       }
 
   @Test
+  fun `workout RIR including four plus survives portable round trip and legacy omissions remain unknown`() =
+      runTest {
+        val workout = insertWorkout("rir-sync", finishedAt = 2000)
+        val exercise =
+            db.exerciseDao()
+                .insert(
+                    com.valerochka1337.valerochkagym.data.db.entity.ExerciseEntity(
+                        name = "Press",
+                        muscleGroup =
+                            com.valerochka1337.valerochkagym.data.db.entity.MuscleGroup.CHEST,
+                        type =
+                            com.valerochka1337.valerochkagym.data.db.entity.ExerciseType.STRENGTH,
+                    )
+                )
+        val section = insertWorkoutExercise(workout, exercise)
+        val setId = insertSet(section, 0, weightKg = 50.0, reps = 8, isCompleted = true)
+        db.workoutDao()
+            .updateSet(db.workoutDao().getSet(setId)!!.copy(legacyTargetRir = 3, actualRir = 0))
+        val portable = PortableData(db.openHelper.writableDatabase)
+        val payload = portable.snapshot(includeStandard = true).getValue("workout:$workout")
+        db.withTransaction {
+          portable.apply(listOf(CloudRecord("workout", workout, 1, payload = payload)), emptyList())
+        }
+        val restored = workoutFull(workout).exercises.single().sets.single()
+        assertEquals(3, restored.legacyTargetRir)
+        assertEquals(0, restored.actualRir)
+        db.workoutDao().updateSet(restored.copy(actualRir = null, actualRirAtLeastFour = true))
+        val rangePayload = portable.snapshot(includeStandard = true).getValue("workout:$workout")
+        val serializedSet =
+            rangePayload
+                .getValue("exercises")
+                .jsonArray
+                .single()
+                .jsonObject
+                .getValue("sets")
+                .jsonArray
+                .single()
+                .jsonObject
+        assertTrue(serializedSet.getValue("actualRirAtLeastFour").jsonPrimitive.boolean)
+        db.workoutDao().updateSet(restored.copy(actualRir = 2, actualRirAtLeastFour = false))
+        db.withTransaction {
+          portable.apply(
+              listOf(CloudRecord("workout", workout, 2, payload = rangePayload)),
+              emptyList(),
+          )
+        }
+        assertTrue(workoutFull(workout).exercises.single().sets.single().actualRirAtLeastFour)
+        assertEquals(null, workoutFull(workout).exercises.single().sets.single().actualRir)
+        fun withoutRir(
+            value: kotlinx.serialization.json.JsonElement
+        ): kotlinx.serialization.json.JsonElement =
+            when (value) {
+              is JsonObject ->
+                  JsonObject(
+                      value
+                          .filterKeys {
+                            it !in setOf("targetRir", "actualRir", "actualRirAtLeastFour")
+                          }
+                          .mapValues { withoutRir(it.value) }
+                  )
+              is JsonArray -> JsonArray(value.map(::withoutRir))
+              else -> value
+            }
+        db.withTransaction {
+          portable.apply(
+              listOf(
+                  CloudRecord(
+                      "workout",
+                      workout,
+                      2,
+                      payload = withoutRir(rangePayload) as JsonObject,
+                  )
+              ),
+              emptyList(),
+          )
+        }
+        assertEquals(null, workoutFull(workout).exercises.single().sets.single().actualRir)
+        assertEquals(null, workoutFull(workout).exercises.single().sets.single().legacyTargetRir)
+        assertFalse(workoutFull(workout).exercises.single().sets.single().actualRirAtLeastFour)
+      }
+
+  @Test
   fun `profile wire atomically replaces canonical children and rejects wrong scalar types`() =
       runTest {
         val owner = "owner-7"
@@ -185,7 +264,17 @@ class PortableDataTest : RoomDaoTest() {
             "UPDATE backend_state SET owner=?,phase='OWNED' WHERE id=1",
             arrayOf(owner),
         )
-        db.profileDao().upsert(ProfileEntity(owner, syncId, trainingGoal = "OTHER", updatedAt = 1))
+        db.profileDao()
+            .upsert(
+                ProfileEntity(
+                    owner,
+                    syncId,
+                    trainingGoal = "OTHER",
+                    updatedAt = 1,
+                    preferredRepMin = 6,
+                    preferredRepMax = 12,
+                )
+            )
         db.profileDao()
             .upsertEquipment(localEquipment.map { ProfileEquipmentPreferenceEntity(owner, it) })
         val payload = buildJsonObject {
@@ -209,6 +298,9 @@ class PortableDataTest : RoomDaoTest() {
         assertEquals(serverEquipment.sorted(), db.profileDao().equipmentIds(owner))
         assertEquals("STRENGTH", db.profileDao().get(owner)?.trainingGoal)
         assertEquals(null, db.profileDao().get(owner)?.sex)
+        assertEquals(6, db.profileDao().get(owner)?.preferredRepMin)
+        assertEquals(12, db.profileDao().get(owner)?.preferredRepMax)
+        assertFalse(portable.snapshot().getValue("profile:$syncId").containsKey("preferredRepMin"))
 
         val malformed = JsonObject(payload + ("plannedSessionsPerWeek" to JsonPrimitive("3")))
         try {

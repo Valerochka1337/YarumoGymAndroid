@@ -360,10 +360,13 @@ fun TrainingProposalDetailContent(
           OutlinedButton(
               onClick = onRefine,
               enabled = !saving && refinement.trim().isNotEmpty() && refinement.length <= 2000,
-              modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics {
-                contentDescription = "Уточнить предложение"
-              },
-          ) { Text("Уточнить с ИИ") }
+              modifier =
+                  Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics {
+                    contentDescription = "Уточнить предложение"
+                  },
+          ) {
+            Text("Уточнить с ИИ")
+          }
         }
         PillButton(
             "Применить",

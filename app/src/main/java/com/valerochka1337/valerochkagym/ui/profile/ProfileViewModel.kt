@@ -10,9 +10,9 @@ import com.valerochka1337.valerochkagym.data.profile.AiProfilePromptGate
 import com.valerochka1337.valerochkagym.domain.BasicProfile
 import com.valerochka1337.valerochkagym.domain.ExperienceLevel
 import com.valerochka1337.valerochkagym.domain.KeyExerciseChoice
+import com.valerochka1337.valerochkagym.domain.PlannerExerciseChoice
 import com.valerochka1337.valerochkagym.domain.ProfileEditTarget
 import com.valerochka1337.valerochkagym.domain.ProfileRepository
-import com.valerochka1337.valerochkagym.domain.PlannerExerciseChoice
 import com.valerochka1337.valerochkagym.domain.ProfileSaveResult
 import com.valerochka1337.valerochkagym.domain.ProfileSex
 import com.valerochka1337.valerochkagym.domain.StrengthExerciseCandidate
@@ -24,6 +24,7 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
 import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -31,6 +32,8 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 data class ProfileEditorUiState(
     val isLoading: Boolean = true,
@@ -52,6 +55,8 @@ data class ProfileEditorUiState(
     val plannerPreferences: List<PlannerExerciseChoice> = emptyList(),
     val plannerExercises: List<StrengthExerciseCandidate> = emptyList(),
     val showPlannerPreferences: Boolean = false,
+    val preferredRepMin: String = "",
+    val preferredRepMax: String = "",
 )
 
 @HiltViewModel
@@ -67,6 +72,9 @@ constructor(
   private val _uiState = MutableStateFlow(ProfileEditorUiState())
   val uiState: StateFlow<ProfileEditorUiState> = _uiState.asStateFlow()
 
+  private val saveMutex = Mutex()
+  private var editRevision = 0L
+
   init {
     viewModelScope.launch {
       val snapshot = profileRepository.openEditor()
@@ -80,7 +88,8 @@ constructor(
               profileRepository.observe(snapshot.target),
               strengthPlannerRepository?.observe(snapshot.target) ?: flowOf(emptyList()),
               strengthPlannerRepository?.observeLiveStrengthExercises() ?: flowOf(emptyList()),
-              strengthPlannerRepository?.observePlannerPreferences(snapshot.target) ?: flowOf(emptyList()),
+              strengthPlannerRepository?.observePlannerPreferences(snapshot.target)
+                  ?: flowOf(emptyList()),
               strengthPlannerRepository?.observeLivePlannerExercises() ?: flowOf(emptyList()),
           ) { profile, choices, candidates, preferences, plannerCandidates ->
             if (profile == null || choices == null) {
@@ -102,7 +111,11 @@ constructor(
             }
           }
           .collectLatest { next ->
-            if (!_uiState.value.isSaving || next.target == null) _uiState.value = next
+            if (next.target == null) {
+              _uiState.value = next
+            } else if (!_uiState.value.isSaving) {
+              _uiState.value = next.copy(error = _uiState.value.error)
+            }
           }
     }
   }
@@ -121,6 +134,10 @@ constructor(
 
   fun setDuration(value: String) = update {
     copy(preferredSessionDurationMinutes = value, error = null)
+  }
+
+  fun setRepRange(min: String, max: String) = update {
+    copy(preferredRepMin = min, preferredRepMax = max, error = null)
   }
 
   fun setConstraints(value: String) = update { copy(manualConstraints = value, error = null) }
@@ -169,7 +186,10 @@ constructor(
     copy(keyExercises = keyExercises.filterNot { it.exerciseSyncId == exerciseSyncId })
   }
 
-  fun setKeyExerciseSheet(visible: Boolean) = update { copy(showKeyExercises = visible) }
+  fun setKeyExerciseSheet(visible: Boolean) {
+    _uiState.value = _uiState.value.copy(showKeyExercises = visible)
+    _uiState.value.saveDraft(savedStateHandle)
+  }
 
   fun setPlannerPreference(exerciseId: Long, preference: PlannerExercisePreference?) = update {
     val candidate = plannerExercises.firstOrNull { it.id == exerciseId } ?: return@update this
@@ -179,44 +199,66 @@ constructor(
     copy(plannerPreferences = next.values.sortedBy { it.exerciseSyncId }, error = null)
   }
 
-  fun setPlannerPreferenceSheet(visible: Boolean) = update { copy(showPlannerPreferences = visible) }
+  fun setPlannerPreferenceSheet(visible: Boolean) {
+    _uiState.value = _uiState.value.copy(showPlannerPreferences = visible)
+    _uiState.value.saveDraft(savedStateHandle)
+  }
 
   fun save() {
     val state = _uiState.value
     val target = state.target ?: return
     val profile = state.toProfileOrNull(clock.nowMillis())
     if (profile == null) {
-      _uiState.value = state.copy(error = "Проверьте дату и числовые значения")
+      _uiState.value = state.copy(isSaving = false, error = "Проверьте дату и числовые значения")
       return
     }
     _uiState.value = state.copy(isSaving = true, error = null)
+    val revision = editRevision
     viewModelScope.launch {
-      val saveResult =
-          profileRepository.saveWithStrength(
-              target,
-              profile,
-              state.keyExercises,
-              state.plannerPreferences,
-          )
-      when (saveResult) {
-        ProfileSaveResult.Saved -> {
-          _uiState.value = _uiState.value.copy(isSaving = false)
+      saveMutex.withLock {
+        val saveResult =
+            try {
+              profileRepository.saveWithStrength(
+                  target,
+                  profile,
+                  state.keyExercises,
+                  state.plannerPreferences,
+              )
+            } catch (cancelled: CancellationException) {
+              throw cancelled
+            } catch (_: Exception) {
+              if (revision == editRevision) {
+                _uiState.value =
+                    _uiState.value.copy(
+                        isSaving = false,
+                        error = "Не удалось сохранить профиль. Измените значение, чтобы повторить.",
+                    )
+              }
+              return@withLock
+            }
+        if (revision != editRevision || _uiState.value.target != target) return@withLock
+        when (saveResult) {
+          ProfileSaveResult.Saved -> {
+            _uiState.value = _uiState.value.copy(isSaving = false)
+          }
+          ProfileSaveResult.Invalid ->
+              _uiState.value =
+                  _uiState.value.copy(isSaving = false, error = "Проверьте данные профиля")
+          ProfileSaveResult.StaleTarget ->
+              _uiState.value =
+                  ProfileEditorUiState(isLoading = false, error = "Профиль больше недоступен")
         }
-        ProfileSaveResult.Invalid ->
-            _uiState.value =
-                _uiState.value.copy(isSaving = false, error = "Проверьте данные профиля")
-        ProfileSaveResult.StaleTarget ->
-            _uiState.value =
-                ProfileEditorUiState(isLoading = false, error = "Профиль больше недоступен")
       }
     }
   }
 
   private fun update(block: ProfileEditorUiState.() -> ProfileEditorUiState) {
-    if (_uiState.value.isLoading || _uiState.value.isSaving) return
+    if (_uiState.value.isLoading || _uiState.value.target == null) return
     val next = _uiState.value.block()
     next.saveDraft(savedStateHandle)
     _uiState.value = next
+    editRevision++
+    save()
   }
 }
 
@@ -239,6 +281,8 @@ private fun BasicProfile.toUi(
                   preferredSessionDurationMinutes?.toString().orEmpty(),
               equipmentIds = equipmentIds,
               manualConstraints = manualConstraints.orEmpty(),
+              preferredRepMin = preferredRepMin?.toString().orEmpty(),
+              preferredRepMax = preferredRepMax?.toString().orEmpty(),
           ))
       .copy(promptDisabled = promptDisabled)
 }
@@ -281,17 +325,21 @@ private fun profileDraftFrom(
           },
       showKeyExercises = handle.get<Boolean>("profile_draft_key_sheet") ?: false,
       plannerPreferences =
-          handle.get<ArrayList<String>>("profile_draft_preference_sync").orEmpty().mapIndexedNotNull {
-              index, syncId ->
-            handle
-                .get<ArrayList<String>>("profile_draft_preference_value")
-                ?.getOrNull(index)
-                ?.let { value ->
-                  runCatching { PlannerExercisePreference.valueOf(value) }.getOrNull()
-                }
-                ?.let { preference -> PlannerExerciseChoice(null, syncId, preference) }
-          },
+          handle
+              .get<ArrayList<String>>("profile_draft_preference_sync")
+              .orEmpty()
+              .mapIndexedNotNull { index, syncId ->
+                handle
+                    .get<ArrayList<String>>("profile_draft_preference_value")
+                    ?.getOrNull(index)
+                    ?.let { value ->
+                      runCatching { PlannerExercisePreference.valueOf(value) }.getOrNull()
+                    }
+                    ?.let { preference -> PlannerExerciseChoice(null, syncId, preference) }
+              },
       showPlannerPreferences = handle.get<Boolean>("profile_draft_preference_sheet") ?: false,
+      preferredRepMin = handle.get<String>("profile_draft_rep_min").orEmpty(),
+      preferredRepMax = handle.get<String>("profile_draft_rep_max").orEmpty(),
   )
 }
 
@@ -312,8 +360,11 @@ private fun ProfileEditorUiState.saveDraft(handle: SavedStateHandle) {
   handle["profile_draft_key_priority"] = ArrayList(keyExercises.map { it.priority.name })
   handle["profile_draft_key_sheet"] = showKeyExercises
   handle["profile_draft_preference_sync"] = ArrayList(plannerPreferences.map { it.exerciseSyncId })
-  handle["profile_draft_preference_value"] = ArrayList(plannerPreferences.map { it.preference.name })
+  handle["profile_draft_preference_value"] =
+      ArrayList(plannerPreferences.map { it.preference.name })
   handle["profile_draft_preference_sheet"] = showPlannerPreferences
+  handle["profile_draft_rep_min"] = preferredRepMin
+  handle["profile_draft_rep_max"] = preferredRepMax
 }
 
 private fun ProfileEditorUiState.toProfileOrNull(nowMillis: Long): BasicProfile? {
@@ -330,6 +381,13 @@ private fun ProfileEditorUiState.toProfileOrNull(nowMillis: Long): BasicProfile?
   if (plannedSessionsPerWeek.isNotBlank() && sessions !in 1..7) return null
   val duration = preferredSessionDurationMinutes.trim().ifBlank { null }?.toIntOrNull()
   if (preferredSessionDurationMinutes.isNotBlank() && duration !in 10..240) return null
+  val min = preferredRepMin.trim().toIntOrNull()
+  val max = preferredRepMax.trim().toIntOrNull()
+  if (
+      (preferredRepMin.isNotBlank() || preferredRepMax.isNotBlank()) &&
+          (min == null || max == null || min !in 1..50 || max !in min..50)
+  )
+      return null
   val constraints = manualConstraints.trim().ifBlank { null }
   if (constraints != null && constraints.codePointCount(0, constraints.length) > 2000) return null
   return BasicProfile(
@@ -341,6 +399,8 @@ private fun ProfileEditorUiState.toProfileOrNull(nowMillis: Long): BasicProfile?
       duration,
       equipmentIds,
       constraints,
+      min,
+      max,
   )
 }
 

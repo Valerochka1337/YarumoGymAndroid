@@ -111,7 +111,9 @@ constructor(
         actions.withLock {
           guard(editor.session)
           val proposal = editor.proposal
-          require(proposal.status == ProposalStatus.PENDING && proposal.expiresAt > clock.nowMillis())
+          require(
+              proposal.status == ProposalStatus.PENDING && proposal.expiresAt > clock.nowMillis()
+          )
           val next = api.refine(editor.session, proposal, text, requestId)
           guard(editor.session)
           database.withTransaction {

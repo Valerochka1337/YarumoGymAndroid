@@ -33,6 +33,37 @@ class ProfileScreenTest {
   @get:Rule val compose = createComposeRule()
 
   @Test
+  fun `rep range choices stay reachable and can be cleared`() {
+    var selected: Pair<String, String>? = null
+    compose.setContent {
+      GymTheme {
+        ProfileScreenContent(
+            state =
+                ProfileEditorUiState(
+                    isLoading = false,
+                    target = ProfileEditTarget("guest", null, 1L),
+                ),
+            onBack = {},
+            onGoal = {},
+            onExperience = {},
+            onSex = {},
+            onBirthDate = {},
+            onSessions = {},
+            onDuration = {},
+            onConstraints = {},
+            onEquipment = {},
+            onPromptDisabled = {},
+            onRepRange = { min, max -> selected = min to max },
+        )
+      }
+    }
+    compose.onNodeWithText("6–12").performScrollTo().performClick()
+    org.junit.Assert.assertEquals("6" to "12", selected)
+    compose.onNodeWithText("Не задан").performScrollTo().performClick()
+    org.junit.Assert.assertEquals("" to "", selected)
+  }
+
+  @Test
   fun `profile prompt actions stay reachable at font scale two on expanded width`() {
     compose.setContent {
       val density = LocalDensity.current
@@ -63,9 +94,8 @@ class ProfileScreenTest {
   }
 
   @Test
-  fun `actual profile content exposes clearable choices validation error and save on compact font scale two`() {
+  fun `actual profile content exposes clearable choices validation error and autosave on compact font scale two`() {
     var cleared: TrainingGoal? = TrainingGoal.STRENGTH
-    var saves = 0
     compose.setContent {
       val density = LocalDensity.current
       CompositionLocalProvider(LocalDensity provides Density(density.density, fontScale = 2f)) {
@@ -88,7 +118,6 @@ class ProfileScreenTest {
               onConstraints = {},
               onEquipment = {},
               onPromptDisabled = {},
-              onSave = { saves++ },
           )
         }
       }
@@ -100,12 +129,11 @@ class ProfileScreenTest {
         .performClick()
     compose.runOnIdle { assertNull(cleared) }
     compose.onNodeWithText("Проверьте данные профиля").performScrollTo().assertIsDisplayed()
+    compose.onNodeWithContentDescription("Сохранить профиль").assertDoesNotExist()
     compose
-        .onNodeWithContentDescription("Сохранить профиль")
+        .onNodeWithText("Изменения сохраняются автоматически")
         .performScrollTo()
-        .assertIsEnabled()
-        .performClick()
-    compose.runOnIdle { org.junit.Assert.assertEquals(1, saves) }
+        .assertIsDisplayed()
   }
 
   @Test
@@ -124,7 +152,6 @@ class ProfileScreenTest {
             onConstraints = {},
             onEquipment = {},
             onPromptDisabled = {},
-            onSave = {},
         )
       }
     }
@@ -160,7 +187,6 @@ class ProfileScreenTest {
               onConstraints = {},
               onEquipment = {},
               onPromptDisabled = {},
-              onSave = {},
               onRemoveKeyExercise = { removed = it },
           )
         }
@@ -204,7 +230,6 @@ class ProfileScreenTest {
               onConstraints = {},
               onEquipment = {},
               onPromptDisabled = {},
-              onSave = {},
               onRemoveKeyExercise = { removed = it },
           )
         }

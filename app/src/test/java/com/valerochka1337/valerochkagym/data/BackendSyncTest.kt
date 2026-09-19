@@ -313,6 +313,152 @@ class BackendSyncTest : RoomDaoTest() {
     return setId
   }
 
+  private fun JsonObject.singleWorkoutSet(): JsonObject =
+      getValue("exercises")
+          .jsonArray
+          .single()
+          .jsonObject
+          .getValue("sets")
+          .jsonArray
+          .single()
+          .jsonObject
+
+  @Test
+  fun `server without RIR capability receives legacy workout while local RIR survives remote updates`() =
+      runTest {
+        SyncSchema.install(raw)
+        val server = Server().apply { accepted = setOf("annotated-workout-writes") }
+        val sync = BackendSync(db, server, Store())
+        val workoutId = "rir-legacy-server"
+        val setId = finishedWorkoutSet(workoutId, "")
+        db.workoutDao()
+            .updateSet(
+                requireNotNull(db.workoutDao().getSet(setId))
+                    .copy(actualRir = 2, legacyTargetRir = 3, actualRirAtLeastFour = false)
+            )
+        sync.claim("user-a")
+
+        sync.run()
+
+        val uploaded = requireNotNull(server.records["workout:$workoutId"]?.payload)
+        assertTrue(
+            uploaded.singleWorkoutSet().keys.none {
+              it in setOf("targetRir", "actualRir", "actualRirAtLeastFour")
+            }
+        )
+        assertEquals(2, db.workoutDao().getSet(setId)?.actualRir)
+        server.revision++
+        server.records["workout:$workoutId"] =
+            requireNotNull(server.records["workout:$workoutId"])
+                .copy(
+                    revision = server.revision,
+                    payload =
+                        JsonObject(uploaded + ("name" to JsonPrimitive("Обновлено на сервере"))),
+                )
+
+        sync.run()
+
+        val restored = workoutFull(workoutId).exercises.single().sets.single()
+        assertEquals(2, restored.actualRir)
+        assertEquals(3, restored.legacyTargetRir)
+        assertFalse(restored.actualRirAtLeastFour)
+      }
+
+  @Test
+  fun `negotiated RIR capability sends four plus workout RIR`() = runTest {
+    SyncSchema.install(raw)
+    val server = Server().apply { accepted = setOf("annotated-workout-writes", "workout-rir-v1") }
+    val sync = BackendSync(db, server, Store())
+    val workoutId = "rir-current-server"
+    val setId = finishedWorkoutSet(workoutId, "")
+    db.workoutDao()
+        .updateSet(
+            requireNotNull(db.workoutDao().getSet(setId))
+                .copy(actualRir = null, legacyTargetRir = 3, actualRirAtLeastFour = true)
+        )
+    sync.claim("user-a")
+
+    sync.run()
+
+    val uploaded = requireNotNull(server.records["workout:$workoutId"]?.payload).singleWorkoutSet()
+    assertEquals(3, uploaded["targetRir"]?.jsonPrimitive?.int)
+    assertEquals(JsonNull, uploaded["actualRir"])
+    assertTrue(requireNotNull(uploaded["actualRirAtLeastFour"]).jsonPrimitive.boolean)
+  }
+
+  @Test
+  fun `retained workout from 1_3_70 is reissued without RIR for a legacy server`() = runTest {
+    SyncSchema.install(raw)
+    val server = Server().apply { accepted = setOf("annotated-workout-writes") }
+    val sync = BackendSync(db, server, Store())
+    val workoutId = "rir-retained"
+    val setId = finishedWorkoutSet(workoutId, "")
+    db.workoutDao()
+        .updateSet(
+            requireNotNull(db.workoutDao().getSet(setId))
+                .copy(actualRir = null, actualRirAtLeastFour = true)
+        )
+    sync.claim("user-a")
+    val original =
+        CloudPush(
+            "rir-incompatible-operation",
+            listOf(
+                CloudChange(
+                    "workout",
+                    workoutId,
+                    0,
+                    payload = PortableData(raw).snapshot().getValue("workout:$workoutId"),
+                )
+            ),
+        )
+    val originalBytes = Json.encodeToString(original)
+    raw.execSQL(
+        "INSERT INTO backend_outbox(id,owner,requestJson) VALUES(1,'user-a',?)",
+        arrayOf(originalBytes),
+    )
+
+    server.failBeforeCommit = true
+    try {
+      sync.run()
+      fail("A failed compatibility dispatch must retain the exact durable request")
+    } catch (_: IOException) {}
+    raw.query("SELECT requestJson FROM backend_outbox WHERE id=1").use {
+      assertTrue(it.moveToFirst())
+      assertEquals(originalBytes, it.getString(0))
+    }
+    assertTrue(
+        server.rawPosts
+            .single()
+            .decodeToString()
+            .let(Json::parseToJsonElement)
+            .jsonObject
+            .getValue("changes")
+            .jsonArray
+            .single()
+            .jsonObject
+            .getValue("payload")
+            .jsonObject
+            .singleWorkoutSet()
+            .keys
+            .none { it in setOf("targetRir", "actualRir", "actualRirAtLeastFour") }
+    )
+
+    sync.run()
+
+    val posted =
+        server.operations.values
+            .map { it.first }
+            .single { push -> push.changes.any { it.kind == "workout" && it.id == workoutId } }
+    assertNotEquals(original.operationId, posted.operationId)
+    assertTrue(
+        requireNotNull(posted.changes.single().payload).singleWorkoutSet().keys.none {
+          it in setOf("targetRir", "actualRir", "actualRirAtLeastFour")
+        }
+    )
+    assertEquals(0, tableCount("backend_outbox"))
+    assertTrue(workoutFull(workoutId).exercises.single().sets.single().actualRirAtLeastFour)
+  }
+
   private suspend fun baselineWorkout(
       server: Server,
       sync: BackendSync,

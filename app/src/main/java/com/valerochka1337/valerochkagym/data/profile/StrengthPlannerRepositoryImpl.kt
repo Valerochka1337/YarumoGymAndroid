@@ -11,8 +11,8 @@ import com.valerochka1337.valerochkagym.data.db.entity.PlannerExercisePreference
 import com.valerochka1337.valerochkagym.data.db.entity.StrengthPlannerKeyExerciseEntity
 import com.valerochka1337.valerochkagym.data.db.entity.StrengthPlannerProfileEntity
 import com.valerochka1337.valerochkagym.domain.KeyExerciseChoice
-import com.valerochka1337.valerochkagym.domain.ProfileEditTarget
 import com.valerochka1337.valerochkagym.domain.PlannerExerciseChoice
+import com.valerochka1337.valerochkagym.domain.ProfileEditTarget
 import com.valerochka1337.valerochkagym.domain.StrengthExerciseCandidate
 import com.valerochka1337.valerochkagym.domain.StrengthPlannerRepository
 import com.valerochka1337.valerochkagym.domain.StrengthPlannerSaveResult
@@ -103,18 +103,28 @@ constructor(
   ): StrengthPlannerSaveResult =
       mutationMutex.withLock {
         database.withTransaction {
-          if (!targetStillCurrent(target)) return@withTransaction StrengthPlannerSaveResult.StaleTarget
+          if (!targetStillCurrent(target))
+              return@withTransaction StrengthPlannerSaveResult.StaleTarget
           val live = exerciseDao.getAllOnce().filterNot { it.archived }.associateBy { it.syncId }
           if (
               choices.map { it.exerciseSyncId }.distinct().size != choices.size ||
                   choices.any { it.exerciseSyncId !in live }
-          ) return@withTransaction StrengthPlannerSaveResult.Invalid
-          database.plannerExercisePreferenceDao().delete(target.scope)
-          database.plannerExercisePreferenceDao().upsert(
-              choices.sortedBy { it.exerciseSyncId }.map {
-                PlannerExercisePreferenceEntity(target.scope, it.exerciseSyncId, it.preference)
-              }
           )
+              return@withTransaction StrengthPlannerSaveResult.Invalid
+          database.plannerExercisePreferenceDao().delete(target.scope)
+          database
+              .plannerExercisePreferenceDao()
+              .upsert(
+                  choices
+                      .sortedBy { it.exerciseSyncId }
+                      .map {
+                        PlannerExercisePreferenceEntity(
+                            target.scope,
+                            it.exerciseSyncId,
+                            it.preference,
+                        )
+                      }
+              )
           StrengthPlannerSaveResult.Saved
         }
       }

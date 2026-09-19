@@ -6,15 +6,13 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.view.WindowManager
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -52,10 +50,12 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.EditNote
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -64,6 +64,7 @@ import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuDefaults
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SnackbarHost
@@ -90,6 +91,7 @@ import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.error
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
@@ -100,6 +102,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.valerochka1337.valerochkagym.data.db.entity.ExerciseType
 import com.valerochka1337.valerochkagym.data.db.entity.WorkoutSetEntity
 import com.valerochka1337.valerochkagym.data.db.relation.WorkoutExerciseWithSets
+import com.valerochka1337.valerochkagym.domain.SetEffort
+import com.valerochka1337.valerochkagym.domain.canAddSet
 import com.valerochka1337.valerochkagym.domain.currentFocus
 import com.valerochka1337.valerochkagym.service.RestTimerState
 import com.valerochka1337.valerochkagym.service.heartrate.HeartRateConnectionState
@@ -196,6 +200,7 @@ fun ActiveWorkoutScreen(
             stepSpeed = viewModel::stepSpeed,
             stepIncline = viewModel::stepIncline,
             setWeight = viewModel::setWeight,
+            setEffort = viewModel::setEffort,
             setReps = viewModel::setReps,
             setDuration = viewModel::setDuration,
             setSpeed = viewModel::setSpeed,
@@ -207,6 +212,7 @@ fun ActiveWorkoutScreen(
             updateCompletedDuration = viewModel::updateCompletedSetDuration,
             updateCompletedSpeed = viewModel::updateCompletedSetSpeed,
             updateCompletedIncline = viewModel::updateCompletedSetIncline,
+            updateCompletedEffort = viewModel::updateCompletedSetEffort,
             saveCompletedEdit = viewModel::saveCompletedSetEdit,
             cancelCompletedEdit = viewModel::cancelCompletedSetEdit,
             editNote = viewModel::openSetNote,
@@ -307,12 +313,14 @@ internal class SetActions(
     val uncomplete: (Long) -> Unit,
     val addSet: (Long) -> Unit,
     val deleteSet: (Long) -> Unit,
+    val setEffort: (Long, SetEffort?) -> Unit = { _, _ -> },
     val editCompleted: (Long, ExerciseType) -> Unit = { _, _ -> },
     val updateCompletedWeight: (String) -> Unit = {},
     val updateCompletedReps: (String) -> Unit = {},
     val updateCompletedDuration: (String) -> Unit = {},
     val updateCompletedSpeed: (String) -> Unit = {},
     val updateCompletedIncline: (String) -> Unit = {},
+    val updateCompletedEffort: (SetEffort) -> Unit = {},
     val saveCompletedEdit: () -> Unit = {},
     val cancelCompletedEdit: () -> Unit = {},
     val editNote: (Long) -> Unit = {},
@@ -408,13 +416,21 @@ internal fun ActiveWorkoutContent(
   // порядок, чтобы фокус немедленно следовал за карточкой ещё до записи перестановки в Room.
   val currentFocus = workout.copy(exercises = exercises).currentFocus()
   val activeSetId = currentFocus?.set?.id
-  val focusedWorkoutExerciseId =
-      activeSetId?.let { setId ->
-        exercises
-            .firstOrNull { exercise -> exercise.sets.any { it.id == setId } }
-            ?.workoutExercise
-            ?.id
-      }
+  var missingRirSetId by rememberSaveable(workout.workout.id) { mutableStateOf<Long?>(null) }
+  LaunchedEffect(
+      activeSetId,
+      currentFocus?.set?.setType,
+      currentFocus?.set?.actualRir,
+      currentFocus?.set?.actualRirAtLeastFour,
+  ) {
+    if (missingRirSetId != activeSetId || currentFocus?.set?.let(SetEffort::selectedFor) != null) {
+      missingRirSetId = null
+    }
+  }
+  val selectEffort: (Long, SetEffort) -> Unit = { setId, effort ->
+    if (missingRirSetId == setId) missingRirSetId = null
+    setActions.setEffort(setId, effort)
+  }
   val currentIndex =
       activeSetId?.let { setId ->
         exercises.indexOfFirst { exercise -> exercise.sets.any { it.id == setId } }
@@ -501,9 +517,10 @@ internal fun ActiveWorkoutContent(
               previous = state.previousByExercise[exercise.exercise.id].orEmpty(),
               actions = setActions,
               activeSetId = activeSetId,
+              missingRirSetId = missingRirSetId,
+              onEffortSelect = selectEffort,
               showAddSet =
-                  localOrder == roomOrder &&
-                      exercise.workoutExercise.id == focusedWorkoutExerciseId,
+                  localOrder == roomOrder && workout.canAddSet(exercise.workoutExercise.id),
               onAddSet = { setActions.addSet(exercise.workoutExercise.id) },
               dragHandle = {
                 DragHandle(
@@ -562,16 +579,27 @@ internal fun ActiveWorkoutContent(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
           Column(Modifier.weight(1f)) {
-            RestTimerPill(
+            WorkoutPrimaryAction(
                 restTimer = restTimer,
                 heartRateReading = heartRateReading,
+                activeSetId = activeSetId,
                 onAddRestSeconds = onAddRestSeconds,
                 onSkipRest = onSkipRest,
-            )
-            CurrentSetPrimaryAction(
-                restTimer = restTimer,
-                activeSetId = activeSetId,
-                onComplete = setActions.complete,
+                onComplete = { setId ->
+                  val focus = currentFocus
+                  if (
+                      focus?.set?.id == setId &&
+                          focus.type == ExerciseType.STRENGTH &&
+                          SetEffort.selectedFor(focus.set) == null
+                  ) {
+                    missingRirSetId = setId
+                    haptics.reject()
+                  } else {
+                    missingRirSetId = null
+                    haptics.confirm()
+                    setActions.complete(setId)
+                  }
+                },
             )
           }
           CoachActionButton(unreadCoachMessages = unreadCoachMessages, onOpenCoach = onOpenCoach)
@@ -636,6 +664,7 @@ internal fun ActiveWorkoutContent(
         onDurationChange = setActions.updateCompletedDuration,
         onSpeedChange = setActions.updateCompletedSpeed,
         onInclineChange = setActions.updateCompletedIncline,
+        onEffortChange = setActions.updateCompletedEffort,
         onSave = setActions.saveCompletedEdit,
         onCancel = setActions.cancelCompletedEdit,
         onUncomplete = {
@@ -808,79 +837,110 @@ private fun HeartRateBubble(
 }
 
 /**
- * Пилюля отдыха внизу экрана. В таймерном режиме показывает «−15с / M:SS / +15с», а в режиме пульса
- * — текущий BPM и порог; тап по центру всегда пропускает отдых.
+ * Один стабильный слот главного действия. При завершении отдыха меняет таймер на кнопку подхода в
+ * тех же границах, чтобы две кнопки не меняли высоту нижней панели во время exit-анимации.
  */
 @Composable
-private fun RestTimerPill(
+private fun WorkoutPrimaryAction(
     restTimer: StateFlow<RestTimerState?>,
     heartRateReading: StateFlow<HeartRateReading?>,
+    activeSetId: Long?,
     onAddRestSeconds: (Int) -> Unit,
     onSkipRest: () -> Unit,
+    onComplete: (Long) -> Unit,
 ) {
   val rest by restTimer.collectAsStateWithLifecycle()
   val reading by heartRateReading.collectAsStateWithLifecycle()
-  AnimatedVisibility(
-      visible = rest != null,
-      enter =
-          slideInVertically(GymMotion.spatialDefault()) { it } + fadeIn(GymMotion.effectsDefault()),
-      exit =
-          slideOutVertically(GymMotion.spatialDefault()) { it } +
-              fadeOut(GymMotion.effectsDefault()),
-  ) {
-    // Пока идёт exit-анимация, `rest` уже null — держим последнее ненулевое значение,
-    // чтобы контент пилюли не исчезал мгновенно.
-    var lastState by remember { mutableStateOf(rest) }
-    rest?.let { lastState = it }
-    val state = lastState ?: return@AnimatedVisibility
-    Row(
-        modifier =
-            Modifier.fillMaxWidth()
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.primary)
-                .height(56.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-      val haptics = gymHaptics()
-      when (state) {
-        is RestTimerState.Timed -> {
-          RestPillSide(symbol = "−15с", contentDescription = "убавить отдых") {
-            haptics.step()
-            onAddRestSeconds(-REST_TIMER_STEP)
-          }
-          SkipRestButton(onSkipRest) {
-            Text(
-                text = "⏱ ${formatRestClock(state.remainingSec)}",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onPrimary,
-            )
-          }
-          RestPillSide(symbol = "+15с", contentDescription = "прибавить отдых") {
-            haptics.step()
-            onAddRestSeconds(REST_TIMER_STEP)
-          }
-        }
+  var lastRest by remember { mutableStateOf(rest) }
+  rest?.let { lastRest = it }
+  val effectsMotion: FiniteAnimationSpec<Float> = GymMotion.effectsFast()
 
-        is RestTimerState.HeartRate ->
-            SkipRestButton(onSkipRest) {
-              Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = Icons.Default.Favorite,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.background,
-                    modifier = Modifier.size(14.dp),
-                )
-                Spacer(Modifier.width(5.dp))
-                Text(
-                    text = "${reading?.bpm ?: "—"} · ≤ ${state.thresholdBpm} BPM",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onPrimary,
-                )
-              }
-            }
+  AnimatedContent(
+      targetState = rest != null,
+      transitionSpec = { fadeIn(effectsMotion) togetherWith fadeOut(effectsMotion) },
+      contentAlignment = Alignment.Center,
+      modifier = Modifier.fillMaxWidth().height(56.dp).testTag("workout-primary-action"),
+      label = "workoutPrimaryAction",
+  ) { isResting ->
+    val state = lastRest
+    if (isResting && state != null) {
+      RestTimerPill(
+          state = state,
+          reading = reading,
+          onAddRestSeconds = onAddRestSeconds,
+          onSkipRest = onSkipRest,
+      )
+    } else {
+      activeSetId?.let { setId ->
+        PillButton(
+            text = "Подход выполнен",
+            onClick = { onComplete(setId) },
+            leadingIcon = Icons.Default.Check,
+            modifier = Modifier.fillMaxWidth(),
+        )
       }
+    }
+  }
+}
+
+/**
+ * Пилюля отдыха. В таймерном режиме показывает «−15с / M:SS / +15с», а в режиме пульса — текущий
+ * BPM и порог; тап по центру всегда пропускает отдых.
+ */
+@Composable
+private fun RestTimerPill(
+    state: RestTimerState,
+    reading: HeartRateReading?,
+    onAddRestSeconds: (Int) -> Unit,
+    onSkipRest: () -> Unit,
+) {
+  Row(
+      modifier =
+          Modifier.fillMaxWidth()
+              .clip(CircleShape)
+              .background(MaterialTheme.colorScheme.primary)
+              .height(56.dp),
+      verticalAlignment = Alignment.CenterVertically,
+  ) {
+    val haptics = gymHaptics()
+    when (state) {
+      is RestTimerState.Timed -> {
+        RestPillSide(symbol = "−15с", contentDescription = "убавить отдых") {
+          haptics.step()
+          onAddRestSeconds(-REST_TIMER_STEP)
+        }
+        SkipRestButton(onSkipRest) {
+          Text(
+              text = "⏱ ${formatRestClock(state.remainingSec)}",
+              style = MaterialTheme.typography.titleLarge,
+              fontWeight = FontWeight.Bold,
+              color = MaterialTheme.colorScheme.onPrimary,
+          )
+        }
+        RestPillSide(symbol = "+15с", contentDescription = "прибавить отдых") {
+          haptics.step()
+          onAddRestSeconds(REST_TIMER_STEP)
+        }
+      }
+
+      is RestTimerState.HeartRate ->
+          SkipRestButton(onSkipRest) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+              Icon(
+                  imageVector = Icons.Default.Favorite,
+                  contentDescription = null,
+                  tint = MaterialTheme.colorScheme.background,
+                  modifier = Modifier.size(14.dp),
+              )
+              Spacer(Modifier.width(5.dp))
+              Text(
+                  text = "${reading?.bpm ?: "—"} · ≤ ${state.thresholdBpm} BPM",
+                  style = MaterialTheme.typography.titleLarge,
+                  fontWeight = FontWeight.Bold,
+                  color = MaterialTheme.colorScheme.onPrimary,
+              )
+            }
+          }
     }
   }
 }
@@ -1050,6 +1110,8 @@ private fun ExerciseSection(
     previous: String,
     actions: SetActions,
     activeSetId: Long?,
+    missingRirSetId: Long?,
+    onEffortSelect: (Long, SetEffort) -> Unit,
     showAddSet: Boolean,
     onAddSet: () -> Unit,
     dragHandle: @Composable () -> Unit,
@@ -1131,6 +1193,16 @@ private fun ExerciseSection(
           modifier = Modifier.weight(1f),
           style = MaterialTheme.typography.labelLarge,
       )
+      if (showAddSet) {
+        IconButton(
+            onClick = {
+              haptics.step()
+              onAddSet()
+            }
+        ) {
+          Icon(Icons.Rounded.Add, contentDescription = "Добавить подход: ${exercise.exercise.name}")
+        }
+      }
       Icon(
           if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
           contentDescription = "Подходы: ${exercise.exercise.name}",
@@ -1145,6 +1217,8 @@ private fun ExerciseSection(
                   set = set,
                   type = type,
                   actions = actions,
+                  effortError = set.id == missingRirSetId,
+                  onEffortSelect = { onEffortSelect(set.id, it) },
               )
 
           set.isCompleted -> {
@@ -1159,7 +1233,12 @@ private fun ExerciseSection(
             )
           }
 
-          else -> FutureSetPill(set = set, type = type)
+          else ->
+              FutureSetPill(
+                  set = set,
+                  type = type,
+                  onEffortSelect = { onEffortSelect(set.id, it) },
+              )
         }
         if (set.note.isNotBlank()) {
           Text(
@@ -1169,14 +1248,6 @@ private fun ExerciseSection(
           )
         }
         Spacer(Modifier.height(8.dp))
-      }
-
-      if (showAddSet) {
-        TextButton(onClick = onAddSet) {
-          Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-          Spacer(Modifier.width(6.dp))
-          Text("Подход")
-        }
       }
     }
   }
@@ -1207,6 +1278,8 @@ private fun CurrentSetCard(
     set: WorkoutSetEntity,
     type: ExerciseType,
     actions: SetActions,
+    effortError: Boolean,
+    onEffortSelect: (SetEffort) -> Unit,
 ) {
   GymCard(
       modifier = Modifier.fillMaxWidth(),
@@ -1252,6 +1325,8 @@ private fun CurrentSetCard(
             onStepDown = { actions.stepReps(set.id, -REPS_STEP) },
             onStepUp = { actions.stepReps(set.id, REPS_STEP) },
         )
+        Spacer(Modifier.height(10.dp))
+        SetEffortField(set = set, onSelect = onEffortSelect, isError = effortError)
       }
 
       ExerciseType.TIMED -> {
@@ -1292,29 +1367,6 @@ private fun CurrentSetCard(
         )
       }
     }
-  }
-}
-
-/** Контекстная закреплённая кнопка: во время отдыха её место занимают controls таймера. */
-@Composable
-private fun CurrentSetPrimaryAction(
-    restTimer: StateFlow<RestTimerState?>,
-    activeSetId: Long?,
-    onComplete: (Long) -> Unit,
-) {
-  val rest by restTimer.collectAsStateWithLifecycle()
-  val setId = activeSetId
-  if (rest == null && setId != null) {
-    val haptics = gymHaptics()
-    PillButton(
-        text = "Подход выполнен",
-        onClick = {
-          haptics.confirm()
-          onComplete(setId)
-        },
-        leadingIcon = Icons.Default.Check,
-        modifier = Modifier.fillMaxWidth(),
-    )
   }
 }
 
@@ -1417,6 +1469,8 @@ private fun CompletedSetPill(
   SetPill(
       set = set,
       values = formatSetValues(set, type),
+      showEffort = type == ExerciseType.STRENGTH,
+      onEffortSelect = null,
       containerColor = MaterialTheme.colorScheme.primaryContainer,
       contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
       onClick = onClick,
@@ -1442,6 +1496,7 @@ private fun CompletedSetEditDialog(
     onDurationChange: (String) -> Unit,
     onSpeedChange: (String) -> Unit,
     onInclineChange: (String) -> Unit,
+    onEffortChange: (SetEffort) -> Unit,
     onSave: () -> Unit,
     onCancel: () -> Unit,
     onUncomplete: () -> Unit,
@@ -1458,6 +1513,7 @@ private fun CompletedSetEditDialog(
             onDurationChange = onDurationChange,
             onSpeedChange = onSpeedChange,
             onInclineChange = onInclineChange,
+            onEffortChange = onEffortChange,
         )
       },
       confirmButton = {
@@ -1496,6 +1552,7 @@ internal fun CompletedSetEditFields(
     onDurationChange: (String) -> Unit,
     onSpeedChange: (String) -> Unit,
     onInclineChange: (String) -> Unit,
+    onEffortChange: (SetEffort) -> Unit,
 ) {
   Column(
       modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
@@ -1503,6 +1560,14 @@ internal fun CompletedSetEditFields(
   ) {
     when (draft.type) {
       ExerciseType.STRENGTH -> {
+        SetEffortSelector(
+            selected = draft.effort,
+            onSelect = onEffortChange,
+            contentDescription = "Запас повторений",
+            testTag = "completed-set-effort",
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !draft.isSubmitting,
+        )
         NumberField(
             value = draft.weightKg,
             onValueChange = onWeightChange,
@@ -1568,7 +1633,8 @@ internal fun CompletedSetEditFields(
 internal fun CompletedSetEditDraft.isValidNumericInput(): Boolean {
   fun String.isOptionalInt() = isBlank() || toIntOrNull() != null
   return when (type) {
-    ExerciseType.STRENGTH -> weightKg.isValidOptionalFiniteDecimal() && reps.isOptionalInt()
+    ExerciseType.STRENGTH ->
+        effort != null && weightKg.isValidOptionalFiniteDecimal() && reps.isOptionalInt()
     ExerciseType.TIMED -> durationSec.isOptionalInt()
     ExerciseType.CARDIO ->
         durationSec.isOptionalInt() &&
@@ -1581,10 +1647,13 @@ internal fun CompletedSetEditDraft.isValidNumericInput(): Boolean {
 private fun FutureSetPill(
     set: WorkoutSetEntity,
     type: ExerciseType,
+    onEffortSelect: (SetEffort) -> Unit,
 ) {
   SetPill(
       set = set,
       values = formatSetValues(set, type),
+      showEffort = type == ExerciseType.STRENGTH,
+      onEffortSelect = onEffortSelect.takeIf { type == ExerciseType.STRENGTH },
       containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
       contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
       onClick = null,
@@ -1600,6 +1669,8 @@ private fun SetPill(
     contentColor: Color,
     onClick: (() -> Unit)?,
     trailing: (@Composable () -> Unit)?,
+    showEffort: Boolean,
+    onEffortSelect: ((SetEffort) -> Unit)?,
 ) {
   val clickable = if (onClick != null) Modifier.combinedClickable(onClick = onClick) else Modifier
   Row(
@@ -1625,8 +1696,18 @@ private fun SetPill(
         color = contentColor,
         modifier = Modifier.weight(1f),
     )
-    if (trailing != null) {
-      trailing()
+    if (showEffort) {
+      Spacer(Modifier.width(8.dp))
+      SetEffortField(
+          set = set,
+          onSelect = onEffortSelect,
+          compact = true,
+          modifier = Modifier.weight(1f),
+          contentColor = contentColor,
+      )
+    }
+    Box(modifier = Modifier.width(26.dp), contentAlignment = Alignment.CenterEnd) {
+      trailing?.invoke()
     }
   }
 }
@@ -1874,4 +1955,144 @@ private fun ActivePersonalHintEditDialog(
         TextButton(onClick = onCancel, enabled = !draft.isSubmitting) { Text("Отмена") }
       },
   )
+}
+
+@Composable
+internal fun SetEffortField(
+    set: WorkoutSetEntity,
+    onSelect: ((SetEffort) -> Unit)?,
+    modifier: Modifier = Modifier,
+    compact: Boolean = false,
+    contentColor: Color = MaterialTheme.colorScheme.onSurface,
+    isError: Boolean = false,
+) {
+  SetEffortSelector(
+      selected = SetEffort.selectedFor(set),
+      onSelect = onSelect,
+      contentDescription = "Запас повторений, подход ${set.setIndex + 1}",
+      testTag = "set-effort-${set.id}",
+      modifier = modifier,
+      compact = compact,
+      contentColor = contentColor,
+      isError = isError,
+  )
+}
+
+@Composable
+private fun SetEffortSelector(
+    selected: SetEffort?,
+    onSelect: ((SetEffort) -> Unit)?,
+    contentDescription: String,
+    testTag: String,
+    modifier: Modifier = Modifier,
+    compact: Boolean = false,
+    contentColor: Color = MaterialTheme.colorScheme.onSurface,
+    isError: Boolean = false,
+    enabled: Boolean = true,
+) {
+  var expanded by remember(testTag) { mutableStateOf(false) }
+  val haptics = gymHaptics()
+  val label = selected?.label ?: "Выберите"
+  val interactive = enabled && onSelect != null
+  val openMenu = {
+    if (interactive) {
+      haptics.tap()
+      expanded = true
+    }
+  }
+  Column(modifier = modifier) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+      if (!compact) {
+        Text("RIR:", style = MaterialTheme.typography.bodyMedium, color = contentColor)
+        Spacer(Modifier.width(12.dp))
+      }
+      Box(modifier = if (compact) Modifier.fillMaxWidth() else Modifier.weight(1f)) {
+        val anchor =
+            Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag(testTag).semantics {
+              this.contentDescription = contentDescription
+              stateDescription = selected?.label ?: "Не выбран"
+              if (isError) error("Выберите RIR")
+            }
+        if (compact) {
+          Box(
+              modifier =
+                  if (interactive) anchor.clickable(role = Role.Button, onClick = openMenu)
+                  else anchor,
+              contentAlignment = Alignment.CenterStart,
+          ) {
+            Text(
+                text = "RIR:${selected?.label ?: "—"}",
+                modifier = Modifier.fillMaxWidth(),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = contentColor,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Start,
+            )
+          }
+        } else {
+          androidx.compose.material3.OutlinedButton(
+              onClick = openMenu,
+              enabled = interactive,
+              modifier = anchor,
+              shape = MaterialTheme.shapes.medium,
+              border =
+                  BorderStroke(
+                      width = if (isError) 2.dp else 1.dp,
+                      color =
+                          if (isError) MaterialTheme.colorScheme.error
+                          else MaterialTheme.colorScheme.outline,
+                  ),
+              colors =
+                  ButtonDefaults.outlinedButtonColors(
+                      containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                      contentColor = contentColor,
+                  ),
+          ) {
+            Text(label, modifier = Modifier.weight(1f))
+            Icon(Icons.Default.ExpandMore, contentDescription = null)
+          }
+        }
+        androidx.compose.material3.DropdownMenu(
+            expanded = expanded && interactive,
+            onDismissRequest = { expanded = false },
+            modifier = Modifier.background(MaterialTheme.colorScheme.surfaceContainerHigh),
+        ) {
+          SetEffort.entries.forEach { effort ->
+            val isSelected = effort == selected
+            androidx.compose.material3.DropdownMenuItem(
+                text = {
+                  Text(
+                      text = effort.label,
+                      style = MaterialTheme.typography.bodyLarge,
+                      fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                  )
+                },
+                leadingIcon = {
+                  Box(Modifier.size(24.dp), contentAlignment = Alignment.Center) {
+                    if (isSelected) Icon(Icons.Default.Check, contentDescription = null)
+                  }
+                },
+                modifier =
+                    Modifier.background(
+                        if (isSelected) MaterialTheme.colorScheme.secondaryContainer
+                        else MaterialTheme.colorScheme.surfaceContainerHigh,
+                    ),
+                colors =
+                    MenuDefaults.itemColors(
+                        textColor =
+                            if (isSelected) MaterialTheme.colorScheme.onSecondaryContainer
+                            else MaterialTheme.colorScheme.onSurface,
+                        leadingIconColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                    ),
+                onClick = {
+                  haptics.step()
+                  onSelect?.invoke(effort)
+                  expanded = false
+                },
+            )
+          }
+        }
+      }
+    }
+  }
 }

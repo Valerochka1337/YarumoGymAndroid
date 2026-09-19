@@ -108,7 +108,9 @@ class CalendarAiRepositoryTest : RoomDaoTest() {
               putJsonArray("slots") {
                 addJsonObject {
                   put("slotId", "focus")
-                  putJsonArray("allowedExerciseIds") { add(if (invalidFocusSlot) OTHER else EXERCISE) }
+                  putJsonArray("allowedExerciseIds") {
+                    add(if (invalidFocusSlot) OTHER else EXERCISE)
+                  }
                   put("minDurationSec", 0)
                   put("maxDurationSec", if (invalidDuration) 44 else 2700)
                 }
@@ -250,29 +252,41 @@ class CalendarAiRepositoryTest : RoomDaoTest() {
   }
 
   @Test
-  fun `agentic response rejects never focus allowlist and duration projection mismatches`() = runTest {
-    val (r, s) = fixture()
-    s.agentic = true
-    db.plannerExercisePreferenceDao()
-        .upsert(listOf(PlannerExercisePreferenceEntity(OWNER, EXERCISE, PlannerExercisePreference.NEVER)))
-    assertEquals(
-        "ai_invalid_response",
-        (runCatching { repo(r, s).generate(intent()) }.exceptionOrNull() as BackendException).code,
-    )
+  fun `agentic response rejects never focus allowlist and duration projection mismatches`() =
+      runTest {
+        val (r, s) = fixture()
+        s.agentic = true
+        db.plannerExercisePreferenceDao()
+            .upsert(
+                listOf(
+                    PlannerExercisePreferenceEntity(
+                        OWNER,
+                        EXERCISE,
+                        PlannerExercisePreference.NEVER,
+                    )
+                )
+            )
+        assertEquals(
+            "ai_invalid_response",
+            (runCatching { repo(r, s).generate(intent()) }.exceptionOrNull() as BackendException)
+                .code,
+        )
 
-    db.plannerExercisePreferenceDao().delete(OWNER)
-    s.invalidFocusSlot = true
-    assertEquals(
-        "ai_invalid_response",
-        (runCatching { repo(r, s).generate(intent()) }.exceptionOrNull() as BackendException).code,
-    )
-    s.invalidFocusSlot = false
-    s.invalidDuration = true
-    assertEquals(
-        "ai_invalid_response",
-        (runCatching { repo(r, s).generate(intent()) }.exceptionOrNull() as BackendException).code,
-    )
-  }
+        db.plannerExercisePreferenceDao().delete(OWNER)
+        s.invalidFocusSlot = true
+        assertEquals(
+            "ai_invalid_response",
+            (runCatching { repo(r, s).generate(intent()) }.exceptionOrNull() as BackendException)
+                .code,
+        )
+        s.invalidFocusSlot = false
+        s.invalidDuration = true
+        assertEquals(
+            "ai_invalid_response",
+            (runCatching { repo(r, s).generate(intent()) }.exceptionOrNull() as BackendException)
+                .code,
+        )
+      }
 
   @Test
   fun `active workout blocks calendar AI before provider request`() = runTest {

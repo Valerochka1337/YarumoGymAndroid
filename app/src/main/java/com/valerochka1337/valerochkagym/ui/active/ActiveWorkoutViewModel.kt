@@ -16,9 +16,10 @@ import com.valerochka1337.valerochkagym.domain.HintEditTarget
 import com.valerochka1337.valerochkagym.domain.NoteSaveResult
 import com.valerochka1337.valerochkagym.domain.PreviousSetsUseCase
 import com.valerochka1337.valerochkagym.domain.RoutineGymConflictException
+import com.valerochka1337.valerochkagym.domain.SetEffort
 import com.valerochka1337.valerochkagym.domain.WorkoutEditor
 import com.valerochka1337.valerochkagym.domain.WorkoutSetMutator
-import com.valerochka1337.valerochkagym.domain.currentFocus
+import com.valerochka1337.valerochkagym.domain.canAddSet
 import com.valerochka1337.valerochkagym.service.RestTimerEngine
 import com.valerochka1337.valerochkagym.service.RestTimerState
 import com.valerochka1337.valerochkagym.service.heartrate.HeartRateConnectionState
@@ -102,6 +103,7 @@ data class CompletedSetEditDraft(
     val setId: Long,
     val type: ExerciseType,
     val token: Long,
+    val effort: SetEffort? = null,
     val weightKg: String = "",
     val reps: String = "",
     val durationSec: String = "",
@@ -332,6 +334,12 @@ constructor(
 
   // --- Клавиатурный ввод (NumberField): правит одно поле поверх свежего состояния подхода. ---
 
+  fun setEffort(setId: Long, effort: SetEffort?) =
+      setMutator.edit(setId) { set ->
+        effort?.applyTo(set)
+            ?: set.copy(actualRir = null, actualRirAtLeastFour = false, setType = "UNKNOWN")
+      }
+
   fun setWeight(setId: Long, raw: String) = setMutator.setWeight(setId, raw)
 
   fun setReps(setId: Long, raw: String) = setMutator.setReps(setId, raw)
@@ -414,6 +422,7 @@ constructor(
             setId = matching.id,
             type = type,
             token = token,
+            effort = SetEffort.selectedFor(matching),
             weightKg = matching.weightKg.toDraftText(),
             reps = matching.reps.toDraftText(),
             durationSec = matching.durationSec.toDraftText(),
@@ -441,6 +450,10 @@ constructor(
 
   fun updateCompletedSetIncline(raw: String) = updateCompletedSetEdit {
     it.copy(inclinePct = raw, error = null)
+  }
+
+  fun updateCompletedSetEffort(effort: SetEffort) = updateCompletedSetEdit {
+    it.copy(effort = effort, error = null)
   }
 
   fun cancelCompletedSetEdit() {
@@ -566,6 +579,7 @@ constructor(
   fun saveCompletedSetEdit() {
     val draft = completedSetEdit.value ?: return
     if (draft.isSubmitting) return
+    if (draft.type == ExerciseType.STRENGTH && draft.effort == null) return
     val values = draft.toNumbersOrNull()
     if (values == null) {
       updateCompletedSetEdit { it.copy(error = "Введите корректные числа") }
@@ -574,7 +588,14 @@ constructor(
     updateCompletedSetEdit { it.copy(isSubmitting = true, error = null) }
     viewModelScope.launch {
       try {
-        when (setMutator.editCompletedNumbers(draft.setId, draft.type, values)) {
+        when (
+            setMutator.editCompletedNumbers(
+                draft.setId,
+                draft.type,
+                values,
+                effort = draft.effort,
+            )
+        ) {
           CompletedSetEditResult.Saved -> {
             if (completedSetEdit.value?.token == draft.token) clearCompletedSetEdit()
           }
@@ -595,7 +616,7 @@ constructor(
 
   fun addSet(workoutExerciseId: Long) {
     val workout = activeWorkout.value ?: return
-    if (workout.focusedWorkoutExerciseId() != workoutExerciseId) return
+    if (!workout.canAddSet(workoutExerciseId)) return
     viewModelScope.launch { repository.addSet(workoutExerciseId) }
   }
 
@@ -814,6 +835,7 @@ constructor(
     savedStateHandle[COMPLETED_SET_EDIT_SET_ID] = draft.setId
     savedStateHandle[COMPLETED_SET_EDIT_TYPE] = draft.type.name
     savedStateHandle[COMPLETED_SET_EDIT_TOKEN] = draft.token
+    savedStateHandle[COMPLETED_SET_EDIT_EFFORT] = draft.effort?.name
     savedStateHandle[COMPLETED_SET_EDIT_WEIGHT] = draft.weightKg
     savedStateHandle[COMPLETED_SET_EDIT_REPS] = draft.reps
     savedStateHandle[COMPLETED_SET_EDIT_DURATION] = draft.durationSec
@@ -827,6 +849,7 @@ constructor(
             COMPLETED_SET_EDIT_SET_ID,
             COMPLETED_SET_EDIT_TYPE,
             COMPLETED_SET_EDIT_TOKEN,
+            COMPLETED_SET_EDIT_EFFORT,
             COMPLETED_SET_EDIT_WEIGHT,
             COMPLETED_SET_EDIT_REPS,
             COMPLETED_SET_EDIT_DURATION,
@@ -847,20 +870,16 @@ constructor(
         setId = setId,
         type = type,
         token = token,
+        effort =
+            savedStateHandle.get<String>(COMPLETED_SET_EDIT_EFFORT)?.let {
+              runCatching { SetEffort.valueOf(it) }.getOrNull()
+            },
         weightKg = savedStateHandle[COMPLETED_SET_EDIT_WEIGHT] ?: "",
         reps = savedStateHandle[COMPLETED_SET_EDIT_REPS] ?: "",
         durationSec = savedStateHandle[COMPLETED_SET_EDIT_DURATION] ?: "",
         speedKmh = savedStateHandle[COMPLETED_SET_EDIT_SPEED] ?: "",
         inclinePct = savedStateHandle[COMPLETED_SET_EDIT_INCLINE] ?: "",
     )
-  }
-
-  private fun WorkoutFull.focusedWorkoutExerciseId(): Long? {
-    val focusedSetId = currentFocus()?.set?.id ?: return null
-    return exercises
-        .firstOrNull { exercise -> exercise.sets.any { it.id == focusedSetId } }
-        ?.workoutExercise
-        ?.id
   }
 }
 
@@ -915,6 +934,7 @@ private const val COMPLETED_SET_UNAVAILABLE_MESSAGE = "Подход уже не�
 private const val COMPLETED_SET_EDIT_SET_ID = "completed_set_edit_set_id"
 private const val COMPLETED_SET_EDIT_TYPE = "completed_set_edit_type"
 private const val COMPLETED_SET_EDIT_TOKEN = "completed_set_edit_token"
+private const val COMPLETED_SET_EDIT_EFFORT = "completed_set_edit_effort"
 private const val COMPLETED_SET_EDIT_WEIGHT = "completed_set_edit_weight"
 private const val COMPLETED_SET_EDIT_REPS = "completed_set_edit_reps"
 private const val COMPLETED_SET_EDIT_DURATION = "completed_set_edit_duration"

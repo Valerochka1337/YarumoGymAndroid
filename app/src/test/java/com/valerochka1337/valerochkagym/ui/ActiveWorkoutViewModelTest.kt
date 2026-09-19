@@ -28,6 +28,7 @@ import com.valerochka1337.valerochkagym.domain.HintEditTarget
 import com.valerochka1337.valerochkagym.domain.NoteSaveResult
 import com.valerochka1337.valerochkagym.domain.PreviousSetsUseCase
 import com.valerochka1337.valerochkagym.domain.RoutineGymConflictException
+import com.valerochka1337.valerochkagym.domain.SetEffort
 import com.valerochka1337.valerochkagym.domain.WorkoutSetMutator
 import com.valerochka1337.valerochkagym.service.RestTimerEngine
 import com.valerochka1337.valerochkagym.service.RestTimerState
@@ -207,6 +208,7 @@ class ActiveWorkoutViewModelTest {
 
         assertEquals("60.0", harness.viewModel.uiState.value.completedSetEdit?.weightKg)
         assertEquals("10", harness.viewModel.uiState.value.completedSetEdit?.reps)
+        assertEquals(SetEffort.TWO, harness.viewModel.uiState.value.completedSetEdit?.effort)
         harness.viewModel.cancelCompletedSetEdit()
 
         assertNull(harness.viewModel.uiState.value.completedSetEdit)
@@ -226,6 +228,7 @@ class ActiveWorkoutViewModelTest {
         collectUiState(first.viewModel)
         first.viewModel.openCompletedSetEdit(10L, ExerciseType.STRENGTH)
         first.viewModel.updateCompletedSetWeight("72.5")
+        first.viewModel.updateCompletedSetEffort(SetEffort.FOUR_PLUS)
 
         val recreated =
             harness(
@@ -236,6 +239,7 @@ class ActiveWorkoutViewModelTest {
 
         val draft = recreated.viewModel.uiState.value.completedSetEdit
         assertEquals("72.5", draft?.weightKg)
+        assertEquals(SetEffort.FOUR_PLUS, draft?.effort)
         assertFalse(draft?.isSubmitting ?: true)
         assertNull(draft?.error)
       }
@@ -312,6 +316,7 @@ class ActiveWorkoutViewModelTest {
         collectUiState(harness.viewModel)
         harness.viewModel.openCompletedSetEdit(10L, ExerciseType.STRENGTH)
         harness.viewModel.updateCompletedSetWeight("72.5")
+        harness.viewModel.updateCompletedSetEffort(SetEffort.WARMUP)
 
         harness.viewModel.saveCompletedSetEdit()
         runCurrent()
@@ -320,6 +325,10 @@ class ActiveWorkoutViewModelTest {
             listOf(10L to ExerciseType.STRENGTH),
             harness.repository.completedNumberEdits.map { it.first.id to it.second },
         )
+        val savedSet = harness.repository.completedNumberEdits.single().first
+        assertEquals("WARMUP", savedSet.setType)
+        assertNull(savedSet.actualRir)
+        assertFalse(savedSet.actualRirAtLeastFour)
         assertTrue(harness.repository.toggledSets.isEmpty())
         assertNull(harness.restTimerEngine.state.value)
         assertEquals(
@@ -414,7 +423,7 @@ class ActiveWorkoutViewModelTest {
       }
 
   @Test
-  fun `adding a set ignores nonfocus missing and completed workouts`() =
+  fun `adding a set ignores nonfocus and missing workouts but allows the final exercise`() =
       runTest(mainDispatcherRule.testDispatcher.scheduler) {
         val nonfocusHarness = harness(active = workoutWithTwoIncompleteExercises())
         collectUiState(nonfocusHarness.viewModel)
@@ -431,7 +440,7 @@ class ActiveWorkoutViewModelTest {
 
         assertTrue(nonfocusHarness.repository.addedSetTo.isEmpty())
         assertTrue(missingHarness.repository.addedSetTo.isEmpty())
-        assertTrue(completedHarness.repository.addedSetTo.isEmpty())
+        assertEquals(listOf(WORKOUT_EXERCISE_ID), completedHarness.repository.addedSetTo)
       }
 
   @Test
@@ -760,6 +769,8 @@ class ActiveWorkoutViewModelTest {
                                   setIndex = 0,
                                   weightKg = weightKg,
                                   reps = 10,
+                                  setType = "WORK",
+                                  actualRir = 2,
                               ),
                           ),
                   ),

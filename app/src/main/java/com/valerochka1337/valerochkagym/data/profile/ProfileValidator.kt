@@ -36,6 +36,13 @@ internal object ProfileValidator {
             profile.preferredSessionDurationMinutes !in 10..240
     )
         return null
+    if ((profile.preferredRepMin == null) != (profile.preferredRepMax == null)) return null
+    if (
+        profile.preferredRepMin != null &&
+            (profile.preferredRepMin !in 1..50 ||
+                profile.preferredRepMax !in profile.preferredRepMin..50)
+    )
+        return null
     val constraints = profile.manualConstraints?.trim()?.takeIf(String::isNotEmpty)
     if (
         constraints != null &&

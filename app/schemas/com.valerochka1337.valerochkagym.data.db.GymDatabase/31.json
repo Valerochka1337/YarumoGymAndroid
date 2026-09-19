@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 31,
-    "identityHash": "ef52a24576696710f87c9e24404c5fa2",
+    "identityHash": "ef4f2952df643c620826eefd848948ae",
     "entities": [
       {
         "tableName": "backend_state",
@@ -1520,48 +1520,6 @@
             "referencedColumns": [
               "scope"
             ]
-          }
-        ]
-      },
-      {
-        "tableName": "planner_exercise_preferences",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`scope` TEXT NOT NULL, `exerciseSyncId` TEXT NOT NULL, `preference` TEXT NOT NULL, PRIMARY KEY(`scope`, `exerciseSyncId`))",
-        "fields": [
-          {
-            "fieldPath": "scope",
-            "columnName": "scope",
-            "affinity": "TEXT",
-            "notNull": true
-          },
-          {
-            "fieldPath": "exerciseSyncId",
-            "columnName": "exerciseSyncId",
-            "affinity": "TEXT",
-            "notNull": true
-          },
-          {
-            "fieldPath": "preference",
-            "columnName": "preference",
-            "affinity": "TEXT",
-            "notNull": true
-          }
-        ],
-        "primaryKey": {
-          "autoGenerate": false,
-          "columnNames": [
-            "scope",
-            "exerciseSyncId"
-          ]
-        },
-        "indices": [
-          {
-            "name": "index_planner_exercise_preferences_exerciseSyncId",
-            "unique": false,
-            "columnNames": [
-              "exerciseSyncId"
-            ],
-            "orders": [],
-            "createSql": "CREATE INDEX IF NOT EXISTS `index_planner_exercise_preferences_exerciseSyncId` ON `${TABLE_NAME}` (`exerciseSyncId`)"
           }
         ]
       },
@@ -3093,7 +3051,7 @@
       },
       {
         "tableName": "workout_sets",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `workoutExerciseId` INTEGER NOT NULL, `setIndex` INTEGER NOT NULL, `weightKg` REAL, `reps` INTEGER, `durationSec` INTEGER, `speedKmh` REAL, `inclinePct` REAL, `isCompleted` INTEGER NOT NULL, `completedAt` INTEGER, `note` TEXT NOT NULL DEFAULT '', `syncId` TEXT NOT NULL DEFAULT '', `originalWeightKg` REAL, `originalReps` INTEGER, `originalDurationSec` INTEGER, `originalSpeedKmh` REAL, `originalInclinePct` REAL, `targetWeightKg` REAL, `targetReps` INTEGER, `targetDurationSec` INTEGER, `targetSpeedKmh` REAL, `targetInclinePct` REAL, `actualWeightKg` REAL, `actualReps` INTEGER, `actualDurationSec` INTEGER, `actualSpeedKmh` REAL, `actualInclinePct` REAL, `setType` TEXT NOT NULL DEFAULT 'UNKNOWN', `reportedFeelingsJson` TEXT NOT NULL DEFAULT '[]', `restSnapshotJson` TEXT, `coachMutationRevision` INTEGER NOT NULL DEFAULT 0, FOREIGN KEY(`workoutExerciseId`) REFERENCES `workout_exercises`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `workoutExerciseId` INTEGER NOT NULL, `setIndex` INTEGER NOT NULL, `weightKg` REAL, `reps` INTEGER, `durationSec` INTEGER, `speedKmh` REAL, `inclinePct` REAL, `isCompleted` INTEGER NOT NULL, `completedAt` INTEGER, `note` TEXT NOT NULL DEFAULT '', `syncId` TEXT NOT NULL DEFAULT '', `originalWeightKg` REAL, `originalReps` INTEGER, `originalDurationSec` INTEGER, `originalSpeedKmh` REAL, `originalInclinePct` REAL, `targetWeightKg` REAL, `targetReps` INTEGER, `targetDurationSec` INTEGER, `targetSpeedKmh` REAL, `targetInclinePct` REAL, `actualWeightKg` REAL, `actualReps` INTEGER, `actualDurationSec` INTEGER, `actualSpeedKmh` REAL, `actualInclinePct` REAL, `setType` TEXT NOT NULL DEFAULT 'UNKNOWN', `reportedFeelingsJson` TEXT NOT NULL DEFAULT '[]', `restSnapshotJson` TEXT, `coachMutationRevision` INTEGER NOT NULL DEFAULT 0, `targetRir` INTEGER, `actualRir` INTEGER, FOREIGN KEY(`workoutExerciseId`) REFERENCES `workout_exercises`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
         "fields": [
           {
             "fieldPath": "id",
@@ -3263,6 +3221,16 @@
             "affinity": "INTEGER",
             "notNull": true,
             "defaultValue": "0"
+          },
+          {
+            "fieldPath": "targetRir",
+            "columnName": "targetRir",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "actualRir",
+            "columnName": "actualRir",
+            "affinity": "INTEGER"
           }
         ],
         "primaryKey": {
@@ -3684,7 +3652,7 @@
       },
       {
         "tableName": "coach_session_context",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`workoutId` TEXT NOT NULL, `accountId` TEXT NOT NULL, `availableTimeMinutes` INTEGER, `availableTimeEndsAtMillis` INTEGER, `futureRestSeconds` INTEGER, `excludedExerciseIdsJson` TEXT NOT NULL, `lastUndoPacketJson` TEXT, `lastUndoRevision` INTEGER, `initiativeEnabled` INTEGER NOT NULL, `initiativeWelcomed` INTEGER NOT NULL, `initiativeAutomaticCount` INTEGER NOT NULL, `initiativeLastAutomaticAtMillis` INTEGER, `initiativeAskedExerciseIdsJson` TEXT NOT NULL, `initiativeEndReminderSent` INTEGER NOT NULL, `initiativePendingInteraction` INTEGER NOT NULL, PRIMARY KEY(`workoutId`), FOREIGN KEY(`workoutId`) REFERENCES `workouts`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`workoutId` TEXT NOT NULL, `accountId` TEXT NOT NULL, `availableTimeMinutes` INTEGER, `availableTimeEndsAtMillis` INTEGER, `futureRestSeconds` INTEGER, `excludedExerciseIdsJson` TEXT NOT NULL, `lastUndoPacketJson` TEXT, `lastUndoRevision` INTEGER, `initiativeEnabled` INTEGER NOT NULL, `initiativeWelcomed` INTEGER NOT NULL, `initiativeAutomaticCount` INTEGER NOT NULL, `initiativeLastAutomaticAtMillis` INTEGER, `initiativeAskedExerciseIdsJson` TEXT NOT NULL, `initiativeEndReminderSent` INTEGER NOT NULL, `initiativePendingInteraction` INTEGER NOT NULL, `autoregulationOptionsJson` TEXT NOT NULL DEFAULT '{}', PRIMARY KEY(`workoutId`), FOREIGN KEY(`workoutId`) REFERENCES `workouts`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
         "fields": [
           {
             "fieldPath": "workoutId",
@@ -3769,6 +3737,13 @@
             "columnName": "initiativePendingInteraction",
             "affinity": "INTEGER",
             "notNull": true
+          },
+          {
+            "fieldPath": "autoregulationOptionsJson",
+            "columnName": "autoregulationOptionsJson",
+            "affinity": "TEXT",
+            "notNull": true,
+            "defaultValue": "'{}'"
           }
         ],
         "primaryKey": {
@@ -3835,7 +3810,7 @@
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'ef52a24576696710f87c9e24404c5fa2')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'ef4f2952df643c620826eefd848948ae')"
     ]
   }
 }

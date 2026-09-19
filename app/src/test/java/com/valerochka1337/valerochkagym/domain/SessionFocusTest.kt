@@ -18,6 +18,35 @@ import org.junit.Test
  */
 class SessionFocusTest {
 
+  @Test
+  fun `extra set stays in sequence until the next exercise has a completed set`() {
+    val first = exercise("Жим", set(1, completed = true))
+    val second =
+        exercise("Тяга", set(2), set(3)).let {
+          it.copy(workoutExercise = it.workoutExercise.copy(id = 2))
+        }
+    val workout = workout(first, second)
+    assertEquals(true, workout.canAddSet(1))
+    assertEquals(true, workout.canAddSet(2))
+    val started = second.copy(sets = listOf(set(2, completed = true), set(3)))
+    assertEquals(false, workout(first, started).canAddSet(1))
+    val extended = first.copy(sets = first.sets + set(4))
+    assertEquals(4L, workout(extended, second).currentFocus()?.set?.id)
+    assertEquals(false, workout(extended, second).canAddSet(2))
+  }
+
+  @Test
+  fun `extra set is available after the final set until the workout finishes`() {
+    val workout = workout(exercise("Жим", set(1, completed = true)))
+    assertEquals(true, workout.canAddSet(1))
+    assertEquals(
+        false,
+        workout.copy(workout = workout.workout.copy(finishedAt = 2000)).canAddSet(1),
+    )
+    assertEquals(false, workout.canAddSet(99))
+    assertEquals(false, workout().canAddSet(1))
+  }
+
   // region currentFocus
 
   @Test

@@ -141,7 +141,8 @@ constructor(
               it.copy(
                   editor = editor,
                   loading = false,
-                  refinement = refinementKey(editor)?.let { key -> savedState.get<String>(key) }.orEmpty(),
+                  refinement =
+                      refinementKey(editor)?.let { key -> savedState.get<String>(key) }.orEmpty(),
               )
             }
             if (editor.proposal.source == ProposalSource.AI) {
@@ -203,7 +204,8 @@ constructor(
     val text = mutableState.value.refinement.trim()
     if (text.isEmpty() || text.length > 2000 || mutableState.value.saving) return
     val key = refinementKey(editor) ?: return
-    val requestId = savedState.get<String>("$key.requestId") ?: java.util.UUID.randomUUID().toString()
+    val requestId =
+        savedState.get<String>("$key.requestId") ?: java.util.UUID.randomUUID().toString()
     savedState["$key.requestId"] = requestId
     val token = generation
     mutableState.update { it.copy(saving = true, error = null) }
@@ -225,9 +227,10 @@ constructor(
     }
   }
 
-  private fun refinementKey(editor: ProposalEditor?): String? = editor?.let {
-    "proposal_refinement.${it.session.tokens.userId}.${it.session.epoch}.${it.proposal.proposalId}.${it.proposal.currentVersion}"
-  }
+  private fun refinementKey(editor: ProposalEditor?): String? =
+      editor?.let {
+        "proposal_refinement.${it.session.tokens.userId}.${it.session.epoch}.${it.proposal.proposalId}.${it.proposal.currentVersion}"
+      }
 
   private fun decision(approve: Boolean) {
     val editor = mutableState.value.editor ?: return

@@ -1,8 +1,9 @@
 package com.valerochka1337.valerochkagym.domain
 
+import androidx.room.withTransaction
 import com.valerochka1337.valerochkagym.data.backend.BackendSessionStore
 import com.valerochka1337.valerochkagym.data.db.GymDatabase
-import com.valerochka1337.valerochkagym.data.db.dao.CoachHistorySet
+import com.valerochka1337.valerochkagym.diagnostics.CoachDiagnostics
 import com.valerochka1337.valerochkagym.service.RestTimerEngine
 import com.valerochka1337.valerochkagym.service.RestTimerState
 import com.valerochka1337.valerochkagym.service.heartrate.HeartRateMonitor
@@ -26,6 +27,25 @@ constructor(
       accountId: String,
       workoutId: String,
       expectedSessionEpoch: Long? = null,
+  ): WorkoutSnapshot? =
+      CoachDiagnostics.trace("context.snapshot") {
+        database
+            .withTransaction { readSnapshot(accountId, workoutId, expectedSessionEpoch) }
+            .also {
+              CoachDiagnostics.event(
+                  "context.snapshot.result",
+                  "available" to (it != null),
+                  "revision" to it?.revision,
+                  "exercises" to it?.exercises?.size,
+                  "sets" to it?.exercises?.sumOf { exercise -> exercise.sets.size },
+              )
+            }
+      }
+
+  private suspend fun readSnapshot(
+      accountId: String,
+      workoutId: String,
+      expectedSessionEpoch: Long?,
   ): WorkoutSnapshot? {
     if (!belongsToLiveAccount(accountId, expectedSessionEpoch)) return null
     val full = database.workoutDao().getWorkoutFull(workoutId) ?: return null
@@ -83,14 +103,16 @@ constructor(
                                 actualSpeedKmh = set.actualSpeedKmh,
                                 actualInclinePct = set.actualInclinePct,
                                 reportedFeelings = set.reportedFeelingsJson.decodeStrings(),
+                                actualRir = set.actualRir,
+                                actualRirAtLeastFour = set.actualRirAtLeastFour,
                             )
                           },
                   history =
-                      database.workoutDao().lastCompletedSetsForExercise(exercise.id).mapNotNull {
-                          set ->
-                        set.completedAt?.let { completedAt ->
+                      database.coachDao().exerciseHistory(exercise.id, 3).map { historical ->
+                        val set = historical.set
+                        run {
                           SnapshotHistory(
-                              completedAt,
+                              set.completedAt ?: historical.historyWorkoutFinishedAt,
                               set.setIndex,
                               set.weightKg,
                               set.reps,
@@ -98,12 +120,24 @@ constructor(
                               set.speedKmh,
                               set.inclinePct,
                               set.setType,
+                              workoutId = historical.historyWorkoutId,
+                              setSyncId = set.syncId,
+                              actualRir = set.actualRir,
+                              actualRirAtLeastFour = set.actualRirAtLeastFour,
+                              interrupted =
+                                  "INTERRUPTED" in set.reportedFeelingsJson.decodeStrings(),
                           )
                         }
                       },
               )
             }
             .filterNotNull()
+    val profile = database.profileDao().get(accountId)
+    val profileEquipment = database.profileDao().equipmentIds(accountId).toSet()
+    val excludedIds = context?.excludedExerciseIdsJson?.decodeLongs().orEmpty()
+    val excludedSyncIds =
+        excludedIds.mapNotNull { database.exerciseDao().getById(it)?.syncId }.toSet()
+    if (!belongsToLiveAccount(accountId, expectedSessionEpoch)) return null
     val allSets = exercises.flatMap { it.sets }
     val current = allSets.firstOrNull { !it.completed }?.syncId
     val currentIndex = allSets.indexOfFirst { it.syncId == current }
@@ -126,6 +160,18 @@ constructor(
         workoutId = workoutId,
         revision = full.workout.coachRevision,
         exercises = exercises,
+        profile =
+            CoachProfile(
+                profile?.trainingGoal,
+                profile?.experienceLevel,
+                profile?.manualConstraints,
+                profileEquipment,
+                if (profile == null) BasicProfile.initial().preferredRepMin
+                else profile.preferredRepMin,
+                if (profile == null) BasicProfile.initial().preferredRepMax
+                else profile.preferredRepMax,
+            ),
+        coachDecisions = CoachDecisionMemory.decode(context?.decisionMemoryJson ?: "[]"),
         currentSetId = current,
         previousSetId = previous,
         nextSetId = next,
@@ -138,77 +184,27 @@ constructor(
                   .div(60_000L)
                   .toInt()
             } ?: context?.availableTimeMinutes,
-        excludedExerciseIds = context?.excludedExerciseIdsJson?.decodeLongs().orEmpty(),
+        excludedExerciseIds = excludedIds,
+        excludedExerciseSyncIds = excludedSyncIds,
+        availableTimeEndsAtMillis = context?.availableTimeEndsAtMillis,
         feelings = allSets.flatMap { it.reportedFeelings }.toSet(),
+        futureRestSeconds = context?.futureRestSeconds,
+        autoregulationOptions =
+            runCatching {
+                  json.decodeFromString<
+                      com.valerochka1337.valerochkagym.domain.autoregulation.AutoregulationOptions
+                  >(
+                      context?.autoregulationOptionsJson ?: "{}"
+                  )
+                }
+                .getOrDefault(
+                    com.valerochka1337.valerochkagym.domain.autoregulation.AutoregulationOptions()
+                ),
         pulse =
             heartRateMonitor?.reading?.value?.freshAt(System.currentTimeMillis())?.let {
               SnapshotPulse(it.bpm, it.updatedAtMillis)
             },
     )
-  }
-
-  suspend fun find(
-      snapshot: WorkoutSnapshot,
-      query: String?,
-      equipment: Set<String>?,
-      muscles: Set<String>?,
-      muscleGroups: Set<String>? = null,
-      limit: Int = 10,
-  ): List<FoundCoachExercise> {
-    val normalized = query?.trim()?.lowercase().orEmpty()
-    val usage = database.coachDao().exerciseUsage().associateBy { it.exerciseId }
-    val exercises = mutableListOf<Pair<Long, FoundCoachExercise>>()
-    for (exercise in database.exerciseDao().getAllOnce()) {
-      if (exercise.archived || exercise.id in snapshot.excludedExerciseIds) continue
-      val muscleNames =
-          database.exerciseMuscleDao().getForExercise(exercise.id).map { it.muscle.name }.toSet()
-      val requirements = database.exerciseDao().getRequirementIds(exercise.id).toSet()
-      if (
-          (normalized.isBlank() || exercise.name.lowercase().contains(normalized)) &&
-              (muscles.isNullOrEmpty() || muscleNames.containsAll(muscles)) &&
-              (muscleGroups.isNullOrEmpty() || exercise.muscleGroup.name in muscleGroups) &&
-              (equipment.isNullOrEmpty() || requirements.containsAll(equipment))
-      ) {
-        val used = usage[exercise.id]
-        exercises +=
-            exercise.id to
-                FoundCoachExercise(
-                    exercise.syncId,
-                    exercise.name,
-                    muscleNames,
-                    requirements,
-                    exercise.muscleGroup.name,
-                    exercise.type.name,
-                    used?.lastUsedAt,
-                    used?.workoutCount ?: 0,
-                    currentSectionIds =
-                        snapshot.exercises
-                            .filter { it.exerciseId == exercise.id }
-                            .map { it.sectionId },
-                )
-      }
-    }
-    return exercises
-        .sortedWith(
-            compareByDescending<Pair<Long, FoundCoachExercise>> {
-                  it.second.lastUsedAt ?: Long.MIN_VALUE
-                }
-                .thenByDescending { it.second.workoutCount }
-                .thenBy { it.second.name }
-                .thenBy { it.second.id }
-        )
-        .take(limit.coerceIn(1, 20))
-        .map { (id, found) ->
-          found.copy(lastWorkoutSets = database.coachDao().exerciseHistory(id, 1))
-        }
-  }
-
-  suspend fun history(exerciseId: String): List<CoachHistorySet> {
-    val exercise =
-        database.exerciseDao().getAllOnce().singleOrNull { it.syncId == exerciseId }
-            ?: return emptyList()
-    val history = database.coachDao().exerciseHistory(exercise.id, 3)
-    return history
   }
 
   private fun restSnapshot(): SnapshotRest? =
@@ -249,16 +245,3 @@ constructor(
   private fun String.decodeLongs(): Set<Long> =
       runCatching { json.decodeFromString<List<Long>>(this).toSet() }.getOrDefault(emptySet())
 }
-
-data class FoundCoachExercise(
-    val id: String,
-    val name: String,
-    val muscles: Set<String>,
-    val equipment: Set<String>,
-    val muscleGroup: String = "",
-    val type: String = "",
-    val lastUsedAt: Long? = null,
-    val workoutCount: Int = 0,
-    val lastWorkoutSets: List<CoachHistorySet> = emptyList(),
-    val currentSectionIds: List<String> = emptyList(),
-)

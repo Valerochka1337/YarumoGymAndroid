@@ -18,6 +18,52 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class CoachAgentTest {
   @Test
+  fun `automatic assessment accepts a clarification without demanding a proposal`() = runTest {
+    val api = FakeCoachApi { index ->
+      if (index == 1) toolResponse(call("state")) else answer("Отдых был короче обычного?")
+    }
+    val result =
+        agent(api).reply(snapshot(), "Падение повторений", tools(), automaticProposal = true) {
+          CoachToolOutcome("{}")
+        }
+    assertEquals(CoachRunStatus.ANSWER, result.status)
+    assertEquals(2, api.requests.size)
+  }
+
+  @Test
+  fun `automatic no change does not become a visible answer while a direct question gets an answer`() =
+      runTest {
+        for (automatic in listOf(true, false)) {
+          val api = FakeCoachApi {
+            answer(
+                """{"decision":"no_change","text":"Результат соответствует истории","quick_replies":[]}"""
+            )
+          }
+          val result =
+              agent(api).reply(snapshot(), "Оцени", tools(), automaticProposal = automatic) {
+                error("No mutation")
+              }
+          assertEquals(
+              if (automatic) CoachRunStatus.NO_CHANGE else CoachRunStatus.ANSWER,
+              result.status,
+          )
+          assertEquals(1, api.requests.size)
+        }
+      }
+
+  @Test
+  fun `rejected request does not blame model tool support`() = runTest {
+    for (status in listOf(400, 404, 422)) {
+      val result =
+          agent(FakeCoachApi { throw BackendException(status, "invalid_request", "private") })
+              .reply(snapshot(), "Проверка", tools()) { error("No tools expected") }
+      assertEquals(CoachRunStatus.ERROR, result.status)
+      assertFalse(result.text.contains("поддержкой инструментов"))
+      assertFalse(result.text.contains("private"))
+    }
+  }
+
+  @Test
   fun `prompt failure returns an error without sending model requests`() = runTest {
     val gateway =
         object : CoachModelGateway {
@@ -155,10 +201,11 @@ class CoachAgentTest {
     assertEquals("Продолжай", result.text)
     assertEquals(2, result.requestCount)
     assertEquals(1, result.toolCount)
-    assertEquals(
-        AiApiMessage.text("system", "Server coach prompt"),
-        api.requests[0].messages.first(),
-    )
+    val system = api.requests[0].messages.first()
+    assertEquals("system", system.role)
+    assertTrue(system.content.toString().contains("Server coach prompt"))
+    assertTrue(system.content.toString().contains("actual_rir_at_least_four"))
+    assertTrue(system.content.toString().contains("Не спрашивай после каждого подхода"))
     assertEquals(api.requests[0].messages.first(), api.requests[1].messages.first())
     assertEquals("tool", api.requests[1].messages.last().role)
     assertEquals("state", api.requests[1].messages.last().toolCallId)

@@ -94,8 +94,12 @@ data class CoachJournalPage(
     val watermark: Long,
 )
 
-class BackendException(val status: Int, val code: String, override val message: String) :
-    Exception(message)
+class BackendException(
+    val status: Int,
+    val code: String,
+    override val message: String,
+    internal val fromHttpResponse: Boolean = false,
+) : Exception(message)
 
 /** Three-way comparison preserves unrelated remote changes and refuses silent overwrites. */
 object CloudMerge {

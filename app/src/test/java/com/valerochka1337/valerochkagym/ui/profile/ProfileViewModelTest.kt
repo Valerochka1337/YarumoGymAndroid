@@ -18,10 +18,12 @@ import com.valerochka1337.valerochkagym.domain.StrengthPlannerSaveResult
 import com.valerochka1337.valerochkagym.service.WallClock
 import com.valerochka1337.valerochkagym.util.MainDispatcherRule
 import java.util.TimeZone
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -31,6 +33,31 @@ import org.junit.Test
 
 class ProfileViewModelTest {
   @get:Rule val mainDispatcherRule = MainDispatcherRule()
+
+  @Test
+  fun `rep range draft restores validates and clears`() =
+      runTest(mainDispatcherRule.testDispatcher.scheduler) {
+        val repository = FakeProfileRepository()
+        val handle = SavedStateHandle()
+        val first = ProfileViewModel(repository, gate(repository), handle)
+        advanceUntilIdle()
+        first.setRepRange("6", "12")
+        val restored = ProfileViewModel(repository, gate(repository), handle)
+        advanceUntilIdle()
+        assertEquals("6", restored.uiState.value.preferredRepMin)
+        assertEquals("12", restored.uiState.value.preferredRepMax)
+        restored.save()
+        advanceUntilIdle()
+        assertEquals(6, repository.saved?.preferredRepMin)
+        restored.setRepRange("12", "6")
+        restored.save()
+        assertNotNull(restored.uiState.value.error)
+        restored.setRepRange("", "")
+        restored.save()
+        advanceUntilIdle()
+        assertEquals(null, repository.saved?.preferredRepMin)
+        assertEquals(null, repository.saved?.preferredRepMax)
+      }
 
   @Test
   fun `invalid optional values show error and valid empty profile saves`() =
@@ -114,6 +141,79 @@ class ProfileViewModelTest {
         assertEquals(listOf(7L), recreated.uiState.value.keyExercises.mapNotNull { it.exerciseId })
       }
 
+  @Test
+  fun `edits save automatically and invalid input keeps the last saved value`() =
+      runTest(mainDispatcherRule.testDispatcher.scheduler) {
+        val repository = FakeProfileRepository()
+        val viewModel = ProfileViewModel(repository, gate(repository), SavedStateHandle())
+        advanceUntilIdle()
+        viewModel.setSessions("3")
+        advanceUntilIdle()
+        assertEquals(3, repository.saved?.plannedSessionsPerWeek)
+        viewModel.setSessions("9")
+        advanceUntilIdle()
+        assertEquals(3, repository.saved?.plannedSessionsPerWeek)
+        assertNotNull(viewModel.uiState.value.error)
+        viewModel.setSessions("4")
+        viewModel.setDuration("60")
+        viewModel.setConstraints("Текст")
+        advanceUntilIdle()
+        assertEquals(4, repository.saved?.plannedSessionsPerWeek)
+        assertEquals(60, repository.saved?.preferredSessionDurationMinutes)
+        assertEquals("Текст", repository.saved?.manualConstraints)
+      }
+
+  @Test
+  fun `typing during a pending save persists the latest complete input`() =
+      runTest(mainDispatcherRule.testDispatcher.scheduler) {
+        val repository = FakeProfileRepository().apply { saveDelayMillis = 100 }
+        val viewModel = ProfileViewModel(repository, gate(repository), SavedStateHandle())
+        advanceUntilIdle()
+        viewModel.setConstraints("П")
+        runCurrent()
+        assertTrue(viewModel.uiState.value.isSaving)
+        viewModel.setConstraints("Полный текст")
+        viewModel.setDuration("45")
+        assertEquals("Полный текст", viewModel.uiState.value.manualConstraints)
+        advanceUntilIdle()
+        assertEquals("Полный текст", repository.saved?.manualConstraints)
+        assertEquals(45, repository.saved?.preferredSessionDurationMinutes)
+        assertEquals(false, viewModel.uiState.value.isSaving)
+      }
+
+  @Test
+  fun `failed autosave retains input and the next edit retries`() =
+      runTest(mainDispatcherRule.testDispatcher.scheduler) {
+        val repository = FakeProfileRepository().apply { failSave = true }
+        val viewModel = ProfileViewModel(repository, gate(repository), SavedStateHandle())
+        advanceUntilIdle()
+        viewModel.setSessions("3")
+        advanceUntilIdle()
+        assertEquals("3", viewModel.uiState.value.plannedSessionsPerWeek)
+        assertNotNull(viewModel.uiState.value.error)
+        repository.failSave = false
+        viewModel.setSessions("4")
+        advanceUntilIdle()
+        assertEquals(4, repository.saved?.plannedSessionsPerWeek)
+        assertEquals(null, viewModel.uiState.value.error)
+      }
+
+  @Test
+  fun `invalid input retains its error when an earlier save emits`() =
+      runTest(mainDispatcherRule.testDispatcher.scheduler) {
+        val repository = FakeProfileRepository().apply { saveDelayMillis = 100 }
+        val viewModel = ProfileViewModel(repository, gate(repository), SavedStateHandle())
+        advanceUntilIdle()
+        viewModel.setSessions("3")
+        runCurrent()
+        viewModel.setSessions("9")
+        advanceUntilIdle()
+        assertEquals(3, repository.saved?.plannedSessionsPerWeek)
+        assertEquals("9", viewModel.uiState.value.plannedSessionsPerWeek)
+        assertNotNull(viewModel.uiState.value.error)
+        assertEquals(false, viewModel.uiState.value.isSaving)
+      }
+
   private fun gate(repository: ProfileRepository) =
       AiProfilePromptGate(SettingsRepository(FakeDataStore()), repository, WallClock { 1L })
 }
@@ -121,6 +221,12 @@ class ProfileViewModelTest {
 private class FakeProfileRepository : ProfileRepository {
   var target = ProfileEditTarget("owner-a", "owner-a", 1L)
   var saved: BasicProfile? = null
+  var saveDelayMillis = 0L
+  var failSave = false
+  private val profiles = mutableMapOf<ProfileEditTarget, MutableStateFlow<BasicProfile?>>()
+
+  private fun profileFlow(target: ProfileEditTarget) =
+      profiles.getOrPut(target) { MutableStateFlow(BasicProfile()) }
 
   override fun observeCurrent(): Flow<ProfileEditorSnapshot?> =
       flowOf(ProfileEditorSnapshot(target, BasicProfile()))
@@ -129,10 +235,14 @@ private class FakeProfileRepository : ProfileRepository {
       ProfileEditorSnapshot(target, BasicProfile())
 
   override fun observe(target: ProfileEditTarget): Flow<BasicProfile?> =
-      flowOf(if (target == this.target) BasicProfile() else null)
+      if (target == this.target) profileFlow(target) else flowOf(null)
 
   override suspend fun save(target: ProfileEditTarget, profile: BasicProfile): ProfileSaveResult {
+    delay(saveDelayMillis)
+    if (failSave) error("Write failed")
+    if (target != this.target) return ProfileSaveResult.StaleTarget
     saved = profile
+    profileFlow(target).value = profile
     return ProfileSaveResult.Saved
   }
 }

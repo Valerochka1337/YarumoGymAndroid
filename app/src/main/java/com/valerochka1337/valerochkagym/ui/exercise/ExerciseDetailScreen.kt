@@ -1,6 +1,7 @@
 package com.valerochka1337.valerochkagym.ui.exercise
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -17,20 +18,28 @@ import androidx.compose.material.icons.automirrored.rounded.ShowChart
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.EmojiEvents
 import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -52,6 +61,7 @@ import com.valerochka1337.valerochkagym.ui.analysis.charts.LinePoint
 import com.valerochka1337.valerochkagym.ui.analysis.charts.TrendLineChart
 import com.valerochka1337.valerochkagym.ui.analysis.formatDate
 import com.valerochka1337.valerochkagym.ui.analysis.formatDateWithYear
+import com.valerochka1337.valerochkagym.ui.components.CatalogActionsViewModel
 import com.valerochka1337.valerochkagym.ui.components.CircleIconButton
 import com.valerochka1337.valerochkagym.ui.components.ExerciseAvatar
 import com.valerochka1337.valerochkagym.ui.components.GlowBackground
@@ -66,51 +76,68 @@ fun ExerciseDetailScreen(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: ExerciseDetailViewModel = hiltViewModel(),
+    catalogActions: CatalogActionsViewModel = hiltViewModel(),
 ) {
   val state by viewModel.uiState.collectAsStateWithLifecycle()
   val editor by viewModel.editor.collectAsStateWithLifecycle()
   val personalHintEditor by viewModel.personalHintEditor.collectAsStateWithLifecycle()
+  val copyBusy by catalogActions.busy.collectAsStateWithLifecycle()
+  val copyMessage by catalogActions.message.collectAsStateWithLifecycle()
+  val snackbarHostState = remember { SnackbarHostState() }
   val haptics = gymHaptics()
 
+  LaunchedEffect(copyMessage) {
+    copyMessage?.let { message ->
+      catalogActions.clearMessage()
+      snackbarHostState.showSnackbar(message)
+    }
+  }
+
   GlowBackground(modifier = modifier) {
-    Column(modifier = Modifier.fillMaxSize()) {
-      ExerciseHeader(
-          exercise = state.exercise,
-          requirements = state.requirements,
-          onBack = onBack,
-          onEdit = {
-            haptics.tap()
-            viewModel.openEditor()
-          },
-      )
-      state.exercise?.let {
-        com.valerochka1337.valerochkagym.ui.components.CatalogOriginRow(
-            it.origin,
-            "exercise",
-            it.syncId,
+    Box(modifier = Modifier.fillMaxSize()) {
+      Column(modifier = Modifier.fillMaxSize()) {
+        ExerciseHeader(
+            exercise = state.exercise,
+            requirements = state.requirements,
+            copyBusy = copyBusy,
+            onBack = onBack,
+            onEdit = {
+              haptics.tap()
+              viewModel.openEditor()
+            },
+            onCopy = {
+              state.exercise?.let { exercise ->
+                haptics.tap()
+                catalogActions.copy("exercise", exercise.syncId)
+              }
+            },
         )
+        when {
+          state.loading ->
+              Column(
+                  modifier = Modifier.fillMaxSize(),
+                  horizontalAlignment = Alignment.CenterHorizontally,
+                  verticalArrangement = Arrangement.Center,
+              ) {
+                CircularProgressIndicator()
+              }
+          state.exercise == null -> MissingExercise()
+          else ->
+              ExerciseDetailContent(
+                  exercise = state.exercise!!,
+                  loads = state.loads,
+                  requirements = state.requirements,
+                  statistics = state.statistics,
+                  personalHint = state.personalHint?.text,
+                  onEditPersonalHint = viewModel::openPersonalHintEditor,
+                  onUnpinPersonalHint = viewModel::unpinPersonalHint,
+              )
+        }
       }
-      when {
-        state.loading ->
-            Column(
-                modifier = Modifier.fillMaxSize(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-            ) {
-              CircularProgressIndicator()
-            }
-        state.exercise == null -> MissingExercise()
-        else ->
-            ExerciseDetailContent(
-                exercise = state.exercise!!,
-                loads = state.loads,
-                requirements = state.requirements,
-                statistics = state.statistics,
-                personalHint = state.personalHint?.text,
-                onEditPersonalHint = viewModel::openPersonalHintEditor,
-                onUnpinPersonalHint = viewModel::unpinPersonalHint,
-            )
-      }
+      SnackbarHost(
+          hostState = snackbarHostState,
+          modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp),
+      )
     }
   }
 
@@ -133,13 +160,17 @@ fun ExerciseDetailScreen(
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
-private fun ExerciseHeader(
+internal fun ExerciseHeader(
     exercise: ExerciseEntity?,
     requirements: ExerciseEquipmentRequirements,
+    copyBusy: Boolean = false,
     onBack: () -> Unit,
     onEdit: () -> Unit,
+    onCopy: () -> Unit,
 ) {
+  var menuExpanded by remember { mutableStateOf(false) }
   TopAppBar(
+      modifier = Modifier.padding(top = 8.dp),
       navigationIcon = {
         IconButton(onClick = onBack) {
           Icon(
@@ -178,6 +209,26 @@ private fun ExerciseHeader(
               contentDescription = "Редактировать упражнение",
               onClick = onEdit,
           )
+        }
+        if (exercise?.origin == "STANDARD") {
+          Box {
+            IconButton(onClick = { menuExpanded = true }) {
+              Icon(Icons.Rounded.MoreVert, contentDescription = "Меню упражнения")
+            }
+            DropdownMenu(
+                expanded = menuExpanded,
+                onDismissRequest = { menuExpanded = false },
+            ) {
+              DropdownMenuItem(
+                  text = { Text("Создать личную копию") },
+                  enabled = !copyBusy,
+                  onClick = {
+                    menuExpanded = false
+                    onCopy()
+                  },
+              )
+            }
+          }
         }
       },
       colors =

@@ -100,6 +100,8 @@ constructor(
 
   private fun supportsAnnotatedWorkoutWrites(): Boolean = supports("annotated-workout-writes")
 
+  private fun supportsWorkoutRir(): Boolean = supports("workout-rir-v1")
+
   /** Missing response header is a downgrade, so an old owner cache is never reused. */
   private fun cacheAcceptedCapabilities(owner: String) {
     db.execSQL(
@@ -127,7 +129,7 @@ constructor(
           }
     }
     if (!supportsAgenticPlanner())
-      result = result.filterKeys { !it.startsWith("planner_exercise_preferences:") }
+        result = result.filterKeys { !it.startsWith("planner_exercise_preferences:") }
     if (!supportsAnnotatedWorkoutWrites()) {
       result =
           result
@@ -140,6 +142,12 @@ constructor(
                 }
               }
               .toMap()
+    }
+    if (!supportsWorkoutRir()) {
+      result =
+          result.mapValues { (key, payload) ->
+            if (key.startsWith("workout:")) stripWorkoutRir(payload) else payload
+          }
     }
     return result
   }
@@ -173,6 +181,10 @@ constructor(
               else record.copy(payload = record.payload?.let(::stripEmptySetNotes))
             }
           }
+          .map { record ->
+            if (supportsWorkoutRir() || record.kind != "workout" || record.deleted) record
+            else record.copy(payload = record.payload?.let(::stripWorkoutRir))
+          }
 
   private fun capabilityFilteredBaseline(
       records: Map<String, CloudRecord>,
@@ -190,7 +202,7 @@ constructor(
           }
     }
     if (!supportsAgenticPlanner())
-      result = result.filterKeys { !it.startsWith("planner_exercise_preferences:") }
+        result = result.filterKeys { !it.startsWith("planner_exercise_preferences:") }
     if (!supportsAnnotatedWorkoutWrites()) {
       result =
           result
@@ -205,7 +217,96 @@ constructor(
               }
               .toMap()
     }
+    if (!supportsWorkoutRir()) {
+      result =
+          result.mapValues { (_, record) ->
+            if (record.kind == "workout" && !record.deleted)
+                record.copy(payload = record.payload?.let(::stripWorkoutRir))
+            else record
+          }
+    }
     return result
+  }
+
+  private val workoutRirFields = setOf("targetRir", "actualRir", "actualRirAtLeastFour")
+
+  private fun hasWorkoutRir(payload: JsonObject): Boolean =
+      payload["exercises"]?.jsonArray.orEmpty().any { section ->
+        section.jsonObject["sets"]?.jsonArray.orEmpty().any { set ->
+          set.jsonObject.keys.any { it in workoutRirFields }
+        }
+      }
+
+  private fun mapWorkoutSets(
+      payload: JsonObject,
+      transform: (JsonObject) -> JsonObject,
+  ): JsonObject =
+      payload
+          .toMutableMap()
+          .apply {
+            val exercises = payload["exercises"]?.jsonArray ?: return@apply
+            put(
+                "exercises",
+                JsonArray(
+                    exercises.map { section ->
+                      val item = section.jsonObject
+                      JsonObject(
+                          item.toMutableMap().apply {
+                            val sets = item["sets"]?.jsonArray ?: return@apply
+                            put("sets", JsonArray(sets.map { transform(it.jsonObject) }))
+                          }
+                      )
+                    }
+                ),
+            )
+          }
+          .let(::JsonObject)
+
+  private fun stripWorkoutRir(payload: JsonObject): JsonObject =
+      mapWorkoutSets(payload) { JsonObject(it - workoutRirFields) }
+
+  private fun preserveWorkoutRir(payload: JsonObject, local: JsonObject?): JsonObject {
+    if (local == null) return payload
+    val localSets =
+        local["exercises"]
+            ?.jsonArray
+            .orEmpty()
+            .flatMap { it.jsonObject["sets"]?.jsonArray.orEmpty() }
+            .map(JsonElement::jsonObject)
+            .associateBy { it["syncId"]?.jsonPrimitive?.contentOrNull }
+    return mapWorkoutSets(payload) { incoming ->
+      val localSet = localSets[incoming["syncId"]?.jsonPrimitive?.contentOrNull]
+      if (localSet == null) incoming
+      else
+          JsonObject(
+              incoming.toMutableMap().apply {
+                workoutRirFields.forEach { field -> localSet[field]?.let { put(field, it) } }
+              }
+          )
+    }
+  }
+
+  /**
+   * Sends a deterministic compatibility copy when the negotiated server cannot represent RIR. The
+   * durable request remains a byte-exact journal; this derived operation was never dispatched with
+   * the original operation ID, so it can retry safely after a lost response.
+   */
+  private fun compatibleRetainedPush(push: CloudPush): CloudPush {
+    if (supportsWorkoutRir() || push.changes.none { it.payload?.let(::hasWorkoutRir) == true })
+        return push
+    return push.copy(
+        operationId =
+            UUID.nameUUIDFromBytes(
+                    "ValerochkaGym.workout-rir-compat-v1:${push.operationId}".toByteArray(UTF_8)
+                )
+                .toString(),
+        changes =
+            push.changes.map { change ->
+              if (change.kind == "workout" && !change.deleted)
+                  change.copy(payload = change.payload?.let(::stripWorkoutRir))
+              else change
+            },
+    )
   }
 
   private fun hasSetNote(payload: JsonObject): Boolean =
@@ -374,6 +475,10 @@ constructor(
             "backend_conflict_copies",
             "backend_rejected_operations",
             "coach_sync_state",
+            "coach_runs",
+            "coach_session_outbox",
+            "coach_receipt_outbox",
+            "coach_dirty_sessions",
         )
         .forEach {
           val personal =
@@ -1094,7 +1199,18 @@ constructor(
                         r.kind == "exercise" &&
                         local[r.key]?.get("isCustom")?.toString() == "false")
           }
-      PortableData(db).apply(incoming.filter { !it.deleted }, incoming.filter { it.deleted })
+      val applicable =
+          if (supportsWorkoutRir()) incoming
+          else
+              incoming.map { record ->
+                if (record.kind == "workout" && !record.deleted)
+                    record.copy(
+                        payload =
+                            record.payload?.let { preserveWorkoutRir(it, rawCurrent[record.key]) }
+                    )
+                else record
+              }
+      PortableData(db).apply(applicable.filter { !it.deleted }, applicable.filter { it.deleted })
       remote.records.forEach(::saveBaseline)
       if (rejectedByRevisionConflict) {
         db.execSQL("DELETE FROM backend_outbox WHERE id=1")
@@ -1162,19 +1278,29 @@ constructor(
             cacheAcceptedCapabilities(user)
             var rejectedByRevisionConflict = false
             if (pending != null) {
-              val pendingHasUnsupportedCapability = pending.first.changes.any(::isUnsupportedChange)
+              val pendingPush =
+                  database.withTransaction {
+                    assertOwner(user)
+                    if (pending.second) pending.first else compatibleRetainedPush(pending.first)
+                  }
+              val pendingHasUnsupportedCapability = pendingPush.changes.any(::isUnsupportedChange)
               if (pendingHasUnsupportedCapability) {
                 mutableStatus.value = "Часть данных ожидает поддержку сервера"
               } else if (!pending.second) {
                 try {
-                  send(user, pending.first)
+                  send(
+                      user,
+                      pendingPush,
+                      retainedOperationId =
+                          pending.first.operationId.takeIf { pendingPush != pending.first },
+                  )
                 } catch (error: BackendException) {
                   if (error.status == 409 && error.code == "revision_conflict") {
                     database.withTransaction {
                       assertOwner(user)
                       db.execSQL(
                           "INSERT OR IGNORE INTO backend_rejected_operations(operationId,owner) VALUES(?,?)",
-                          arrayOf(pending.first.operationId, user),
+                          arrayOf(pendingPush.operationId, user),
                       )
                     }
                     rejectedByRevisionConflict = true
@@ -1326,7 +1452,11 @@ constructor(
         }
       }
 
-  private suspend fun send(user: String, push: CloudPush) {
+  private suspend fun send(
+      user: String,
+      push: CloudPush,
+      retainedOperationId: String? = null,
+  ) {
     assertOwner(user)
     var sent = push
     var acknowledgedSession: BackendSessionSnapshot? = null
@@ -1338,16 +1468,18 @@ constructor(
                     throw BackendException(409, "outbox_missing", "Запрос изменился")
                 it.getString(0)
               }
-      // The operation identity proves the bytes belong to this attempt without normalizing them.
-      if (api.json.decodeFromString<CloudPush>(raw).operationId != value.operationId)
+      // A compatibility dispatch keeps its source journal byte-exact while sending derived bytes.
+      val expectedStoredOperationId = retainedOperationId ?: value.operationId
+      if (api.json.decodeFromString<CloudPush>(raw).operationId != expectedStoredOperationId)
           throw BackendException(409, "outbox_changed", "Запрос изменился")
+      val requestBytes = if (retainedOperationId == null) raw else api.json.encodeToString(value)
       val dispatch =
           tokens.snapshot() ?: throw BackendException(401, "owner_changed", "Аккаунт изменился")
       val response =
           api.authorizedRawResponse(
               method = "POST",
               path = "/sync",
-              rawBody = raw.encodeToByteArray(),
+              rawBody = requestBytes.encodeToByteArray(),
               expectedOwner = user,
               expectedSessionEpoch = dispatch.epoch,
               retryOnUnauthorized = true,

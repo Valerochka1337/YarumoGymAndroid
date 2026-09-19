@@ -13,16 +13,15 @@ import com.valerochka1337.valerochkagym.ui.navigation.GymRoutes
 
 /** Notification construction is independent of permission; the durable chat remains the source. */
 internal object CoachAlertNotificationFactory {
-  const val CHANNEL_ID = "live_coach"
+  const val CHANNEL_ID = "live_coach_messages"
   const val NOTIFICATION_ID = 1003
 
   fun createChannel(manager: NotificationManager) {
     manager.createNotificationChannel(
-        NotificationChannel(CHANNEL_ID, "Чат с тренером", NotificationManager.IMPORTANCE_LOW)
+        NotificationChannel(CHANNEL_ID, "Чат с тренером", NotificationManager.IMPORTANCE_HIGH)
             .apply {
               description = "Новые сообщения тренера во время активной тренировки"
-              setSound(null, null)
-              enableVibration(false)
+              enableVibration(true)
               setShowBadge(false)
             },
     )
@@ -44,8 +43,8 @@ internal object CoachAlertNotificationFactory {
         )
     return Notification.Builder(context, CHANNEL_ID)
         .setSmallIcon(R.drawable.ic_notification_gym)
-        .setContentTitle("Тренер ждёт в чате")
-        .setContentText("Откройте тренировку, чтобы посмотреть обновление.")
+        .setContentTitle("Новое сообщение тренера")
+        .setContentText("Откройте диалог Live Coach, чтобы прочитать сообщение.")
         .setContentIntent(pending)
         .setAutoCancel(true)
         .setVisibility(Notification.VISIBILITY_PRIVATE)

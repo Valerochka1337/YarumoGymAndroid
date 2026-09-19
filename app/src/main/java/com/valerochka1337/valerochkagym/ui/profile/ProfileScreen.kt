@@ -63,6 +63,7 @@ fun ProfileScreen(
       onSessions = viewModel::setSessions,
       onDuration = viewModel::setDuration,
       onConstraints = viewModel::setConstraints,
+      onRepRange = viewModel::setRepRange,
       onEquipment = viewModel::toggleEquipment,
       onPromptDisabled = viewModel::setPromptDisabled,
       onKeyExercise = {
@@ -89,10 +90,6 @@ fun ProfileScreen(
         haptics.tap()
         viewModel.setPlannerPreferenceSheet(it)
       },
-      onSave = {
-        haptics.confirm()
-        viewModel.save()
-      },
       modifier = modifier,
   )
 }
@@ -110,13 +107,13 @@ internal fun ProfileScreenContent(
     onConstraints: (String) -> Unit,
     onEquipment: (String) -> Unit,
     onPromptDisabled: (Boolean) -> Unit,
+    onRepRange: (String, String) -> Unit = { _, _ -> },
     onKeyExercise: (Long) -> Unit = {},
     onKeyPriority: (Long, KeyExercisePriority) -> Unit = { _, _ -> },
     onRemoveKeyExercise: (String) -> Unit = {},
     onKeySheet: (Boolean) -> Unit = {},
     onPlannerPreference: (Long, PlannerExercisePreference?) -> Unit = { _, _ -> },
     onPlannerPreferenceSheet: (Boolean) -> Unit = {},
-    onSave: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
   GlowBackground(modifier = modifier) {
@@ -157,6 +154,54 @@ internal fun ProfileScreenContent(
               ::goalLabel,
               onGoal,
           )
+          GymCard(modifier = Modifier.fillMaxWidth()) {
+            Text("Диапазон повторений", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Необязательно. Тренер учитывает этот ориентир вместе с историей упражнения и самочувствием.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+              listOf(3 to 6, 6 to 12, 8 to 14, 12 to 20).forEach { (min, max) ->
+                FilterChip(
+                    selected =
+                        state.preferredRepMin == min.toString() &&
+                            state.preferredRepMax == max.toString(),
+                    onClick = { onRepRange(min.toString(), max.toString()) },
+                    label = { Text("$min–$max") },
+                )
+              }
+              FilterChip(
+                  selected = state.preferredRepMin.isBlank() && state.preferredRepMax.isBlank(),
+                  onClick = { onRepRange("", "") },
+                  label = { Text("Не задан") },
+              )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+              OutlinedTextField(
+                  state.preferredRepMin,
+                  { onRepRange(it, state.preferredRepMax) },
+                  modifier = Modifier.weight(1f),
+                  label = { Text("От") },
+                  singleLine = true,
+                  keyboardOptions =
+                      androidx.compose.foundation.text.KeyboardOptions(
+                          keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
+                      ),
+              )
+              OutlinedTextField(
+                  state.preferredRepMax,
+                  { onRepRange(state.preferredRepMin, it) },
+                  modifier = Modifier.weight(1f),
+                  label = { Text("До") },
+                  singleLine = true,
+                  keyboardOptions =
+                      androidx.compose.foundation.text.KeyboardOptions(
+                          keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
+                      ),
+              )
+            }
+          }
           if (state.trainingGoal == TrainingGoal.STRENGTH) {
             GymCard(modifier = Modifier.fillMaxWidth()) {
               Text(
@@ -213,22 +258,22 @@ internal fun ProfileScreenContent(
             }
           }
           GymCard(modifier = Modifier.fillMaxWidth()) {
-              Text(
-                  "Предпочтения упражнений",
-                  style = MaterialTheme.typography.titleMedium,
-                  fontWeight = FontWeight.SemiBold,
-              )
-              Text(
-                  "Выберите чаще, реже или никогда для любого доступного упражнения.",
-                  style = MaterialTheme.typography.bodySmall,
-                  color = MaterialTheme.colorScheme.onSurfaceVariant,
-              )
-              Spacer(Modifier.height(8.dp))
-              PillButton(
-                  text = "Настроить (${state.plannerPreferences.size})",
-                  onClick = { onPlannerPreferenceSheet(true) },
-                  compact = true,
-              )
+            Text(
+                "Предпочтения упражнений",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                "Выберите чаще, реже или никогда для любого доступного упражнения.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            PillButton(
+                text = "Настроить (${state.plannerPreferences.size})",
+                onClick = { onPlannerPreferenceSheet(true) },
+                compact = true,
+            )
           }
           ProfileChoiceCard(
               "Опыт",
@@ -323,12 +368,10 @@ internal fun ProfileScreenContent(
                 modifier = Modifier.semantics { contentDescription = "Ошибка: $it" },
             )
           }
-          PillButton(
-              text = "Сохранить",
-              onClick = onSave,
-              enabled = !state.isSaving && state.target != null,
-              modifier =
-                  Modifier.fillMaxWidth().semantics { contentDescription = "Сохранить профиль" },
+          Text(
+              if (state.isSaving) "Сохраняем…" else "Изменения сохраняются автоматически",
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
           )
         }
       }

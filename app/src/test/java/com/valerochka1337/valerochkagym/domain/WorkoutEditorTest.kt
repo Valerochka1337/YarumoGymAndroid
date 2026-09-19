@@ -45,6 +45,136 @@ import org.junit.Test
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class WorkoutEditorTest : RoomDaoTest() {
+
+  @Test
+  fun `confirmed and rejected decisions survive editor recreation and reach model state`() =
+      runTest {
+        val workout = insertWorkout("memory")
+        val section = insertWorkoutExercise(workout, exercise("Press"))
+        val id = insertSet(section, 0, weightKg = 50.0, reps = 8)
+        val set = db.workoutDao().getSet(id)!!
+        val timer = RestTimerEngine(backgroundScope) { 0L }
+        val editor = coordinator(timer)
+        val packet =
+            WorkoutChangeSet.Packet(
+                listOf(WorkoutChangeSet.Operation.EditSet(set.syncId, weightKg = 47.5))
+            )
+        val rejected = editor.saveProposal("user", workout, packet, 0, Long.MAX_VALUE)!!
+        assertTrue(
+            editor.cancelProposal(
+                "user",
+                rejected.id,
+                reason = CoachRejectionReason.UNAVAILABLE_WEIGHT,
+            )
+        )
+        val accepted = coordinator(timer).saveProposal("user", workout, packet, 0, Long.MAX_VALUE)!!
+        assertEquals(
+            CommandResult.APPLIED,
+            coordinator(timer).confirmProposal("user", accepted.id, "accept-memory").result,
+        )
+        val records =
+            CoachDecisionMemory.decode(db.coachDao().context(workout)!!.decisionMemoryJson)
+        assertEquals(listOf("REJECTED", "APPLIED"), records.map { it.status })
+        assertEquals(CoachRejectionReason.UNAVAILABLE_WEIGHT, records.first().reason)
+        val state = WorkoutSnapshot("user", workout, 1, emptyList(), coachDecisions = records)
+        val wire = com.valerochka1337.valerochkagym.data.ai.CoachToolCodec.snapshotJson(state)
+        assertTrue(wire.contains("UNAVAILABLE_WEIGHT"))
+        assertTrue(wire.contains("APPLIED"))
+      }
+
+  @Test
+  fun `calculated proposal survives recreation applies atomically and undo restores RIR and targets`() =
+      runTest {
+        val workout = insertWorkout("autoregulated")
+        val section = insertWorkoutExercise(workout, exercise("Press"))
+        val doneId = insertSet(section, 0, weightKg = 100.0, reps = 8, isCompleted = true)
+        val nextId = insertSet(section, 1, weightKg = 100.0, reps = 8)
+        val done =
+            db.workoutDao()
+                .getSet(doneId)!!
+                .copy(
+                    completedAt = 1000,
+                    setType = "WORK",
+                    targetReps = 8,
+                    targetWeightKg = 100.0,
+                    legacyTargetRir = 9,
+                    actualRir = 1,
+                    reportedFeelingsJson = "[\"HARDER_THAN_EXPECTED\"]",
+                )
+        val next =
+            db.workoutDao()
+                .getSet(nextId)!!
+                .copy(setType = "WORK", targetReps = 8, targetWeightKg = 100.0)
+        db.workoutDao().updateSet(done)
+        db.workoutDao().updateSet(next)
+        val timer = RestTimerEngine(backgroundScope) { 0L }
+        val editor = coordinator(timer)
+        val proposal =
+            assertIsSaved(
+                editor.saveModelProposalResult(
+                    "user",
+                    workout,
+                    0,
+                    listOf(
+                        CoachChangeIntent.Autoregulate(
+                            com.valerochka1337.valerochkagym.domain.autoregulation
+                                .AutoregulationOptions()
+                        )
+                    ),
+                    Long.MAX_VALUE,
+                )
+            )
+        assertEquals(8, db.workoutDao().getSet(nextId)!!.reps)
+        val recreated = coordinator(timer)
+        assertEquals(
+            CommandResult.APPLIED,
+            recreated.confirmProposal("user", proposal.id, "calculated").result,
+        )
+        assertEquals(7, db.workoutDao().getSet(nextId)!!.reps)
+        assertEquals(done, db.workoutDao().getSet(doneId))
+        val undo = WorkoutChangeSet.Packet(listOf(WorkoutChangeSet.Operation.UndoLast))
+        assertEquals(
+            CommandResult.APPLIED,
+            recreated.submit("user", workout, "undo-calculated", 1, undo, authority(undo)).result,
+        )
+        assertEquals(8, db.workoutDao().getSet(nextId)!!.reps)
+        assertEquals(1, db.workoutDao().getSet(doneId)!!.actualRir)
+        assertEquals(9, db.workoutDao().getSet(doneId)!!.legacyTargetRir)
+      }
+
+  @Test
+  fun `model estimates a weight step as a proposal without applying it`() = runTest {
+    val workout = insertWorkout("guard")
+    val section = insertWorkoutExercise(workout, exercise("Press"))
+    val set = insertSet(section, 0, weightKg = 50.0, reps = 8)
+    val editor = coordinator(RestTimerEngine(backgroundScope) { 0L })
+    val proposal =
+        assertIsSaved(
+            editor.saveModelProposalResult(
+                "user",
+                workout,
+                0,
+                listOf(
+                    CoachChangeIntent.EditSet(
+                        db.workoutDao().getSet(set)!!.syncId,
+                        com.valerochka1337.valerochkagym.data.ai.CoachSetValues(
+                            setOf("weight_kg"),
+                            weightKg = 45.0,
+                        ),
+                        false,
+                    )
+                ),
+                Long.MAX_VALUE,
+            )
+        )
+    assertEquals(50.0, db.workoutDao().getSet(set)!!.weightKg!!, 0.0)
+    assertEquals(
+        CommandResult.APPLIED,
+        editor.confirmProposal("user", proposal.id, "confirm-estimate").result,
+    )
+    assertEquals(45.0, db.workoutDao().getSet(set)!!.weightKg!!, 0.0)
+  }
+
   @Test
   fun `model addition without history creates one empty set and rejects invalid insertion positions`() =
       runTest {
@@ -1070,7 +1200,7 @@ class WorkoutEditorTest : RoomDaoTest() {
       }
 
   @Test
-  fun `snapshot and local parser skip completed sets when anchoring the next set`() = runTest {
+  fun `snapshot skips completed sets when anchoring the next set`() = runTest {
     val workout = insertWorkout("workout")
     val section = insertWorkoutExercise(workout, exercise())
     val currentId = insertSet(section, 0, reps = 8)
@@ -1082,18 +1212,6 @@ class WorkoutEditorTest : RoomDaoTest() {
 
     assertEquals(db.workoutDao().getSet(currentId)!!.syncId, snapshot.currentSetId)
     assertEquals(db.workoutDao().getSet(nextId)!!.syncId, snapshot.nextSetId)
-    val packet =
-        requireNotNull(
-                LocalWorkoutCommandParser.parse(
-                    "поставь в следующем подходе 6 повторений",
-                    snapshot,
-                )
-            )
-            .packet
-    assertEquals(
-        db.workoutDao().getSet(nextId)!!.syncId,
-        (packet.operations.single() as WorkoutChangeSet.Operation.EditSet).setSyncId,
-    )
   }
 
   @Test
