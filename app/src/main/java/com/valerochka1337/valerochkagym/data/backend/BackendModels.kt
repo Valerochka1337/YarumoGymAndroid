@@ -99,6 +99,7 @@ class BackendException(
     val code: String,
     override val message: String,
     internal val fromHttpResponse: Boolean = false,
+    val retryAfterMillis: Long? = null,
 ) : Exception(message)
 
 /** Three-way comparison preserves unrelated remote changes and refuses silent overwrites. */

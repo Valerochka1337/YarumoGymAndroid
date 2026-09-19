@@ -157,9 +157,13 @@ interface CoachDao {
   @Query("DELETE FROM coach_receipt_outbox WHERE accountId=:accountId")
   suspend fun clearRemoteReceipts(accountId: String)
 
+  @Query("DELETE FROM coach_event_cursors WHERE accountId=:accountId")
+  suspend fun clearRemoteEventCursors(accountId: String)
+
   @androidx.room.Transaction
   suspend fun clearAccount(accountId: String) {
     clearDirtySessions(accountId)
+    clearRemoteEventCursors(accountId)
     clearRemoteRuns(accountId)
     clearRemoteSessions(accountId)
     clearRemoteReceipts(accountId)

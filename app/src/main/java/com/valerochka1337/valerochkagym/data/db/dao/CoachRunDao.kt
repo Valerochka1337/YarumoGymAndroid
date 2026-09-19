@@ -5,6 +5,15 @@ import com.valerochka1337.valerochkagym.data.db.entity.*
 
 @Dao
 interface CoachRunDao {
+  @Query("SELECT sequence FROM coach_event_cursors WHERE accountId=:owner AND workoutId=:workout")
+  suspend fun eventCursor(owner: String, workout: String): Long?
+
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun saveEventCursor(cursor: CoachEventCursorEntity)
+
+  @Query("DELETE FROM coach_event_cursors WHERE accountId=:accountId")
+  suspend fun clearEventCursors(accountId: String)
+
   @Query(
       "INSERT INTO coach_dirty_sessions(workoutId,generation) VALUES(:workoutId,1) ON CONFLICT(workoutId) DO UPDATE SET generation=generation+1"
   )
