@@ -9,6 +9,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -52,7 +53,6 @@ class ProfileScreenTest {
             onDuration = {},
             onConstraints = {},
             onEquipment = {},
-            onPromptDisabled = {},
             onRepRange = { min, max -> selected = min to max },
         )
       }
@@ -117,16 +117,12 @@ class ProfileScreenTest {
               onDuration = {},
               onConstraints = {},
               onEquipment = {},
-              onPromptDisabled = {},
           )
         }
       }
     }
-    compose
-        .onNodeWithContentDescription("Цель тренировок: Сила")
-        .performScrollTo()
-        .assertIsDisplayed()
-        .performClick()
+    compose.onNodeWithText("Сила").performScrollTo().assertIsDisplayed().performClick()
+    compose.onAllNodesWithText("Не задано")[2].performClick()
     compose.runOnIdle { assertNull(cleared) }
     compose.onNodeWithText("Проверьте данные профиля").performScrollTo().assertIsDisplayed()
     compose.onNodeWithContentDescription("Сохранить профиль").assertDoesNotExist()
@@ -151,7 +147,6 @@ class ProfileScreenTest {
             onDuration = {},
             onConstraints = {},
             onEquipment = {},
-            onPromptDisabled = {},
         )
       }
     }
@@ -186,7 +181,6 @@ class ProfileScreenTest {
               onDuration = {},
               onConstraints = {},
               onEquipment = {},
-              onPromptDisabled = {},
               onRemoveKeyExercise = { removed = it },
           )
         }
@@ -229,7 +223,6 @@ class ProfileScreenTest {
               onDuration = {},
               onConstraints = {},
               onEquipment = {},
-              onPromptDisabled = {},
               onRemoveKeyExercise = { removed = it },
           )
         }

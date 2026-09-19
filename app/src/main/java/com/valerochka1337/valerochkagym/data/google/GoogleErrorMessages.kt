@@ -2,8 +2,8 @@ package com.valerochka1337.valerochkagym.data.google
 
 /**
  * Единые формулировки временных (transient) ошибок доступа к Google — общие для выгрузки в Sheets
- * ([SheetsRepository]) и планирования в Calendar ([CalendarRepository]). Постоянные ошибки
- * формулируются по месту: они специфичны для конкретной операции (нет таблицы, нет прав и т.п.).
+ * ([SheetsRepository]). Постоянные ошибки формулируются по месту: они специфичны для конкретной
+ * операции (нет таблицы, нет прав и т.п.).
  */
 internal object GoogleErrorMessages {
 

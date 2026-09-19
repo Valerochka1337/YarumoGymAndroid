@@ -3,42 +3,8 @@ package com.valerochka1337.valerochkagym.data.google
 import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
-import retrofit2.Response
-import retrofit2.http.Body
-import retrofit2.http.DELETE
-import retrofit2.http.Header
-import retrofit2.http.POST
-import retrofit2.http.Path
 
-/**
- * Минимальный клиент Google Calendar API v3 для планирования тренировок. Токен передаётся явным
- * заголовком `Authorization` в каждом методе (как в [SheetsApi]) — access-токен добывается
- * suspend-операцией [GoogleAuth.getAccessToken], поэтому OkHttp-интерсептор не подходит.
- *
- * Base URL — `https://www.googleapis.com/` (отдельный `@Named("calendar")` Retrofit в
- * NetworkModule, т.к. отличается от Sheets-базы). Событие всегда создаётся в календаре `primary`.
- * Неизвестные поля ответов игнорируются (см. настройку `Json` в DI).
- */
-interface CalendarApi {
-
-  /** Создаёт событие в календаре `primary`; из ответа нужен только `id`. */
-  @POST("calendar/v3/calendars/primary/events")
-  suspend fun insertEvent(
-      @Header("Authorization") bearer: String,
-      @Body body: CalendarEventDto,
-  ): CalendarEventResponseDto
-
-  /**
-   * Удаляет событие календаря `primary`. Ответ без тела (`Response<Unit>`), чтобы вызывающий мог по
-   * коду отличить успех/404/410 от прочих ошибок.
-   */
-  @DELETE("calendar/v3/calendars/primary/events/{eventId}")
-  suspend fun deleteEvent(
-      @Header("Authorization") bearer: String,
-      @Path("eventId") eventId: String,
-  ): Response<Unit>
-}
-
+// Read-only codec for legacy journals; there is no Google Calendar client.
 /**
  * Тело `events.insert`. [start]/[end] задаются как `{"dateTime": "<ISO-8601 со смещением>"}`; при
  * наличии offset поле `timeZone` не требуется. [reminders] отключает дефолтные напоминания и

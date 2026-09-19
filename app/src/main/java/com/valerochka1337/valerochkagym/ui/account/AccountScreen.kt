@@ -312,11 +312,9 @@ fun AccountCard(vm: AccountViewModel = hiltViewModel()) {
   val catalogConflict by vm.catalogConflict.collectAsStateWithLifecycle()
   val busy by vm.busy.collectAsStateWithLifecycle()
   val message by vm.message.collectAsStateWithLifecycle()
-  val sessions by vm.sessions.collectAsStateWithLifecycle()
   var confirm by remember { mutableStateOf<String?>(null) }
   var deleteCode by remember { mutableStateOf("") }
   var deleting by remember { mutableStateOf(false) }
-  var showDevices by remember { mutableStateOf(false) }
   Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
     GymCard(Modifier.fillMaxWidth(), contentPadding = PaddingValues(0.dp)) {
       Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -376,33 +374,6 @@ fun AccountCard(vm: AccountViewModel = hiltViewModel()) {
     GymCard(Modifier.fillMaxWidth(), contentPadding = PaddingValues(0.dp)) {
       Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("Безопасность", style = MaterialTheme.typography.titleLarge)
-        TextButton(
-            onClick = {
-              showDevices = !showDevices
-              if (showDevices) vm.loadSessions()
-            },
-            enabled = !busy,
-        ) {
-          Text(if (showDevices) "Скрыть устройства" else "Мои устройства")
-        }
-        if (showDevices)
-            sessions.forEach { device ->
-              Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    device.deviceName + if (device.current) " · это устройство" else "",
-                    Modifier.weight(1f),
-                )
-                if (!device.current)
-                    TextButton(onClick = { vm.revoke(device.id) }, enabled = !busy) {
-                      Text("Выйти")
-                    }
-              }
-            }
-        if (showDevices)
-            TextButton(onClick = { confirm = "logout-all" }, enabled = !busy) {
-              Text("Выйти на всех устройствах")
-            }
-        HorizontalDivider()
         TextButton(onClick = { deleting = !deleting }, enabled = !busy) {
           Text(
               if (deleting) "Отменить удаление" else "Удалить аккаунт",
@@ -435,7 +406,6 @@ fun AccountCard(vm: AccountViewModel = hiltViewModel()) {
         when (action) {
           "delete" -> "Удалить аккаунт навсегда?"
           "logout" -> "Выйти из аккаунта?"
-          "logout-all" -> "Выйти на всех устройствах?"
           else -> "Заменить изменения?"
         }
     AlertDialog(
@@ -467,7 +437,7 @@ fun AccountCard(vm: AccountViewModel = hiltViewModel()) {
                   "local",
                   "server" -> vm.synchronize(action)
                   "delete" -> vm.delete(deleteCode)
-                  else -> vm.logout(action == "logout-all")
+                  else -> vm.logout(false)
                 }
               }
           ) {

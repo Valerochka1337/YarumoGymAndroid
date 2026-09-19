@@ -4,18 +4,11 @@ import com.valerochka1337.valerochkagym.data.calendar.CalendarLegacyMigration
 import com.valerochka1337.valerochkagym.data.calendar.CalendarMigrationGate
 import com.valerochka1337.valerochkagym.data.calendar.CalendarPlanRepository
 import com.valerochka1337.valerochkagym.data.calendar.RoomCalendarPlanRepository
-import com.valerochka1337.valerochkagym.data.google.AccountBoundGoogleAuth
-import com.valerochka1337.valerochkagym.data.google.CalendarRepository
-import com.valerochka1337.valerochkagym.data.google.CalendarRepositoryImpl
 import com.valerochka1337.valerochkagym.data.google.ConfigurationSheetsRepository
-import com.valerochka1337.valerochkagym.data.google.GoogleAuth
-import com.valerochka1337.valerochkagym.data.google.GoogleAuthManager
 import com.valerochka1337.valerochkagym.data.google.SheetsRepository
 import com.valerochka1337.valerochkagym.data.google.WorkoutImportRepository
 import com.valerochka1337.valerochkagym.data.schedule.WeeklyScheduleRepository
 import com.valerochka1337.valerochkagym.data.schedule.WeeklyScheduleRepositoryImpl
-import com.valerochka1337.valerochkagym.data.settings.CalendarAccountIdentity
-import com.valerochka1337.valerochkagym.data.settings.SettingsRepository
 import com.valerochka1337.valerochkagym.worker.WeeklyScheduleRecoveryScheduler
 import com.valerochka1337.valerochkagym.worker.WorkManagerWeeklyScheduleRecoveryScheduler
 import dagger.Binds
@@ -37,16 +30,6 @@ abstract class GoogleModule {
   @Singleton
   abstract fun bindCalendarMigrationGate(impl: CalendarLegacyMigration): CalendarMigrationGate
 
-  @Binds @Singleton abstract fun bindGoogleAuth(impl: GoogleAuthManager): GoogleAuth
-
-  @Binds
-  @Singleton
-  abstract fun bindCalendarAccountIdentity(impl: SettingsRepository): CalendarAccountIdentity
-
-  @Binds
-  @Singleton
-  abstract fun bindAccountBoundGoogleAuth(impl: GoogleAuthManager): AccountBoundGoogleAuth
-
   @Binds
   @Singleton
   abstract fun bindSheetsRepository(
@@ -58,10 +41,6 @@ abstract class GoogleModule {
   abstract fun bindConfigurationSheetsRepository(
       impl: com.valerochka1337.valerochkagym.data.backend.BackendUploadAdapter,
   ): ConfigurationSheetsRepository
-
-  @Binds
-  @Singleton
-  abstract fun bindCalendarRepository(impl: CalendarRepositoryImpl): CalendarRepository
 
   @Binds
   @Singleton

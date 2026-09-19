@@ -158,6 +158,7 @@ fun ActiveWorkoutScreen(
     viewModel: ActiveWorkoutViewModel = hiltViewModel(),
 ) {
   val state by viewModel.uiState.collectAsStateWithLifecycle()
+  val liveCoachEnabled by viewModel.liveCoachEnabled.collectAsStateWithLifecycle()
   val context = LocalContext.current
   val snackbarHostState = remember { SnackbarHostState() }
   val permissionPlatform = remember(context) { AndroidPermissionPlatform(context) }
@@ -249,6 +250,7 @@ fun ActiveWorkoutScreen(
                   onExerciseClick = onExerciseClick,
                   onOpenCoach = onOpenCoach,
                   unreadCoachMessages = state.unreadCoachMessages,
+                  liveCoachEnabled = liveCoachEnabled,
                   onFinish = viewModel::finish,
                   onDiscard = viewModel::discard,
                   onAddRestSeconds = viewModel::addRestSeconds,
@@ -348,6 +350,7 @@ internal fun ActiveWorkoutContent(
     onExerciseClick: (Long) -> Unit,
     onOpenCoach: () -> Unit = {},
     unreadCoachMessages: Int = 0,
+    liveCoachEnabled: Boolean = true,
     onFinish: () -> Unit,
     onDiscard: () -> Unit,
     onAddRestSeconds: (Int) -> Unit,
@@ -571,7 +574,11 @@ internal fun ActiveWorkoutContent(
               leadingIcon = Icons.Default.Check,
               modifier = Modifier.weight(1f),
           )
-          CoachActionButton(unreadCoachMessages = unreadCoachMessages, onOpenCoach = onOpenCoach)
+          if (liveCoachEnabled)
+              CoachActionButton(
+                  unreadCoachMessages = unreadCoachMessages,
+                  onOpenCoach = onOpenCoach,
+              )
         }
       } else {
         Row(
@@ -602,7 +609,11 @@ internal fun ActiveWorkoutContent(
                 },
             )
           }
-          CoachActionButton(unreadCoachMessages = unreadCoachMessages, onOpenCoach = onOpenCoach)
+          if (liveCoachEnabled)
+              CoachActionButton(
+                  unreadCoachMessages = unreadCoachMessages,
+                  onOpenCoach = onOpenCoach,
+              )
         }
       }
     }

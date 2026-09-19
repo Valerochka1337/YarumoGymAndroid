@@ -42,6 +42,45 @@ import org.junit.Test
 class RestTimerEngineTest {
 
   @Test
+  fun `combined rest ignores early low pulse and finishes only after timed phase and continuous low pulse`() =
+      runTest {
+        val engine = engine()
+        val finished = collectFinished(engine)
+        val id = engine.start(3, 110, 2)
+        engine.onHeartRate(90, 1000)
+        engine.onHeartRate(90, 3000)
+        assertTrue(engine.state.value is RestTimerState.Timed)
+        advanceSeconds(3)
+        assertEquals(RestTimerState.HeartRate(110, 2, 3000), engine.state.value)
+        assertEquals(id, engine.currentStartId())
+        assertTrue(finished.isEmpty())
+        engine.onHeartRate(100, 4000)
+        engine.onHeartRate(120, 5000)
+        engine.onHeartRate(100, 6000)
+        engine.onHeartRateUnavailable()
+        engine.onHeartRate(100, 8000)
+        assertTrue(finished.isEmpty())
+        engine.onHeartRate(100, 10000)
+        assertNull(engine.state.value)
+        assertEquals(1, finished.size)
+      }
+
+  @Test
+  fun `combined rest respects added time and skipping prevents the pulse phase`() = runTest {
+    val engine = engine()
+    val finished = collectFinished(engine)
+    engine.start(3, 110, 2)
+    engine.addSeconds(2)
+    advanceSeconds(3)
+    assertEquals(2, (engine.state.value as RestTimerState.Timed).remainingSec)
+    engine.skip()
+    advanceSeconds(3)
+    engine.onHeartRate(90, 10000)
+    assertNull(engine.state.value)
+    assertTrue(finished.isEmpty())
+  }
+
+  @Test
   fun `counting to zero decrements every second, shows the final frame, finishes once, then clears`() =
       runTest {
         val engine = engine()

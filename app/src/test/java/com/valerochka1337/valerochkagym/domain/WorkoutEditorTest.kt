@@ -424,7 +424,7 @@ class WorkoutEditorTest : RoomDaoTest() {
 
     completionEditor(engine, settings).completeSetFromUser(setId)
 
-    assertEquals(RestTimerState.HeartRate(110, 10, 0), engine.state.value)
+    assertEquals(RestTimerState.Timed(120, 120, 120_000, 110, 10), engine.state.value)
   }
 
   @Test

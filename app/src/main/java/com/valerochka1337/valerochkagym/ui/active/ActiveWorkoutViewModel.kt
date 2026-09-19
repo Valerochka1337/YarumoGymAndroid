@@ -146,6 +146,7 @@ constructor(
     private val personalHintRepository: ExercisePersonalHintRepository,
     private val permissionRecoveryController: PermissionRecoveryController? = null,
     private val coachDao: CoachDao? = null,
+    private val settings: com.valerochka1337.valerochkagym.data.settings.SettingsRepository? = null,
 ) : ViewModel() {
 
   @Inject
@@ -161,6 +162,7 @@ constructor(
       personalHintRepository: ExercisePersonalHintRepository,
       permissionRecoveryController: PermissionRecoveryController? = null,
       coachDao: CoachDao,
+      settings: com.valerochka1337.valerochkagym.data.settings.SettingsRepository,
   ) : this(
       repository,
       previousSetsUseCase,
@@ -173,7 +175,15 @@ constructor(
       personalHintRepository,
       permissionRecoveryController,
       coachDao,
+      settings,
   )
+
+  val liveCoachEnabled =
+      (settings?.settings?.map { it.liveCoachEnabled } ?: flowOf(true)).stateIn(
+          viewModelScope,
+          SharingStarted.WhileSubscribed(SUBSCRIPTION_TIMEOUT_MS),
+          true,
+      )
 
   /** Состояние таймера отдыха (null = неактивен) — пилюля на экране подписана прямо на движок. */
   val restTimer: StateFlow<RestTimerState?> = restTimerEngine.state
