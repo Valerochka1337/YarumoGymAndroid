@@ -66,7 +66,8 @@ constructor(
           sync.transfer,
           sessions.session,
       ) { entity, equipmentIds, _, _ ->
-        if (!targetStillCurrent(target)) null else entity?.toProfile(equipmentIds) ?: BasicProfile()
+        if (!targetStillCurrent(target)) null
+        else entity?.toProfile(equipmentIds) ?: BasicProfile.initial()
       }
 
   override suspend fun save(target: ProfileEditTarget, profile: BasicProfile): ProfileSaveResult =
@@ -188,7 +189,7 @@ constructor(
   }
 
   private suspend fun profileFor(scope: String): BasicProfile =
-      profileDao.get(scope)?.toProfile(profileDao.equipmentIds(scope)) ?: BasicProfile()
+      profileDao.get(scope)?.toProfile(profileDao.equipmentIds(scope)) ?: BasicProfile.initial()
 
   private fun currentTarget(): ProfileEditTarget? {
     val initialOwner = sync.owner()

@@ -54,7 +54,6 @@ class ProfileScreenTest {
             onEquipment = {},
             onPromptDisabled = {},
             onRepRange = { min, max -> selected = min to max },
-            onSave = {},
         )
       }
     }
@@ -95,9 +94,8 @@ class ProfileScreenTest {
   }
 
   @Test
-  fun `actual profile content exposes clearable choices validation error and save on compact font scale two`() {
+  fun `actual profile content exposes clearable choices validation error and autosave on compact font scale two`() {
     var cleared: TrainingGoal? = TrainingGoal.STRENGTH
-    var saves = 0
     compose.setContent {
       val density = LocalDensity.current
       CompositionLocalProvider(LocalDensity provides Density(density.density, fontScale = 2f)) {
@@ -120,7 +118,6 @@ class ProfileScreenTest {
               onConstraints = {},
               onEquipment = {},
               onPromptDisabled = {},
-              onSave = { saves++ },
           )
         }
       }
@@ -132,12 +129,11 @@ class ProfileScreenTest {
         .performClick()
     compose.runOnIdle { assertNull(cleared) }
     compose.onNodeWithText("Проверьте данные профиля").performScrollTo().assertIsDisplayed()
+    compose.onNodeWithContentDescription("Сохранить профиль").assertDoesNotExist()
     compose
-        .onNodeWithContentDescription("Сохранить профиль")
+        .onNodeWithText("Изменения сохраняются автоматически")
         .performScrollTo()
-        .assertIsEnabled()
-        .performClick()
-    compose.runOnIdle { org.junit.Assert.assertEquals(1, saves) }
+        .assertIsDisplayed()
   }
 
   @Test
@@ -156,7 +152,6 @@ class ProfileScreenTest {
             onConstraints = {},
             onEquipment = {},
             onPromptDisabled = {},
-            onSave = {},
         )
       }
     }
@@ -192,7 +187,6 @@ class ProfileScreenTest {
               onConstraints = {},
               onEquipment = {},
               onPromptDisabled = {},
-              onSave = {},
               onRemoveKeyExercise = { removed = it },
           )
         }
@@ -236,7 +230,6 @@ class ProfileScreenTest {
               onConstraints = {},
               onEquipment = {},
               onPromptDisabled = {},
-              onSave = {},
               onRemoveKeyExercise = { removed = it },
           )
         }

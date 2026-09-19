@@ -18,6 +18,7 @@ import com.valerochka1337.valerochkagym.domain.CompletedSetEditResult
 import com.valerochka1337.valerochkagym.domain.NoteSaveResult
 import com.valerochka1337.valerochkagym.domain.RoutineGymConflictException
 import com.valerochka1337.valerochkagym.domain.WorkoutWriteQueue
+import com.valerochka1337.valerochkagym.domain.canAddSet
 import java.util.UUID
 import javax.inject.Inject
 import kotlinx.coroutines.flow.Flow
@@ -226,6 +227,9 @@ constructor(
   override suspend fun addSet(workoutExerciseId: Long) =
       writes.write {
         database.withTransaction {
+          val activeId = workoutDao.getActiveWorkoutId() ?: return@withTransaction
+          val active = workoutDao.getWorkoutFull(activeId) ?: return@withTransaction
+          if (!sortedWorkoutFull(active).canAddSet(workoutExerciseId)) return@withTransaction
           val existing = workoutDao.getSetsForWorkoutExercise(workoutExerciseId)
           val nextIndex = (existing.maxOfOrNull { it.setIndex } ?: -1) + 1
           val last = existing.lastOrNull()

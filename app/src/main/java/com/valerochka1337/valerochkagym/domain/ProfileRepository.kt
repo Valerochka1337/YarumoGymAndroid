@@ -36,7 +36,12 @@ data class BasicProfile(
     val manualConstraints: String? = null,
     val preferredRepMin: Int? = null,
     val preferredRepMax: Int? = null,
-)
+) {
+  companion object {
+    /** Начальный ориентир применяется только пока нет сохранённого профиля. */
+    fun initial() = BasicProfile(preferredRepMin = 8, preferredRepMax = 14)
+  }
+}
 
 /**
  * Captured when the editor opens so a later account/cache transition cannot write another scope.

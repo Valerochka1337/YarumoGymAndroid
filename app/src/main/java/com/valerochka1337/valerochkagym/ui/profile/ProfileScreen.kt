@@ -81,10 +81,6 @@ fun ProfileScreen(
         haptics.tap()
         viewModel.setKeyExerciseSheet(it)
       },
-      onSave = {
-        haptics.confirm()
-        viewModel.save()
-      },
       modifier = modifier,
   )
 }
@@ -107,7 +103,6 @@ internal fun ProfileScreenContent(
     onKeyPriority: (Long, KeyExercisePriority) -> Unit = { _, _ -> },
     onRemoveKeyExercise: (String) -> Unit = {},
     onKeySheet: (Boolean) -> Unit = {},
-    onSave: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
   GlowBackground(modifier = modifier) {
@@ -156,21 +151,19 @@ internal fun ProfileScreenContent(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-              listOf(3 to 6, 6 to 12, 8 to 15, 12 to 20).forEach { (min, max) ->
+              listOf(3 to 6, 6 to 12, 8 to 14, 12 to 20).forEach { (min, max) ->
                 FilterChip(
                     selected =
                         state.preferredRepMin == min.toString() &&
                             state.preferredRepMax == max.toString(),
                     onClick = { onRepRange(min.toString(), max.toString()) },
                     label = { Text("$min–$max") },
-                    enabled = !state.isSaving,
                 )
               }
               FilterChip(
                   selected = state.preferredRepMin.isBlank() && state.preferredRepMax.isBlank(),
                   onClick = { onRepRange("", "") },
                   label = { Text("Не задан") },
-                  enabled = !state.isSaving,
               )
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -180,7 +173,6 @@ internal fun ProfileScreenContent(
                   modifier = Modifier.weight(1f),
                   label = { Text("От") },
                   singleLine = true,
-                  enabled = !state.isSaving,
                   keyboardOptions =
                       androidx.compose.foundation.text.KeyboardOptions(
                           keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
@@ -192,7 +184,6 @@ internal fun ProfileScreenContent(
                   modifier = Modifier.weight(1f),
                   label = { Text("До") },
                   singleLine = true,
-                  enabled = !state.isSaving,
                   keyboardOptions =
                       androidx.compose.foundation.text.KeyboardOptions(
                           keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
@@ -348,12 +339,10 @@ internal fun ProfileScreenContent(
                 modifier = Modifier.semantics { contentDescription = "Ошибка: $it" },
             )
           }
-          PillButton(
-              text = "Сохранить",
-              onClick = onSave,
-              enabled = !state.isSaving && state.target != null,
-              modifier =
-                  Modifier.fillMaxWidth().semantics { contentDescription = "Сохранить профиль" },
+          Text(
+              if (state.isSaving) "Сохраняем…" else "Изменения сохраняются автоматически",
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
           )
         }
       }

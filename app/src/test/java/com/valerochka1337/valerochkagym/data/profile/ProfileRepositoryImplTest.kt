@@ -124,7 +124,7 @@ class ProfileRepositoryImplTest : RoomDaoTest() {
 
     val snapshot = repository.openEditor()
 
-    assertEquals(BasicProfile(), snapshot?.profile)
+    assertEquals(BasicProfile(preferredRepMin = 8, preferredRepMax = 14), snapshot?.profile)
     assertEquals(0, tableCount("profiles"))
   }
 
