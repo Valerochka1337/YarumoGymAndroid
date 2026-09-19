@@ -1,7 +1,5 @@
 package com.valerochka1337.valerochkagym.data.ai
 
-import com.valerochka1337.valerochkagym.data.db.dao.CoachHistorySet
-import com.valerochka1337.valerochkagym.domain.FoundCoachExercise
 import com.valerochka1337.valerochkagym.domain.WorkoutSnapshot
 import java.util.UUID
 import kotlinx.serialization.json.*
@@ -291,69 +289,6 @@ object CoachToolCodec {
   private fun stringArray(values: Set<String>) = buildJsonArray {
     values.sorted().forEach { add(JsonPrimitive(it)) }
   }
-
-  fun foundJson(exercises: List<FoundCoachExercise>): String {
-    return json.encodeToString(
-        buildJsonObject {
-          put(
-              "exercises",
-              buildJsonArray {
-                exercises.forEach { exercise ->
-                  add(
-                      buildJsonObject {
-                        put("exercise_id", exercise.id)
-                        put("name", exercise.name)
-                        put("muscles", stringArray(exercise.muscles))
-                        put("equipment", stringArray(exercise.equipment))
-                        put("muscle_group", exercise.muscleGroup)
-                        put("type", exercise.type)
-                        put("last_used_at", exercise.lastUsedAt?.let(::JsonPrimitive) ?: JsonNull)
-                        put("completed_workout_count", exercise.workoutCount)
-                        put(
-                            "current_section_ids",
-                            JsonArray(exercise.currentSectionIds.map(::JsonPrimitive)),
-                        )
-                        put("last_workout_sets", historyRows(exercise.lastWorkoutSets))
-                      }
-                  )
-                }
-              },
-          )
-        }
-    )
-  }
-
-  private fun historyRows(history: List<CoachHistorySet>) = buildJsonArray {
-    history.forEach { historical ->
-      val set = historical.set
-      add(
-          buildJsonObject {
-            put("workout_id", historical.historyWorkoutId)
-            put("workout_finished_at", historical.historyWorkoutFinishedAt)
-            put("section_history_id", set.workoutExerciseId)
-            put("set_index", set.setIndex)
-            put("completed_at", set.completedAt?.let(::JsonPrimitive) ?: JsonNull)
-            put("set_type", set.setType)
-            set.actualRir?.let { put("actual_rir", it) }
-            if (set.actualRirAtLeastFour) put("actual_rir_at_least_four", true)
-            put("weight_kg", (set.actualWeightKg ?: set.weightKg)?.let(::JsonPrimitive) ?: JsonNull)
-            put("reps", (set.actualReps ?: set.reps)?.let(::JsonPrimitive) ?: JsonNull)
-            put(
-                "duration_sec",
-                (set.actualDurationSec ?: set.durationSec)?.let(::JsonPrimitive) ?: JsonNull,
-            )
-            put("speed_kmh", (set.actualSpeedKmh ?: set.speedKmh)?.let(::JsonPrimitive) ?: JsonNull)
-            put(
-                "incline_pct",
-                (set.actualInclinePct ?: set.inclinePct)?.let(::JsonPrimitive) ?: JsonNull,
-            )
-          }
-      )
-    }
-  }
-
-  fun historyJson(history: List<CoachHistorySet>): String =
-      json.encodeToString(buildJsonObject { put("history", historyRows(history)) })
 
   private val json = Json {
     isLenient = false

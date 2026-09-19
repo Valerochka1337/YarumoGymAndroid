@@ -3,7 +3,6 @@ package com.valerochka1337.valerochkagym.domain
 import androidx.room.withTransaction
 import com.valerochka1337.valerochkagym.data.backend.BackendSessionStore
 import com.valerochka1337.valerochkagym.data.db.GymDatabase
-import com.valerochka1337.valerochkagym.data.db.dao.CoachHistorySet
 import com.valerochka1337.valerochkagym.diagnostics.CoachDiagnostics
 import com.valerochka1337.valerochkagym.service.RestTimerEngine
 import com.valerochka1337.valerochkagym.service.RestTimerState
@@ -206,70 +205,6 @@ constructor(
     )
   }
 
-  suspend fun find(
-      snapshot: WorkoutSnapshot,
-      query: String?,
-      equipment: Set<String>?,
-      muscles: Set<String>?,
-      muscleGroups: Set<String>? = null,
-      limit: Int = 10,
-  ): List<FoundCoachExercise> {
-    val normalized = query?.trim()?.lowercase().orEmpty()
-    val usage = database.coachDao().exerciseUsage().associateBy { it.exerciseId }
-    val exercises = mutableListOf<Pair<Long, FoundCoachExercise>>()
-    for (exercise in database.exerciseDao().getAllOnce()) {
-      if (exercise.archived || exercise.id in snapshot.excludedExerciseIds) continue
-      val muscleNames =
-          database.exerciseMuscleDao().getForExercise(exercise.id).map { it.muscle.name }.toSet()
-      val requirements = database.exerciseDao().getRequirementIds(exercise.id).toSet()
-      if (
-          (normalized.isBlank() || exercise.name.lowercase().contains(normalized)) &&
-              (muscles.isNullOrEmpty() || muscleNames.containsAll(muscles)) &&
-              (muscleGroups.isNullOrEmpty() || exercise.muscleGroup.name in muscleGroups) &&
-              (equipment.isNullOrEmpty() || requirements.containsAll(equipment))
-      ) {
-        val used = usage[exercise.id]
-        exercises +=
-            exercise.id to
-                FoundCoachExercise(
-                    exercise.syncId,
-                    exercise.name,
-                    muscleNames,
-                    requirements,
-                    exercise.muscleGroup.name,
-                    exercise.type.name,
-                    used?.lastUsedAt,
-                    used?.workoutCount ?: 0,
-                    currentSectionIds =
-                        snapshot.exercises
-                            .filter { it.exerciseId == exercise.id }
-                            .map { it.sectionId },
-                )
-      }
-    }
-    return exercises
-        .sortedWith(
-            compareByDescending<Pair<Long, FoundCoachExercise>> {
-                  it.second.lastUsedAt ?: Long.MIN_VALUE
-                }
-                .thenByDescending { it.second.workoutCount }
-                .thenBy { it.second.name }
-                .thenBy { it.second.id }
-        )
-        .take(limit.coerceIn(1, 20))
-        .map { (id, found) ->
-          found.copy(lastWorkoutSets = database.coachDao().exerciseHistory(id, 1))
-        }
-  }
-
-  suspend fun history(exerciseId: String): List<CoachHistorySet> {
-    val exercise =
-        database.exerciseDao().getAllOnce().singleOrNull { it.syncId == exerciseId }
-            ?: return emptyList()
-    val history = database.coachDao().exerciseHistory(exercise.id, 3)
-    return history
-  }
-
   private fun restSnapshot(): SnapshotRest? =
       when (val rest = restTimer.state.value) {
         is RestTimerState.Timed ->
@@ -308,16 +243,3 @@ constructor(
   private fun String.decodeLongs(): Set<Long> =
       runCatching { json.decodeFromString<List<Long>>(this).toSet() }.getOrDefault(emptySet())
 }
-
-data class FoundCoachExercise(
-    val id: String,
-    val name: String,
-    val muscles: Set<String>,
-    val equipment: Set<String>,
-    val muscleGroup: String = "",
-    val type: String = "",
-    val lastUsedAt: Long? = null,
-    val workoutCount: Int = 0,
-    val lastWorkoutSets: List<CoachHistorySet> = emptyList(),
-    val currentSectionIds: List<String> = emptyList(),
-)

@@ -11,17 +11,6 @@ import kotlinx.coroutines.flow.Flow
 interface CoachDao {
   @Query(
       """
-    SELECT we.exerciseId, MAX(w.finishedAt) AS lastUsedAt, COUNT(DISTINCT w.id) AS workoutCount
-    FROM workout_exercises we JOIN workouts w ON w.id=we.workoutId
-    WHERE w.finishedAt IS NOT NULL AND EXISTS
-      (SELECT 1 FROM workout_sets s WHERE s.workoutExerciseId=we.id AND s.isCompleted=1)
-    GROUP BY we.exerciseId
-  """
-  )
-  suspend fun exerciseUsage(): List<CoachExerciseUsage>
-
-  @Query(
-      """
     SELECT s.*, w.id AS historyWorkoutId, w.finishedAt AS historyWorkoutFinishedAt FROM workout_sets s
     JOIN workout_exercises we ON we.id=s.workoutExerciseId
     JOIN workouts w ON w.id=we.workoutId
@@ -74,21 +63,6 @@ interface CoachDao {
 
   @Query("UPDATE coach_messages SET status=:status WHERE id=:id")
   suspend fun setMessageStatus(id: String, status: String)
-
-  @Query(
-      "UPDATE coach_messages SET status=:status WHERE id=:id AND accountId=:accountId AND workoutId=:workoutId AND status IN ('PENDING', 'PROCESSING')"
-  )
-  suspend fun finishPendingMessage(
-      id: String,
-      accountId: String,
-      workoutId: String,
-      status: String,
-  ): Int
-
-  @Query(
-      "UPDATE coach_messages SET status='INTERRUPTED' WHERE status IN ('PENDING', 'PROCESSING') AND createdAt < :beforeMillis"
-  )
-  suspend fun markInterruptedMessages(beforeMillis: Long)
 
   @Query(
       "SELECT * FROM coach_proposals WHERE workoutId=:workoutId AND state='PENDING' ORDER BY expiresAt DESC LIMIT 1"
@@ -196,8 +170,6 @@ interface CoachDao {
     clearContext(accountId)
   }
 }
-
-data class CoachExerciseUsage(val exerciseId: Long, val lastUsedAt: Long, val workoutCount: Int)
 
 data class CoachHistorySet(
     @androidx.room.Embedded val set: WorkoutSetEntity,

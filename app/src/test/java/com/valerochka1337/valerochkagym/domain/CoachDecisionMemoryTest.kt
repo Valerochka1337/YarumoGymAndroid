@@ -21,64 +21,12 @@ class CoachDecisionMemoryTest {
   private fun rejected(reason: CoachRejectionReason? = null) =
       CoachDecisionMemory.capture(snapshot, "proposal", "REJECTED", "47.5 кг", packet, reason)
 
-  private fun later(reps: Int = 8, reason: CoachRejectionReason? = null) =
-      snapshot.copy(
-          exercises =
-              snapshot.exercises.map {
-                it.copy(
-                    sets =
-                        listOf(done, next.copy(completed = true, completedAt = 2000, reps = reps))
-                )
-              },
-          coachDecisions = listOf(rejected(reason)),
-      )
-
   @Test
-  fun `plain refusal survives another comparable set and serialization`() {
+  fun `captured decision survives serialization`() {
     val decision = rejected()
     assertEquals(
         listOf(decision),
         CoachDecisionMemory.decode(CoachDecisionMemory.encode(listOf(decision))),
-    )
-    assertTrue(later().suppressesCoachInitiative())
-  }
-
-  @Test
-  fun `material deterioration can reopen a plain refusal`() {
-    assertFalse(later(5).suppressesCoachInitiative())
-  }
-
-  @Test
-  fun `explicit keep applies to the exercise despite new repetitions`() {
-    assertTrue(later(5, CoachRejectionReason.KEEP_EXERCISE).suppressesCoachInitiative())
-  }
-
-  @Test
-  fun `safety report is never suppressed by a refusal`() {
-    val input = later(reason = CoachRejectionReason.KEEP_EXERCISE)
-    assertFalse(
-        input
-            .copy(
-                exercises =
-                    input.exercises.map { e ->
-                      e.copy(sets = e.sets.map { it.copy(reportedFeelings = setOf("PAIN")) })
-                    }
-            )
-            .suppressesCoachInitiative()
-    )
-  }
-
-  @Test
-  fun `accepted change and another exercise are not suppressed`() {
-    assertFalse(
-        snapshot
-            .copy(coachDecisions = listOf(rejected().copy(status = "APPLIED")))
-            .suppressesCoachInitiative()
-    )
-    assertFalse(
-        snapshot
-            .copy(coachDecisions = listOf(rejected().copy(sectionIds = setOf("other"))))
-            .suppressesCoachInitiative()
     )
   }
 

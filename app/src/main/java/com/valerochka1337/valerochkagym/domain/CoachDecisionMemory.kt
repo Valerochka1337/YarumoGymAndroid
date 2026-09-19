@@ -1,7 +1,6 @@
 package com.valerochka1337.valerochkagym.domain
 
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
 @Serializable
@@ -99,39 +98,3 @@ data class CoachDecisionEvidence(
     val rir: Int?,
     val feelings: Set<String>,
 )
-
-/**
- * A refusal lasts for the affected exercise; a new significant deterioration can reopen a plain
- * refusal.
- */
-fun WorkoutSnapshot.suppressesCoachInitiative(): Boolean {
-  val latest =
-      exercises
-          .flatMap { it.sets }
-          .filter { it.completed }
-          .maxByOrNull { it.completedAt ?: Long.MIN_VALUE } ?: return false
-  if (latest.reportedFeelings.any { it in setOf("PAIN", "TECHNIQUE_BREAKDOWN", "INTERRUPTED") })
-      return false
-  val section = exercises.first { latest in it.sets }
-  val decision = coachDecisions.lastOrNull { section.sectionId in it.sectionIds } ?: return false
-  if (decision.status != "REJECTED") return false
-  if (decision.reason == CoachRejectionReason.KEEP_EXERCISE) return true
-  // Equipment refusals are passed to AI so it can offer rest/reps instead of the unavailable load.
-  val evidence = decision.evidence.firstOrNull { it.sectionId == section.sectionId } ?: return false
-  val weight = latest.actualWeightKg ?: latest.weightKg
-  val reps = latest.actualReps ?: latest.reps
-  val newFeelings = latest.reportedFeelings - evidence.feelings
-  val deteriorated =
-      weight == evidence.weightKg &&
-          reps != null &&
-          evidence.reps != null &&
-          (evidence.reps - reps >= 3 ||
-              (latest.actualRir == 0 && evidence.rir != null && evidence.rir > 1))
-  val changedLoad = weight != evidence.weightKg
-  val improved =
-      weight == evidence.weightKg &&
-          reps != null &&
-          evidence.reps != null &&
-          reps - evidence.reps >= 3
-  return !deteriorated && !changedLoad && !improved && "HARDER_THAN_EXPECTED" !in newFeelings
-}

@@ -2,13 +2,10 @@ package com.valerochka1337.valerochkagym.ui
 
 import androidx.lifecycle.SavedStateHandle
 import com.valerochka1337.valerochkagym.data.RoomDaoTest
-import com.valerochka1337.valerochkagym.data.ai.AiApiChatResponse
-import com.valerochka1337.valerochkagym.data.ai.AiApiMessage
-import com.valerochka1337.valerochkagym.data.ai.AiApiTool
-import com.valerochka1337.valerochkagym.data.ai.CoachAgent
-import com.valerochka1337.valerochkagym.data.ai.CoachModelGateway
+import com.valerochka1337.valerochkagym.data.ai.CoachRunsClient
 import com.valerochka1337.valerochkagym.data.backend.BackendSessionStore
 import com.valerochka1337.valerochkagym.data.backend.BackendTokens
+import com.valerochka1337.valerochkagym.data.backend.BackendTransport
 import com.valerochka1337.valerochkagym.data.db.entity.CoachProposalEntity
 import com.valerochka1337.valerochkagym.data.db.entity.CoachSessionContextEntity
 import com.valerochka1337.valerochkagym.domain.CoachWorkoutReader
@@ -16,6 +13,8 @@ import com.valerochka1337.valerochkagym.domain.WorkoutChangeSet
 import com.valerochka1337.valerochkagym.domain.WorkoutEditor
 import com.valerochka1337.valerochkagym.domain.WorkoutWriteQueue
 import com.valerochka1337.valerochkagym.service.CoachConversationService
+import com.valerochka1337.valerochkagym.service.CoachDraft
+import com.valerochka1337.valerochkagym.service.DurableCoachCoordinator
 import com.valerochka1337.valerochkagym.service.RestTimerEngine
 import com.valerochka1337.valerochkagym.service.WallClock
 import com.valerochka1337.valerochkagym.ui.coach.CoachChatViewModel
@@ -82,55 +81,8 @@ class CoachChatViewModelTest : RoomDaoTest() {
         db.openHelper.writableDatabase.execSQL(
             "INSERT OR REPLACE INTO backend_state (id, owner, generation, phase, initialMergeAcknowledged) VALUES (1, 'user', 0, 'OWNED', 1)"
         )
-        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
-        val gateway =
-            object : CoachModelGateway {
-              override suspend fun systemPrompt(
-                  expectedOwner: String,
-                  expectedSessionEpoch: Long?,
-              ) = "Server coach prompt"
-
-              override fun stream(
-                  expectedOwner: String,
-                  expectedSessionEpoch: Long?,
-                  messages: List<AiApiMessage>,
-                  tools: List<AiApiTool>,
-              ) =
-                  kotlinx.coroutines.flow.flow {
-                    emit(
-                        com.valerochka1337.valerochkagym.data.ai.CoachModelEvent.TextDelta(
-                            "{\"text\":\"Продолжай"
-                        )
-                    )
-                    release.await()
-                    emit(
-                        com.valerochka1337.valerochkagym.data.ai.CoachModelEvent.Completed(
-                            AiApiChatResponse(
-                                choices =
-                                    listOf(
-                                        com.valerochka1337.valerochkagym.data.ai.AiApiChoice(
-                                            com.valerochka1337.valerochkagym.data.ai
-                                                .AiApiResponseMessage(
-                                                    content =
-                                                        kotlinx.serialization.json.JsonPrimitive(
-                                                            "{\"text\":\"Продолжай\"}"
-                                                        )
-                                                )
-                                        )
-                                    )
-                            )
-                        )
-                    )
-                  }
-            }
-        val service = conversation(gateway)
-        // Room uses a real executor. Its query latency must not advance the service's
-        // network deadline through 60 seconds while the UI test clock skips idle time.
-        service.attach(
-            kotlinx.coroutines.CoroutineScope(
-                backgroundScope.coroutineContext + kotlinx.coroutines.Dispatchers.Default
-            )
-        )
+        lateinit var remote: DurableCoachCoordinator
+        val service = conversation { remote = it }
         val first = viewModel(workout, service)
         val collector =
             backgroundScope.launch(
@@ -139,7 +91,9 @@ class CoachChatViewModelTest : RoomDaoTest() {
               first.uiState.collect()
             }
         first.uiState.first { !it.readOnly }
-        assertTrue(service.send(workout, "Подскажи технику"))
+        remote.running.value = setOf(workout)
+        remote.drafts.value =
+            mapOf(workout to CoachDraft("answer", "request", workout, "user", 0, "Продолжай"))
         val streamed =
             first.uiState.first { it.messages.lastOrNull()?.streaming == true }.messages.last()
         collector.cancel()
@@ -150,7 +104,19 @@ class CoachChatViewModelTest : RoomDaoTest() {
         val restored = reopened.uiState.first { it.messages.lastOrNull()?.streaming == true }
         assertEquals(streamed.id, restored.messages.last().id)
         assertEquals("Продолжай", restored.messages.last().text)
-        release.complete(Unit)
+        db.coachDao()
+            .saveMessage(
+                com.valerochka1337.valerochkagym.data.db.entity.CoachMessageEntity(
+                    "answer",
+                    "user",
+                    workout,
+                    "assistant",
+                    "Продолжай",
+                    1000,
+                )
+            )
+        remote.drafts.value = emptyMap()
+        remote.running.value = emptySet()
         val completed =
             reopened.uiState.first { !it.busy && it.messages.lastOrNull()?.streaming == false }
         assertEquals(1, completed.messages.count { it.id == streamed.id })
@@ -287,7 +253,7 @@ class CoachChatViewModelTest : RoomDaoTest() {
       )
 
   private fun TestScope.conversation(
-      gateway: CoachModelGateway = NoopGateway
+      configure: (DurableCoachCoordinator) -> Unit = {}
   ): CoachConversationService {
     val timer = RestTimerEngine(backgroundScope, WallClock { testScheduler.currentTime })
     val coordinator =
@@ -300,7 +266,10 @@ class CoachChatViewModelTest : RoomDaoTest() {
             WorkoutWriteQueue(),
         )
     val control = CoachWorkoutReader(db, timer, session)
-    return CoachConversationService(CoachAgent(gateway), control, coordinator, db, session)
+    val remote =
+        DurableCoachCoordinator(CoachRunsClient(UnusedTransport), db, control, coordinator, session)
+    configure(remote)
+    return CoachConversationService(remote, control, coordinator, db, session)
   }
 
   private val session = FakeSession()
@@ -317,40 +286,19 @@ class CoachChatViewModelTest : RoomDaoTest() {
     }
   }
 
-  private object NoopGateway : CoachChatViewModelTestGateway {
-    override suspend fun complete(
-        expectedOwner: String,
-        expectedSessionEpoch: Long?,
-        messages: List<AiApiMessage>,
-        tools: List<AiApiTool>,
-    ) = AiApiChatResponse()
+  private object UnusedTransport : BackendTransport {
+    override val json = Json
+
+    override suspend fun public(
+        method: String,
+        path: String,
+        body: kotlinx.serialization.json.JsonElement?,
+    ): kotlinx.serialization.json.JsonElement = error("Unexpected network call")
+
+    override suspend fun authorized(
+        method: String,
+        path: String,
+        body: kotlinx.serialization.json.JsonElement?,
+    ): kotlinx.serialization.json.JsonElement = error("Unexpected network call")
   }
-}
-
-/** Completed-only fixture; streaming behavior uses explicit event fakes below. */
-private interface CoachChatViewModelTestGateway :
-    com.valerochka1337.valerochkagym.data.ai.CoachModelGateway {
-  override suspend fun systemPrompt(expectedOwner: String, expectedSessionEpoch: Long?) =
-      "Server coach prompt"
-
-  suspend fun complete(
-      expectedOwner: String,
-      expectedSessionEpoch: Long?,
-      messages: List<com.valerochka1337.valerochkagym.data.ai.AiApiMessage>,
-      tools: List<com.valerochka1337.valerochkagym.data.ai.AiApiTool>,
-  ): com.valerochka1337.valerochkagym.data.ai.AiApiChatResponse
-
-  override fun stream(
-      expectedOwner: String,
-      expectedSessionEpoch: Long?,
-      messages: List<com.valerochka1337.valerochkagym.data.ai.AiApiMessage>,
-      tools: List<com.valerochka1337.valerochkagym.data.ai.AiApiTool>,
-  ) =
-      kotlinx.coroutines.flow.flow {
-        emit(
-            com.valerochka1337.valerochkagym.data.ai.CoachModelEvent.Completed(
-                complete(expectedOwner, expectedSessionEpoch, messages, tools)
-            )
-        )
-      }
 }

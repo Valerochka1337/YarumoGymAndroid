@@ -22,34 +22,6 @@ class AutoregulationEngineTest {
   }
 
   @Test
-  fun `missing effort never triggers automatic follow up questions`() {
-    for (set in
-        listOf(
-            done.copy(actualRir = null, reportedFeelings = emptySet()),
-            done.copy(setType = "UNKNOWN"),
-        )) {
-      assertNull(
-          CoachInitiativePolicy.next(
-              CoachInitiativeState(welcomed = true),
-              1000,
-              emptyList(),
-              emptyList(),
-              assessment = calculate(set),
-          )
-      )
-    }
-    assertNotNull(
-        CoachInitiativePolicy.next(
-            CoachInitiativeState(welcomed = true),
-            1000,
-            emptyList(),
-            emptyList(),
-            assessment = calculate(done.copy(reportedFeelings = setOf("PAIN"))),
-        )
-    )
-  }
-
-  @Test
   fun `reported planned effort prevents interpreting a deliberate hard set as fatigue`() {
     assertEquals(
         RecommendationKind.NO_CHANGE,
@@ -266,50 +238,5 @@ class AutoregulationEngineTest {
     assertNull(calculate(done.copy(weightKg = Double.NaN)).packet())
     assertNull(calculate(upcoming = next.copy(syncId = "done")).packet())
     assertNull(calculate(done.copy(actualRir = 11)).packet())
-  }
-
-  @Test
-  fun `initiative ignores unchanged and rejected facts and respects pending without a count limit`() {
-    val state = CoachInitiativeState(welcomed = true)
-    val result = calculate()
-    val decision =
-        CoachInitiativePolicy.next(state, 1000, emptyList(), emptyList(), assessment = result)!!
-    assertEquals(CoachInitiativeKind.AUTOREGULATION, decision.kind)
-    assertNull(
-        CoachInitiativePolicy.next(
-            decision.nextState.copy(pendingInteraction = false),
-            900000,
-            emptyList(),
-            emptyList(),
-            assessment = result,
-        )
-    )
-    assertNull(
-        CoachInitiativePolicy.next(
-            state.copy(pendingInteraction = true),
-            1000,
-            emptyList(),
-            emptyList(),
-            assessment = result,
-        )
-    )
-    assertNotNull(
-        CoachInitiativePolicy.next(
-            state.copy(automaticCount = 3),
-            1000,
-            emptyList(),
-            emptyList(),
-            assessment = result,
-        )
-    )
-    assertNull(
-        CoachInitiativePolicy.next(
-            state,
-            1000,
-            emptyList(),
-            emptyList(),
-            assessment = calculate(done.copy(actualRir = 3, reportedFeelings = emptySet())),
-        )
-    )
   }
 }
