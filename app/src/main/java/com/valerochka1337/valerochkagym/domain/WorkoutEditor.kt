@@ -99,18 +99,17 @@ constructor(
             )
             database.coachRunDao().markDirty(workoutId)
             if (completesWorkout || !settings.restAutostart) null
-            else if (settings.heartRateRestEnabled) Int.MIN_VALUE
             else resolver(full, section.exercise.id)
           }
       if (restTimer.currentStartId() != expectedRestStartId) return@write
       when (restSeconds) {
         null -> Unit
-        Int.MIN_VALUE ->
-            restTimer.startUntilHeartRateAtMost(
-                settings.heartRateRestThresholdBpm,
+        else ->
+            restTimer.start(
+                restSeconds,
+                settings.heartRateRestThresholdBpm.takeIf { settings.heartRateRestEnabled },
                 settings.heartRateRestHoldSeconds,
             )
-        else -> restTimer.start(restSeconds)
       }
     }
   }

@@ -1,9 +1,13 @@
 package com.valerochka1337.valerochkagym.service
 
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.emptyPreferences
 import com.valerochka1337.valerochkagym.data.RoomDaoTest
 import com.valerochka1337.valerochkagym.data.ai.*
 import com.valerochka1337.valerochkagym.data.backend.*
 import com.valerochka1337.valerochkagym.data.db.entity.*
+import com.valerochka1337.valerochkagym.data.settings.SettingsRepository
 import com.valerochka1337.valerochkagym.domain.*
 import java.util.UUID
 import kotlinx.coroutines.*
@@ -14,6 +18,37 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class DurableCoachCoordinatorTest : RoomDaoTest() {
+  @Test
+  fun `disabling live coach closes server initiative blocks messages and reenable restores it`() =
+      runTest {
+        val workout = activeWorkout()
+        val transport = FakeTransport()
+        val settings = SettingsRepository(MemorySettings())
+        val fixture = fixture(transport, settings)
+        fixture.coordinator.deliverPending()
+        assertTrue(transport.sessionUpdates.last()["active"]!!.jsonPrimitive.boolean)
+
+        settings.setLiveCoachEnabled(false)
+        assertFalse(fixture.coordinator.send(workout, "Подскажи"))
+        fixture.coordinator.deliverPending()
+        assertFalse(transport.sessionUpdates.last()["active"]!!.jsonPrimitive.boolean)
+        assertFalse(transport.sessionUpdates.last()["initiativeEnabled"]!!.jsonPrimitive.boolean)
+        assertTrue(transport.submissions.isEmpty())
+
+        settings.setLiveCoachEnabled(true)
+        fixture.coordinator.deliverPending()
+        assertTrue(transport.sessionUpdates.last()["active"]!!.jsonPrimitive.boolean)
+        assertTrue(transport.sessionUpdates.last()["initiativeEnabled"]!!.jsonPrimitive.boolean)
+        assertTrue(fixture.coordinator.send(workout, "Подскажи"))
+      }
+
+  private class MemorySettings : DataStore<Preferences> {
+    override val data = MutableStateFlow<Preferences>(emptyPreferences())
+
+    override suspend fun updateData(transform: suspend (Preferences) -> Preferences): Preferences =
+        transform(data.value).also { data.value = it }
+  }
+
   @Test
   fun `conversation confirms a proposal and undoes it through explicit user action`() = runTest {
     val workout = activeWorkout()
@@ -682,14 +717,17 @@ class DurableCoachCoordinatorTest : RoomDaoTest() {
       val conversation: CoachConversationService,
   )
 
-  private fun TestScope.fixture(transport: FakeTransport): Fixture {
+  private fun TestScope.fixture(
+      transport: FakeTransport,
+      settings: SettingsRepository? = null,
+  ): Fixture {
     val session = FakeSession()
     val timer = RestTimerEngine(backgroundScope, WallClock { System.currentTimeMillis() })
     val reader = CoachWorkoutReader(db, timer, session)
     val editor =
         WorkoutEditor(db, db.workoutDao(), db.coachDao(), timer, session, WorkoutWriteQueue())
     val coordinator =
-        DurableCoachCoordinator(CoachRunsClient(transport), db, reader, editor, session)
+        DurableCoachCoordinator(CoachRunsClient(transport), db, reader, editor, session, settings)
     return Fixture(
         coordinator,
         editor,

@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+
 package com.valerochka1337.valerochkagym.ui.profile
 
 import androidx.compose.foundation.layout.Arrangement
@@ -9,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.widthIn
@@ -16,15 +19,16 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.*
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.runtime.*
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
@@ -43,6 +47,9 @@ import com.valerochka1337.valerochkagym.ui.components.GymCard
 import com.valerochka1337.valerochkagym.ui.components.PillButton
 import com.valerochka1337.valerochkagym.ui.components.PlanningChoiceSheet
 import com.valerochka1337.valerochkagym.ui.haptics.gymHaptics
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneOffset
 
 @Composable
 fun ProfileScreen(
@@ -64,7 +71,7 @@ fun ProfileScreen(
       onConstraints = viewModel::setConstraints,
       onRepRange = viewModel::setRepRange,
       onEquipment = viewModel::toggleEquipment,
-      onPromptDisabled = viewModel::setPromptDisabled,
+      accountContent = { com.valerochka1337.valerochkagym.ui.account.AccountCard() },
       onKeyExercise = {
         haptics.tap()
         viewModel.toggleKeyExercise(it)
@@ -97,7 +104,7 @@ internal fun ProfileScreenContent(
     onDuration: (String) -> Unit,
     onConstraints: (String) -> Unit,
     onEquipment: (String) -> Unit,
-    onPromptDisabled: (Boolean) -> Unit,
+    accountContent: @Composable () -> Unit = {},
     onRepRange: (String, String) -> Unit = { _, _ -> },
     onKeyExercise: (Long) -> Unit = {},
     onKeyPriority: (Long, KeyExercisePriority) -> Unit = { _, _ -> },
@@ -116,7 +123,7 @@ internal fun ProfileScreenContent(
             verticalAlignment = Alignment.CenterVertically,
         ) {
           IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Назад") }
-          Text("Профиль", style = MaterialTheme.typography.headlineLarge)
+          Text("Профиль и аккаунт", style = MaterialTheme.typography.headlineLarge)
         }
         if (state.isLoading) {
           Text(
@@ -261,13 +268,7 @@ internal fun ProfileScreenContent(
                 fontWeight = FontWeight.SemiBold,
             )
             Spacer(Modifier.height(8.dp))
-            OutlinedTextField(
-                state.birthDate,
-                onBirthDate,
-                Modifier.fillMaxWidth(),
-                label = { Text("Дата рождения (ГГГГ-ММ-ДД)") },
-                singleLine = true,
-            )
+            BirthDateField(state.birthDate, onBirthDate)
             Spacer(Modifier.height(8.dp))
             OutlinedTextField(
                 state.plannedSessionsPerWeek,
@@ -293,45 +294,8 @@ internal fun ProfileScreenContent(
                 minLines = 3,
             )
           }
-          if (LocalEquipmentCatalog.alphabeticalEntries.isNotEmpty())
-              GymCard(modifier = Modifier.fillMaxWidth()) {
-                Text(
-                    "Оборудование",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Spacer(Modifier.height(8.dp))
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                  LocalEquipmentCatalog.alphabeticalEntries.forEach { equipment ->
-                    FilterChip(
-                        selected = equipment.id in state.equipmentIds,
-                        onClick = { onEquipment(equipment.id) },
-                        label = { Text(equipment.name) },
-                    )
-                  }
-                }
-              }
-          GymCard(modifier = Modifier.fillMaxWidth()) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-              Column(Modifier.weight(1f)) {
-                Text("Не предлагать профиль перед AI", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "AI-запросы останутся доступны",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-              }
-              Switch(
-                  checked = state.promptDisabled,
-                  onCheckedChange = onPromptDisabled,
-                  modifier =
-                      Modifier.semantics { contentDescription = "Не предлагать профиль перед AI" },
-              )
-            }
-          }
+          EquipmentDropdown(state.equipmentIds, onEquipment)
+          accountContent()
           state.error?.let {
             Text(
                 it,
@@ -367,21 +331,139 @@ private fun <T> ProfileChoiceCard(
     label: (T) -> String,
     onSelect: (T?) -> Unit,
 ) {
-  GymCard(modifier = Modifier.fillMaxWidth()) {
-    Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-    Spacer(Modifier.height(8.dp))
-    FlowRow(
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
+  var expanded by remember { mutableStateOf(false) }
+  ExposedDropdownMenuBox(expanded, { expanded = it }) {
+    OutlinedTextField(
+        value = selected?.let(label) ?: "Не задано",
+        onValueChange = {},
+        readOnly = true,
+        label = { Text(title) },
+        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
+        modifier =
+            Modifier.fillMaxWidth().menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable),
+    )
+    ExposedDropdownMenu(expanded, { expanded = false }) {
+      DropdownMenuItem(
+          text = { Text("Не задано") },
+          onClick = {
+            onSelect(null)
+            expanded = false
+          },
+      )
       entries.forEach { entry ->
-        FilterChip(
-            selected = selected == entry,
-            onClick = { onSelect(if (selected == entry) null else entry) },
-            label = { Text(label(entry)) },
-            modifier = Modifier.semantics { contentDescription = "$title: ${label(entry)}" },
+        DropdownMenuItem(
+            text = { Text(label(entry)) },
+            onClick = {
+              onSelect(entry)
+              expanded = false
+            },
         )
       }
+    }
+  }
+}
+
+@Composable
+internal fun EquipmentDropdown(selected: Set<String>, onToggle: (String) -> Unit) {
+  val catalog by LocalEquipmentCatalog.state.collectAsStateWithLifecycle()
+  var expanded by remember { mutableStateOf(false) }
+  var query by rememberSaveable { mutableStateOf("") }
+  ExposedDropdownMenuBox(
+      expanded,
+      {
+        expanded = it
+        query = ""
+      },
+  ) {
+    OutlinedTextField(
+        value = if (expanded) query else "Выбрано: ${selected.size}",
+        onValueChange = { query = it },
+        readOnly = !expanded,
+        label = { Text(if (expanded) "Поиск оборудования" else "Оборудование") },
+        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
+        modifier =
+            Modifier.fillMaxWidth().menuAnchor(ExposedDropdownMenuAnchorType.PrimaryEditable),
+    )
+    ExposedDropdownMenu(
+        expanded,
+        { expanded = false },
+        modifier = Modifier.heightIn(max = 320.dp),
+    ) {
+      val search = com.valerochka1337.valerochkagym.domain.TextSearch(query)
+      val choices =
+          catalog
+              .filter { !it.archived || it.equipment.id in selected }
+              .map { it.equipment }
+              .filter { search.matches(listOf(it.name, it.group) + it.synonyms) }
+              .sortedBy { it.name }
+      if (choices.isEmpty())
+          DropdownMenuItem(text = { Text("Ничего не найдено") }, onClick = {}, enabled = false)
+      choices.forEach { equipment ->
+        DropdownMenuItem(
+            text = { Text(equipment.name) },
+            onClick = { onToggle(equipment.id) },
+            leadingIcon = { Checkbox(equipment.id in selected, onCheckedChange = null) },
+        )
+      }
+    }
+  }
+}
+
+@Composable
+internal fun BirthDateField(value: String, onChange: (String) -> Unit) {
+  var showPicker by rememberSaveable { mutableStateOf(false) }
+  val date = remember(value) { runCatching { LocalDate.parse(value) }.getOrNull() }
+  OutlinedButton(onClick = { showPicker = true }, modifier = Modifier.fillMaxWidth()) {
+    Text(
+        "Дата рождения: " +
+            (date?.format(java.time.format.DateTimeFormatter.ofPattern("dd.MM.yyyy"))
+                ?: "Не задана")
+    )
+  }
+  if (showPicker) {
+    val today = LocalDate.now()
+    val state =
+        rememberDatePickerState(
+            initialSelectedDateMillis =
+                date?.atStartOfDay(ZoneOffset.UTC)?.toInstant()?.toEpochMilli(),
+            yearRange = 1900..today.year,
+            selectableDates =
+                object : SelectableDates {
+                  override fun isSelectableDate(utcTimeMillis: Long) =
+                      Instant.ofEpochMilli(utcTimeMillis).atZone(ZoneOffset.UTC).toLocalDate() <=
+                          today
+                },
+        )
+    DatePickerDialog(
+        onDismissRequest = { showPicker = false },
+        confirmButton = {
+          TextButton(
+              enabled = state.selectedDateMillis != null,
+              onClick = {
+                state.selectedDateMillis?.let {
+                  onChange(Instant.ofEpochMilli(it).atZone(ZoneOffset.UTC).toLocalDate().toString())
+                }
+                showPicker = false
+              },
+          ) {
+            Text("Выбрать")
+          }
+        },
+        dismissButton = {
+          Row {
+            TextButton(
+                onClick = {
+                  onChange("")
+                  showPicker = false
+                }
+            ) {
+              Text("Очистить")
+            }
+            TextButton(onClick = { showPicker = false }) { Text("Отмена") }
+          }
+        },
+    ) {
+      DatePicker(state)
     }
   }
 }
