@@ -96,6 +96,36 @@ internal data class CalendarResponse(
     val proposal: TrainingProposal,
 )
 
+@Serializable
+internal data class CalendarV2Response(
+    val requestId: String,
+    val context: CalendarContext,
+    val proposal: TrainingProposal,
+    val agenticProjection: AgenticProjection,
+)
+
+@Serializable
+internal data class AgenticProjection(
+    val candidateIds: List<String>,
+    val skeleton: AgenticSkeleton,
+)
+
+@Serializable
+internal data class AgenticSkeleton(
+    val focusExerciseId: String,
+    val slots: List<AgenticSkeletonSlot>,
+    val minDurationSec: Int,
+    val maxDurationSec: Int,
+)
+
+@Serializable
+internal data class AgenticSkeletonSlot(
+    val slotId: String,
+    val allowedExerciseIds: List<String>,
+    val minDurationSec: Int,
+    val maxDurationSec: Int,
+)
+
 @Singleton
 class CalendarAiRepository
 @Inject
@@ -105,10 +135,16 @@ constructor(
     private val db: GymDatabase,
     private val clock: WallClock,
 ) {
+  internal data class Prepared(
+      val ready: SyncReady.Ready,
+      val request: CalendarRequest,
+      val allowed: Set<String>,
+  )
+
   internal suspend fun prepare(
       intent: CalendarAiIntent,
       id: String,
-  ): Pair<SyncReady.Ready, CalendarRequest> {
+  ): Prepared {
     checkLocal(intent.valid(clock.nowMillis()), "ai_invalid_intent")
     val ready =
         when (val result = readySource.await()) {
@@ -173,19 +209,22 @@ constructor(
             intent.currentState,
             intent.preferences,
         )
-    return ready to request
+    return Prepared(ready, request, allowed)
   }
 
   suspend fun generate(intent: CalendarAiIntent): TrainingProposal {
     val id = UUID.randomUUID().toString()
-    val (ready, request) = prepare(intent, id)
+    val prepared = prepare(intent, id)
+    val ready = prepared.ready
+    val request = prepared.request
     suspend fun guard() {
       checkLocal(readySource.isCurrent(ready), "ai_context_stale")
     }
+    val useV2 = "ai-planner-agentic-v1" in api.acceptedCapabilities
     val response =
         api.authorizedRawResponse(
             "POST",
-            "/ai/calendar-drafts",
+            if (useV2) "/ai/calendar-drafts-v2" else "/ai/calendar-drafts",
             ProposalWire.json.encodeToString(request).encodeToByteArray(),
             expectedOwner = ready.owner,
             expectedSessionEpoch = ready.sessionEpoch,
@@ -196,7 +235,11 @@ constructor(
     checkResponse(response.owner == ready.owner && response.sessionEpoch == ready.sessionEpoch)
     val result =
         try {
-          ProposalWire.decode<CalendarResponse>(response.rawBody)
+          if (useV2) {
+            val v2 = ProposalWire.decode<CalendarV2Response>(response.rawBody)
+            validateProjection(intent, ready, prepared.allowed, v2)
+            CalendarResponse(v2.requestId, v2.context, v2.proposal)
+          } else ProposalWire.decode<CalendarResponse>(response.rawBody)
         } catch (_: IllegalArgumentException) {
           throw BackendException(502, "ai_invalid_response", "Некорректный ответ AI")
         }
@@ -207,6 +250,76 @@ constructor(
             result.context.capturedAtMillis >= 0
     )
     return validate(intent, ready, result)
+  }
+
+  private suspend fun validateProjection(
+      intent: CalendarAiIntent,
+      ready: SyncReady.Ready,
+      locallyAllowed: Set<String>,
+      result: CalendarV2Response,
+  ) {
+    val projection = result.agenticProjection
+    val never =
+        db.plannerExercisePreferenceDao()
+            .get(ready.owner)
+            .filter {
+              it.preference ==
+                  com.valerochka1337.valerochkagym.data.db.entity.PlannerExercisePreference.NEVER
+            }
+            .map { it.exerciseSyncId }
+            .toSet()
+    val allowed = locallyAllowed - never
+    val proposalExercises = result.proposal.snapshot.draft.exercises
+    fun duration(
+        exercises:
+            List<com.valerochka1337.valerochkagym.data.trainingproposal.ProposalPlannedExercise>
+    ): Long =
+        exercises.sumOf { exercise ->
+          exercise.plannedSets.sumOf { (it.durationSec ?: 45).toLong() } +
+              (exercise.plannedSets.size - 1).coerceAtLeast(0).toLong() *
+                  (exercise.restSeconds ?: 90)
+        } + (exercises.size - 1).coerceAtLeast(0) * 90L
+    val focusSlot = projection.skeleton.slots.firstOrNull { it.slotId == "focus" }
+    val accessorySlot = projection.skeleton.slots.firstOrNull { it.slotId == "accessory" }
+    val focusExercise = proposalExercises.firstOrNull()
+    val totalDuration = duration(proposalExercises)
+    checkResponse(
+        projection.candidateIds.size in 1..24 &&
+            projection.candidateIds.distinct().size == projection.candidateIds.size &&
+            projection.candidateIds.all { ProposalWire.uuid(it) && it in allowed } &&
+            ProposalWire.uuid(projection.skeleton.focusExerciseId) &&
+            projection.skeleton.focusExerciseId in projection.candidateIds &&
+            projection.skeleton.minDurationSec in 0..intent.availableDurationMinutes * 60 &&
+            projection.skeleton.maxDurationSec in
+                projection.skeleton.minDurationSec..intent.availableDurationMinutes * 60 &&
+            projection.skeleton.slots.isNotEmpty() &&
+            projection.skeleton.slots.map { it.slotId }.distinct().size ==
+                projection.skeleton.slots.size &&
+            projection.skeleton.slots.all { slot ->
+              slot.slotId.isNotBlank() &&
+                  slot.allowedExerciseIds.isNotEmpty() &&
+                  slot.allowedExerciseIds.all { it in projection.candidateIds } &&
+                  slot.minDurationSec in 0..slot.maxDurationSec &&
+                  slot.maxDurationSec <= projection.skeleton.maxDurationSec
+            } &&
+            proposalExercises.map { it.exerciseId }.all { it in projection.candidateIds } &&
+            focusExercise?.exerciseId == projection.skeleton.focusExerciseId &&
+            focusSlot != null &&
+            projection.skeleton.focusExerciseId in focusSlot.allowedExerciseIds &&
+            focusExercise?.let {
+              duration(listOf(it)) in
+                  focusSlot.minDurationSec.toLong()..focusSlot.maxDurationSec.toLong()
+            } == true &&
+            totalDuration in
+                projection.skeleton.minDurationSec.toLong()..projection.skeleton.maxDurationSec
+                        .toLong() &&
+            proposalExercises.drop(1).all { exercise ->
+              accessorySlot?.allowedExerciseIds?.contains(exercise.exerciseId) == true
+            } &&
+            (accessorySlot == null ||
+                duration(proposalExercises.drop(1)) in
+                    accessorySlot.minDurationSec.toLong()..accessorySlot.maxDurationSec.toLong())
+    )
   }
 
   internal suspend fun validate(

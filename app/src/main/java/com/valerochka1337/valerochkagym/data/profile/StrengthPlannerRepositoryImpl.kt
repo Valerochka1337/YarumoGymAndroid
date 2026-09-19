@@ -7,9 +7,11 @@ import com.valerochka1337.valerochkagym.data.db.GymDatabase
 import com.valerochka1337.valerochkagym.data.db.dao.ExerciseDao
 import com.valerochka1337.valerochkagym.data.db.dao.StrengthPlannerProfileDao
 import com.valerochka1337.valerochkagym.data.db.entity.ExerciseType
+import com.valerochka1337.valerochkagym.data.db.entity.PlannerExercisePreferenceEntity
 import com.valerochka1337.valerochkagym.data.db.entity.StrengthPlannerKeyExerciseEntity
 import com.valerochka1337.valerochkagym.data.db.entity.StrengthPlannerProfileEntity
 import com.valerochka1337.valerochkagym.domain.KeyExerciseChoice
+import com.valerochka1337.valerochkagym.domain.PlannerExerciseChoice
 import com.valerochka1337.valerochkagym.domain.ProfileEditTarget
 import com.valerochka1337.valerochkagym.domain.StrengthExerciseCandidate
 import com.valerochka1337.valerochkagym.domain.StrengthPlannerRepository
@@ -47,6 +49,16 @@ constructor(
             .toList()
       }
 
+  override fun observeLivePlannerExercises(): Flow<List<StrengthExerciseCandidate>> =
+      exerciseDao.getAll().map { exercises ->
+        exercises
+            .asSequence()
+            .filter { !it.archived }
+            .map { StrengthExerciseCandidate(it.id, it.syncId, it.name) }
+            .sortedBy { it.name.lowercase() }
+            .toList()
+      }
+
   override fun observe(target: ProfileEditTarget): Flow<List<KeyExerciseChoice>?> =
       combine(
           profileDao.observeKeyExercises(target.scope),
@@ -64,6 +76,56 @@ constructor(
                 priority = choice.priority,
             )
           }
+        }
+      }
+
+  override fun observePlannerPreferences(
+      target: ProfileEditTarget,
+  ): Flow<List<PlannerExerciseChoice>?> =
+      combine(
+          database.plannerExercisePreferenceDao().observe(target.scope),
+          exerciseDao.getAll(),
+          sync.transfer,
+          sessions.session,
+      ) { choices, exercises, _, _ ->
+        if (!targetStillCurrent(target)) null
+        else {
+          val ids = exercises.associateBy { it.syncId }
+          choices.map {
+            PlannerExerciseChoice(ids[it.exerciseSyncId]?.id, it.exerciseSyncId, it.preference)
+          }
+        }
+      }
+
+  override suspend fun savePlannerPreferences(
+      target: ProfileEditTarget,
+      choices: List<PlannerExerciseChoice>,
+  ): StrengthPlannerSaveResult =
+      mutationMutex.withLock {
+        database.withTransaction {
+          if (!targetStillCurrent(target))
+              return@withTransaction StrengthPlannerSaveResult.StaleTarget
+          val live = exerciseDao.getAllOnce().filterNot { it.archived }.associateBy { it.syncId }
+          if (
+              choices.map { it.exerciseSyncId }.distinct().size != choices.size ||
+                  choices.any { it.exerciseSyncId !in live }
+          )
+              return@withTransaction StrengthPlannerSaveResult.Invalid
+          database.plannerExercisePreferenceDao().delete(target.scope)
+          database
+              .plannerExercisePreferenceDao()
+              .upsert(
+                  choices
+                      .sortedBy { it.exerciseSyncId }
+                      .map {
+                        PlannerExercisePreferenceEntity(
+                            target.scope,
+                            it.exerciseSyncId,
+                            it.preference,
+                        )
+                      }
+              )
+          StrengthPlannerSaveResult.Saved
         }
       }
 

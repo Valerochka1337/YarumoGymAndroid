@@ -27,7 +27,9 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -38,6 +40,99 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PortableDataTest : RoomDaoTest() {
+  @Test
+  fun `planner preference tombstones require the current owner aggregate identity`() = runTest {
+    val owner = "10000000-0000-4000-8000-000000000001"
+    val formerOwner = "20000000-0000-4000-8000-000000000002"
+    val exerciseId = "30000000-0000-4000-8000-000000000003"
+    val sql = db.openHelper.writableDatabase
+    fun aggregateId(scope: String) =
+        UUID.nameUUIDFromBytes(
+                "ValerochkaGym.planner-exercise-preferences.v1:$scope".toByteArray(UTF_8)
+            )
+            .toString()
+    SyncSchema.install(sql)
+    sql.execSQL("UPDATE backend_state SET owner=?,phase='OWNED' WHERE id=1", arrayOf(owner))
+    sql.execSQL(
+        "INSERT INTO planner_exercise_preferences(scope,exerciseSyncId,preference) VALUES(?,?,?)",
+        arrayOf(owner, exerciseId, "MORE"),
+    )
+    val portable = PortableData(sql)
+
+    listOf("not-an-owner-id", aggregateId(formerOwner)).forEach { invalidId ->
+      try {
+        db.withTransaction {
+          portable.apply(
+              emptyList(),
+              listOf(CloudRecord("planner_exercise_preferences", invalidId, 1, deleted = true)),
+          )
+        }
+        throw AssertionError("A foreign planner preference tombstone must be rejected")
+      } catch (_: IllegalStateException) {}
+      assertEquals(1, db.plannerExercisePreferenceDao().get(owner).size)
+    }
+
+    db.withTransaction {
+      portable.apply(
+          emptyList(),
+          listOf(
+              CloudRecord(
+                  "planner_exercise_preferences",
+                  aggregateId(owner),
+                  2,
+                  deleted = true,
+              )
+          ),
+      )
+    }
+    assertTrue(db.plannerExercisePreferenceDao().get(owner).isEmpty())
+  }
+
+  @Test
+  fun `planner preferences omit an unsaved empty owner aggregate and emit sorted saved choices`() =
+      runTest {
+        val owner = "10000000-0000-4000-8000-000000000001"
+        val firstExercise = "20000000-0000-4000-8000-000000000002"
+        val secondExercise = "30000000-0000-4000-8000-000000000003"
+        val sql = db.openHelper.writableDatabase
+        val recordId =
+            UUID.nameUUIDFromBytes(
+                    "ValerochkaGym.planner-exercise-preferences.v1:$owner".toByteArray(UTF_8)
+                )
+                .toString()
+        SyncSchema.install(sql)
+        sql.execSQL("UPDATE backend_state SET owner=?,phase='OWNED' WHERE id=1", arrayOf(owner))
+
+        assertFalse(
+            PortableData(sql).snapshot().containsKey("planner_exercise_preferences:$recordId")
+        )
+
+        sql.execSQL(
+            "INSERT INTO planner_exercise_preferences(scope,exerciseSyncId,preference) VALUES(?,?,?)",
+            arrayOf(owner, secondExercise, "NEVER"),
+        )
+        sql.execSQL(
+            "INSERT INTO planner_exercise_preferences(scope,exerciseSyncId,preference) VALUES(?,?,?)",
+            arrayOf(owner, firstExercise, "MORE"),
+        )
+
+        val record =
+            requireNotNull(PortableData(sql).snapshot()["planner_exercise_preferences:$recordId"])
+        assertEquals(1, record["schemaVersion"]?.jsonPrimitive?.int)
+        assertEquals(
+            listOf(firstExercise to "MORE", secondExercise to "NEVER"),
+            record["preferences"]?.jsonArray?.map { preference ->
+              preference.jsonObject.getValue("exerciseId").jsonPrimitive.content to
+                  preference.jsonObject.getValue("preference").jsonPrimitive.content
+            },
+        )
+
+        sql.execSQL("DELETE FROM planner_exercise_preferences WHERE scope=?", arrayOf(owner))
+        assertFalse(
+            PortableData(sql).snapshot().containsKey("planner_exercise_preferences:$recordId")
+        )
+      }
+
   @Test
   fun `strength planner records use separate canonical wire without changing baseline profile`() =
       runTest {
@@ -74,65 +169,86 @@ class PortableDataTest : RoomDaoTest() {
       }
 
   @Test
-  fun `workout RIR survives portable round trip and legacy omissions remain unknown`() = runTest {
-    val workout = insertWorkout("rir-sync", finishedAt = 2000)
-    val exercise =
-        db.exerciseDao()
-            .insert(
-                com.valerochka1337.valerochkagym.data.db.entity.ExerciseEntity(
-                    name = "Press",
-                    muscleGroup = com.valerochka1337.valerochkagym.data.db.entity.MuscleGroup.CHEST,
-                    type = com.valerochka1337.valerochkagym.data.db.entity.ExerciseType.STRENGTH,
+  fun `workout RIR including four plus survives portable round trip and legacy omissions remain unknown`() =
+      runTest {
+        val workout = insertWorkout("rir-sync", finishedAt = 2000)
+        val exercise =
+            db.exerciseDao()
+                .insert(
+                    com.valerochka1337.valerochkagym.data.db.entity.ExerciseEntity(
+                        name = "Press",
+                        muscleGroup =
+                            com.valerochka1337.valerochkagym.data.db.entity.MuscleGroup.CHEST,
+                        type =
+                            com.valerochka1337.valerochkagym.data.db.entity.ExerciseType.STRENGTH,
+                    )
                 )
-            )
-    val section = insertWorkoutExercise(workout, exercise)
-    val setId = insertSet(section, 0, weightKg = 50.0, reps = 8, isCompleted = true)
-    db.workoutDao()
-        .updateSet(db.workoutDao().getSet(setId)!!.copy(legacyTargetRir = 3, actualRir = 0))
-    val portable = PortableData(db.openHelper.writableDatabase)
-    val payload = portable.snapshot(includeStandard = true).getValue("workout:$workout")
-    db.withTransaction {
-      portable.apply(listOf(CloudRecord("workout", workout, 1, payload = payload)), emptyList())
-    }
-    val restored = workoutFull(workout).exercises.single().sets.single()
-    assertEquals(3, restored.legacyTargetRir)
-    assertEquals(0, restored.actualRir)
-    db.workoutDao().updateSet(restored.copy(actualRir = null, actualRirAtLeastFour = true))
-    val rangePayload = portable.snapshot(includeStandard = true).getValue("workout:$workout")
-    db.workoutDao().updateSet(restored.copy(actualRir = 2, actualRirAtLeastFour = false))
-    db.withTransaction {
-      portable.apply(
-          listOf(CloudRecord("workout", workout, 2, payload = rangePayload)),
-          emptyList(),
-      )
-    }
-    assertTrue(workoutFull(workout).exercises.single().sets.single().actualRirAtLeastFour)
-    assertEquals(null, workoutFull(workout).exercises.single().sets.single().actualRir)
-    fun withoutRir(
-        value: kotlinx.serialization.json.JsonElement
-    ): kotlinx.serialization.json.JsonElement =
-        when (value) {
-          is JsonObject ->
-              JsonObject(
-                  value
-                      .filterKeys { it !in setOf("targetRir", "actualRir", "actualRirAtLeastFour") }
-                      .mapValues { withoutRir(it.value) }
-              )
-          is JsonArray -> JsonArray(value.map(::withoutRir))
-          else -> value
+        val section = insertWorkoutExercise(workout, exercise)
+        val setId = insertSet(section, 0, weightKg = 50.0, reps = 8, isCompleted = true)
+        db.workoutDao()
+            .updateSet(db.workoutDao().getSet(setId)!!.copy(legacyTargetRir = 3, actualRir = 0))
+        val portable = PortableData(db.openHelper.writableDatabase)
+        val payload = portable.snapshot(includeStandard = true).getValue("workout:$workout")
+        db.withTransaction {
+          portable.apply(listOf(CloudRecord("workout", workout, 1, payload = payload)), emptyList())
         }
-    db.withTransaction {
-      portable.apply(
-          listOf(
-              CloudRecord("workout", workout, 2, payload = withoutRir(rangePayload) as JsonObject)
-          ),
-          emptyList(),
-      )
-    }
-    assertEquals(null, workoutFull(workout).exercises.single().sets.single().actualRir)
-    assertEquals(null, workoutFull(workout).exercises.single().sets.single().legacyTargetRir)
-    assertFalse(workoutFull(workout).exercises.single().sets.single().actualRirAtLeastFour)
-  }
+        val restored = workoutFull(workout).exercises.single().sets.single()
+        assertEquals(3, restored.legacyTargetRir)
+        assertEquals(0, restored.actualRir)
+        db.workoutDao().updateSet(restored.copy(actualRir = null, actualRirAtLeastFour = true))
+        val rangePayload = portable.snapshot(includeStandard = true).getValue("workout:$workout")
+        val serializedSet =
+            rangePayload
+                .getValue("exercises")
+                .jsonArray
+                .single()
+                .jsonObject
+                .getValue("sets")
+                .jsonArray
+                .single()
+                .jsonObject
+        assertTrue(serializedSet.getValue("actualRirAtLeastFour").jsonPrimitive.boolean)
+        db.workoutDao().updateSet(restored.copy(actualRir = 2, actualRirAtLeastFour = false))
+        db.withTransaction {
+          portable.apply(
+              listOf(CloudRecord("workout", workout, 2, payload = rangePayload)),
+              emptyList(),
+          )
+        }
+        assertTrue(workoutFull(workout).exercises.single().sets.single().actualRirAtLeastFour)
+        assertEquals(null, workoutFull(workout).exercises.single().sets.single().actualRir)
+        fun withoutRir(
+            value: kotlinx.serialization.json.JsonElement
+        ): kotlinx.serialization.json.JsonElement =
+            when (value) {
+              is JsonObject ->
+                  JsonObject(
+                      value
+                          .filterKeys {
+                            it !in setOf("targetRir", "actualRir", "actualRirAtLeastFour")
+                          }
+                          .mapValues { withoutRir(it.value) }
+                  )
+              is JsonArray -> JsonArray(value.map(::withoutRir))
+              else -> value
+            }
+        db.withTransaction {
+          portable.apply(
+              listOf(
+                  CloudRecord(
+                      "workout",
+                      workout,
+                      2,
+                      payload = withoutRir(rangePayload) as JsonObject,
+                  )
+              ),
+              emptyList(),
+          )
+        }
+        assertEquals(null, workoutFull(workout).exercises.single().sets.single().actualRir)
+        assertEquals(null, workoutFull(workout).exercises.single().sets.single().legacyTargetRir)
+        assertFalse(workoutFull(workout).exercises.single().sets.single().actualRirAtLeastFour)
+      }
 
   @Test
   fun `profile wire atomically replaces canonical children and rejects wrong scalar types`() =

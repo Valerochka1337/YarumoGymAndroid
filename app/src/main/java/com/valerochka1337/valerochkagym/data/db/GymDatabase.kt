@@ -19,6 +19,7 @@ import com.valerochka1337.valerochkagym.data.db.dao.HealthAiConsentDao
 import com.valerochka1337.valerochkagym.data.db.dao.HealthDao
 import com.valerochka1337.valerochkagym.data.db.dao.HealthSyncDao
 import com.valerochka1337.valerochkagym.data.db.dao.MuscleLoadUpgradeNoticeDao
+import com.valerochka1337.valerochkagym.data.db.dao.PlannerExercisePreferenceDao
 import com.valerochka1337.valerochkagym.data.db.dao.ProfileDao
 import com.valerochka1337.valerochkagym.data.db.dao.RoutineDao
 import com.valerochka1337.valerochkagym.data.db.dao.ScheduledWorkoutDao
@@ -59,6 +60,7 @@ import com.valerochka1337.valerochkagym.data.db.entity.HealthSyncOutboxEntity
 import com.valerochka1337.valerochkagym.data.db.entity.HealthSyncStagingEntity
 import com.valerochka1337.valerochkagym.data.db.entity.HealthSyncStateEntity
 import com.valerochka1337.valerochkagym.data.db.entity.MuscleLoadUpgradeNoticeEntity
+import com.valerochka1337.valerochkagym.data.db.entity.PlannerExercisePreferenceEntity
 import com.valerochka1337.valerochkagym.data.db.entity.ProfileEntity
 import com.valerochka1337.valerochkagym.data.db.entity.ProfileEquipmentPreferenceEntity
 import com.valerochka1337.valerochkagym.data.db.entity.RoutineEntity
@@ -112,6 +114,7 @@ import kotlinx.serialization.json.JsonPrimitive
             ProfileEquipmentPreferenceEntity::class,
             StrengthPlannerProfileEntity::class,
             StrengthPlannerKeyExerciseEntity::class,
+            PlannerExercisePreferenceEntity::class,
             GymEntity::class,
             GymEquipmentEntity::class,
             HealthAiConsentStateEntity::class,
@@ -150,7 +153,7 @@ import kotlinx.serialization.json.JsonPrimitive
             com.valerochka1337.valerochkagym.data.db.entity.CoachSessionOutboxEntity::class,
             com.valerochka1337.valerochkagym.data.db.entity.CoachReceiptOutboxEntity::class,
         ],
-    version = 35,
+    version = 36,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -176,6 +179,8 @@ abstract class GymDatabase : RoomDatabase() {
   abstract fun profileDao(): ProfileDao
 
   abstract fun strengthPlannerProfileDao(): StrengthPlannerProfileDao
+
+  abstract fun plannerExercisePreferenceDao(): PlannerExercisePreferenceDao
 
   abstract fun gymDao(): GymDao
 
@@ -1510,6 +1515,20 @@ abstract class GymDatabase : RoomDatabase() {
           }
         }
 
+    /** v35 → v36: owner-scoped aggregate source for agentic planner preferences. */
+    val MIGRATION_35_36: Migration =
+        object : Migration(35, 36) {
+          override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                "CREATE TABLE IF NOT EXISTS `planner_exercise_preferences` (`scope` TEXT NOT NULL, `exerciseSyncId` TEXT NOT NULL, `preference` TEXT NOT NULL, PRIMARY KEY(`scope`, `exerciseSyncId`))"
+            )
+            db.execSQL(
+                "CREATE INDEX IF NOT EXISTS `index_planner_exercise_preferences_exerciseSyncId` ON `planner_exercise_preferences` (`exerciseSyncId`)"
+            )
+            com.valerochka1337.valerochkagym.data.backend.SyncSchema.install(db)
+          }
+        }
+
     /** Единственный production/test реестр всех поддерживаемых путей до текущей схемы. */
     val ALL_MIGRATIONS: Array<Migration> =
         arrayOf(
@@ -1547,6 +1566,7 @@ abstract class GymDatabase : RoomDatabase() {
             MIGRATION_32_33,
             MIGRATION_33_34,
             MIGRATION_34_35,
+            MIGRATION_35_36,
         )
 
     private val legacyCoachJson = Json {

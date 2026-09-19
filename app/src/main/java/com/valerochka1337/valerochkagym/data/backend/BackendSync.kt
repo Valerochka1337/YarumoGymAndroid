@@ -93,6 +93,8 @@ constructor(
   private fun supportsStrengthPlannerPersonalization(): Boolean =
       supports("strength-planner-personalization")
 
+  private fun supportsAgenticPlanner(): Boolean = supports("ai-planner-agentic-v1")
+
   /** Owner-bound negotiated feature capability; optional transports must not probe when absent. */
   fun supportsHealthLedger(): Boolean = supports("health-ledger-v1")
 
@@ -126,6 +128,8 @@ constructor(
             !it.startsWith("strength_planner_profile:") && !it.startsWith("workout_effort:")
           }
     }
+    if (!supportsAgenticPlanner())
+        result = result.filterKeys { !it.startsWith("planner_exercise_preferences:") }
     if (!supportsAnnotatedWorkoutWrites()) {
       result =
           result
@@ -161,6 +165,7 @@ constructor(
             supportsStrengthPlannerPersonalization() ||
                 it.kind !in setOf("strength_planner_profile", "workout_effort")
           }
+          .filter { supportsAgenticPlanner() || it.kind != "planner_exercise_preferences" }
           .mapNotNull { record ->
             if (supportsAnnotatedWorkoutWrites() || record.kind != "workout") record
             else {
@@ -196,6 +201,8 @@ constructor(
             !it.startsWith("strength_planner_profile:") && !it.startsWith("workout_effort:")
           }
     }
+    if (!supportsAgenticPlanner())
+        result = result.filterKeys { !it.startsWith("planner_exercise_preferences:") }
     if (!supportsAnnotatedWorkoutWrites()) {
       result =
           result
@@ -280,28 +287,26 @@ constructor(
   }
 
   /**
-   * Reissues a request produced by 1.3.70 when the negotiated server cannot represent RIR. A new
-   * operation ID prevents changed bytes from reusing the old identity; normal revision-conflict
-   * recovery covers a lost response after an earlier commit.
+   * Sends a deterministic compatibility copy when the negotiated server cannot represent RIR. The
+   * durable request remains a byte-exact journal; this derived operation was never dispatched with
+   * the original operation ID, so it can retry safely after a lost response.
    */
-  private fun compatibleRetainedPush(user: String, push: CloudPush): CloudPush {
+  private fun compatibleRetainedPush(push: CloudPush): CloudPush {
     if (supportsWorkoutRir() || push.changes.none { it.payload?.let(::hasWorkoutRir) == true })
         return push
-    val compatible =
-        push.copy(
-            operationId = UUID.randomUUID().toString(),
-            changes =
-                push.changes.map { change ->
-                  if (change.kind == "workout" && !change.deleted)
-                      change.copy(payload = change.payload?.let(::stripWorkoutRir))
-                  else change
-                },
-        )
-    db.execSQL(
-        "UPDATE backend_outbox SET requestJson=? WHERE id=1 AND owner=?",
-        arrayOf(api.json.encodeToString(compatible), user),
+    return push.copy(
+        operationId =
+            UUID.nameUUIDFromBytes(
+                    "ValerochkaGym.workout-rir-compat-v1:${push.operationId}".toByteArray(UTF_8)
+                )
+                .toString(),
+        changes =
+            push.changes.map { change ->
+              if (change.kind == "workout" && !change.deleted)
+                  change.copy(payload = change.payload?.let(::stripWorkoutRir))
+              else change
+            },
     )
-    return compatible
   }
 
   private fun hasSetNote(payload: JsonObject): Boolean =
@@ -342,6 +347,7 @@ constructor(
           (change.kind == "profile" && !supportsProfile()) ||
           (change.kind in setOf("strength_planner_profile", "workout_effort") &&
               !supportsStrengthPlannerPersonalization()) ||
+          (change.kind == "planner_exercise_preferences" && !supportsAgenticPlanner()) ||
           (change.kind == "workout" &&
               !supportsAnnotatedWorkoutWrites() &&
               (change.payload?.let(::hasSetNote) == true ||
@@ -486,6 +492,9 @@ constructor(
       db.execSQL("DELETE FROM strength_planner_profiles WHERE scope=?", arrayOf(it))
     }
     profileScope?.let { db.execSQL("DELETE FROM workout_efforts WHERE scope=?", arrayOf(it)) }
+    profileScope?.let {
+      db.execSQL("DELETE FROM planner_exercise_preferences WHERE scope=?", arrayOf(it))
+    }
     profileScope?.let { owner ->
       db.execSQL("DELETE FROM workout_preparations WHERE owner=?", arrayOf(owner))
       db.execSQL("DELETE FROM training_proposal_projections WHERE owner=?", arrayOf(owner))
@@ -554,6 +563,12 @@ constructor(
         )
       }
     }
+    // Preference aggregate has no wire id while a user is a guest; it becomes the owner's single
+    // deterministic record on the next snapshot.
+    db.execSQL(
+        "UPDATE planner_exercise_preferences SET scope=? WHERE scope='GUEST'",
+        arrayOf(owner),
+    )
   }
 
   /** Binds the complete guest health aggregate before the claimed owner's token is installed. */
@@ -1267,15 +1282,19 @@ constructor(
               val pendingPush =
                   database.withTransaction {
                     assertOwner(user)
-                    if (pending.second) pending.first
-                    else compatibleRetainedPush(user, pending.first)
+                    if (pending.second) pending.first else compatibleRetainedPush(pending.first)
                   }
               val pendingHasUnsupportedCapability = pendingPush.changes.any(::isUnsupportedChange)
               if (pendingHasUnsupportedCapability) {
                 mutableStatus.value = "Часть данных ожидает поддержку сервера"
               } else if (!pending.second) {
                 try {
-                  send(user, pendingPush)
+                  send(
+                      user,
+                      pendingPush,
+                      retainedOperationId =
+                          pending.first.operationId.takeIf { pendingPush != pending.first },
+                  )
                 } catch (error: BackendException) {
                   if (error.status == 409 && error.code == "revision_conflict") {
                     database.withTransaction {
@@ -1434,7 +1453,11 @@ constructor(
         }
       }
 
-  private suspend fun send(user: String, push: CloudPush) {
+  private suspend fun send(
+      user: String,
+      push: CloudPush,
+      retainedOperationId: String? = null,
+  ) {
     assertOwner(user)
     var sent = push
     var acknowledgedSession: BackendSessionSnapshot? = null
@@ -1446,16 +1469,18 @@ constructor(
                     throw BackendException(409, "outbox_missing", "Запрос изменился")
                 it.getString(0)
               }
-      // The operation identity proves the bytes belong to this attempt without normalizing them.
-      if (api.json.decodeFromString<CloudPush>(raw).operationId != value.operationId)
+      // A compatibility dispatch keeps its source journal byte-exact while sending derived bytes.
+      val expectedStoredOperationId = retainedOperationId ?: value.operationId
+      if (api.json.decodeFromString<CloudPush>(raw).operationId != expectedStoredOperationId)
           throw BackendException(409, "outbox_changed", "Запрос изменился")
+      val requestBytes = if (retainedOperationId == null) raw else api.json.encodeToString(value)
       val dispatch =
           tokens.snapshot() ?: throw BackendException(401, "owner_changed", "Аккаунт изменился")
       val response =
           api.authorizedRawResponse(
               method = "POST",
               path = "/sync",
-              rawBody = raw.encodeToByteArray(),
+              rawBody = requestBytes.encodeToByteArray(),
               expectedOwner = user,
               expectedSessionEpoch = dispatch.epoch,
               retryOnUnauthorized = true,

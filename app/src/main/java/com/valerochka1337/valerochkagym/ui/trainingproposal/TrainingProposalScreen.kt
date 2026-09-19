@@ -219,6 +219,9 @@ fun TrainingProposalDetailContent(
     onReject: () -> Unit,
     onBack: () -> Unit,
     onRetry: () -> Unit,
+    refinement: String = "",
+    onRefinementChange: (String) -> Unit = {},
+    onRefine: () -> Unit = {},
     explanation: PlannerExplanation? = null,
     exerciseTypes: Map<String, ExerciseType> = emptyMap(),
     availableExerciseIds: Set<String> = exerciseChoices.map { it.first }.toSet(),
@@ -345,6 +348,26 @@ fun TrainingProposalDetailContent(
         )
       }
       canEdit -> {
+        if (proposal.source == ProposalSource.AI) {
+          OutlinedTextField(
+              value = refinement,
+              onValueChange = onRefinementChange,
+              modifier = Modifier.fillMaxWidth(),
+              label = { Text("Что изменить в плане") },
+              minLines = 2,
+              enabled = !saving,
+          )
+          OutlinedButton(
+              onClick = onRefine,
+              enabled = !saving && refinement.trim().isNotEmpty() && refinement.length <= 2000,
+              modifier =
+                  Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics {
+                    contentDescription = "Уточнить предложение"
+                  },
+          ) {
+            Text("Уточнить с ИИ")
+          }
+        }
         PillButton(
             "Применить",
             {

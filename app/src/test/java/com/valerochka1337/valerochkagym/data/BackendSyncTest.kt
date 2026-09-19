@@ -32,6 +32,34 @@ class BackendSyncTest : RoomDaoTest() {
       )
 
   @Test
+  fun `clearing synced planner preferences sends their aggregate tombstone`() = runTest {
+    val owner = "user-a"
+    val exerciseId = "00000000-0000-4000-8000-000000000001"
+    val recordId =
+        UUID.nameUUIDFromBytes(
+                "ValerochkaGym.planner-exercise-preferences.v1:$owner".encodeToByteArray()
+            )
+            .toString()
+    val key = "planner_exercise_preferences:$recordId"
+    SyncSchema.install(raw)
+    val server = Server().apply { accepted = setOf("ai-planner-agentic-v1") }
+    val sync = BackendSync(db, server, Store())
+    sync.claim(owner)
+    raw.execSQL(
+        "INSERT INTO planner_exercise_preferences(scope,exerciseSyncId,preference) VALUES(?,?,?)",
+        arrayOf(owner, exerciseId, "MORE"),
+    )
+
+    sync.run()
+    assertFalse(requireNotNull(server.records[key]).deleted)
+
+    raw.execSQL("DELETE FROM planner_exercise_preferences WHERE scope=?", arrayOf(owner))
+    sync.run()
+
+    assertTrue(requireNotNull(server.records[key]).deleted)
+  }
+
+  @Test
   fun `account replacement purges retained legacy coach archives`() = runTest {
     SyncSchema.install(raw)
     val sync = BackendSync(db, Server(), Store())
@@ -337,7 +365,7 @@ class BackendSyncTest : RoomDaoTest() {
       }
 
   @Test
-  fun `negotiated RIR capability uploads workout RIR fields`() = runTest {
+  fun `negotiated RIR capability sends four plus workout RIR`() = runTest {
     SyncSchema.install(raw)
     val server = Server().apply { accepted = setOf("annotated-workout-writes", "workout-rir-v1") }
     val sync = BackendSync(db, server, Store())
@@ -365,7 +393,11 @@ class BackendSyncTest : RoomDaoTest() {
     val sync = BackendSync(db, server, Store())
     val workoutId = "rir-retained"
     val setId = finishedWorkoutSet(workoutId, "")
-    db.workoutDao().updateSet(requireNotNull(db.workoutDao().getSet(setId)).copy(actualRir = 1))
+    db.workoutDao()
+        .updateSet(
+            requireNotNull(db.workoutDao().getSet(setId))
+                .copy(actualRir = null, actualRirAtLeastFour = true)
+        )
     sync.claim("user-a")
     val original =
         CloudPush(
@@ -379,9 +411,36 @@ class BackendSyncTest : RoomDaoTest() {
                 )
             ),
         )
+    val originalBytes = Json.encodeToString(original)
     raw.execSQL(
         "INSERT INTO backend_outbox(id,owner,requestJson) VALUES(1,'user-a',?)",
-        arrayOf(Json.encodeToString(original)),
+        arrayOf(originalBytes),
+    )
+
+    server.failBeforeCommit = true
+    try {
+      sync.run()
+      fail("A failed compatibility dispatch must retain the exact durable request")
+    } catch (_: IOException) {}
+    raw.query("SELECT requestJson FROM backend_outbox WHERE id=1").use {
+      assertTrue(it.moveToFirst())
+      assertEquals(originalBytes, it.getString(0))
+    }
+    assertTrue(
+        server.rawPosts
+            .single()
+            .decodeToString()
+            .let(Json::parseToJsonElement)
+            .jsonObject
+            .getValue("changes")
+            .jsonArray
+            .single()
+            .jsonObject
+            .getValue("payload")
+            .jsonObject
+            .singleWorkoutSet()
+            .keys
+            .none { it in setOf("targetRir", "actualRir", "actualRirAtLeastFour") }
     )
 
     sync.run()
@@ -397,7 +456,7 @@ class BackendSyncTest : RoomDaoTest() {
         }
     )
     assertEquals(0, tableCount("backend_outbox"))
-    assertEquals(1, workoutFull(workoutId).exercises.single().sets.single().actualRir)
+    assertTrue(workoutFull(workoutId).exercises.single().sets.single().actualRirAtLeastFour)
   }
 
   private suspend fun baselineWorkout(

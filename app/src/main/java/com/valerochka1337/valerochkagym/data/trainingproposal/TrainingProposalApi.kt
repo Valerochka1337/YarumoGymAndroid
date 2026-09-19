@@ -114,6 +114,44 @@ constructor(
     return result
   }
 
+  suspend fun refine(
+      session: BackendSessionSnapshot,
+      proposal: TrainingProposal,
+      text: String,
+      requestId: String,
+  ): TrainingProposal {
+    require(text == text.trim() && text.length in 1..2000)
+    require(ProposalWire.uuid(requestId))
+    val bytes =
+        ProposalWire.json
+            .encodeToString(
+                CalendarRefinementRequest(
+                    requestId,
+                    proposal.snapshot.ownerRevision,
+                    proposal.snapshot.catalogRevision,
+                    proposal.currentVersion,
+                    text,
+                )
+            )
+            .encodeToByteArray()
+    val result =
+        ProposalWire.decode<TrainingProposal>(
+            request(
+                session,
+                "POST",
+                "/ai/calendar-drafts/${proposal.proposalId}/refinements",
+                bytes,
+            )
+        )
+    require(
+        ProposalWire.valid(result) &&
+            result.proposalId == proposal.proposalId &&
+            result.currentVersion == proposal.currentVersion + 1 &&
+            result.status == ProposalStatus.PENDING
+    )
+    return result
+  }
+
   private fun path(id: String): String {
     require(ProposalWire.uuid(id))
     return "$ROOT/$id"

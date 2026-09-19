@@ -92,6 +92,15 @@ data class AcceptedProposalResult(
 @Serializable data class ProposalRejectRequest(val version: Int, val reason: String?)
 
 @Serializable
+data class CalendarRefinementRequest(
+    val requestId: String,
+    val expectedRevision: Long,
+    val expectedCatalogRevision: Long,
+    val expectedProposalVersion: Int,
+    val refinement: String,
+)
+
+@Serializable
 data class ProposalDecision(
     val proposalId: String,
     val version: Int,
