@@ -189,7 +189,8 @@ constructor(
         setInitiativeEnabled(it.tokens.userId, workoutId, false, it.epoch)
       } ?: false
 
-  suspend fun considerInitiative(workoutId: String): Boolean = remote.changed(workoutId)
+  suspend fun considerInitiative(workoutId: String): Boolean =
+      remote.changed(workoutId, immediate = false)
 
   private suspend fun setInitiativeEnabled(
       accountId: String,

@@ -44,7 +44,6 @@ class CoachDeliveryScheduler @Inject constructor(private val workManager: WorkMa
                 Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
             )
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
-            .setInitialDelay(2, TimeUnit.SECONDS)
             .build()
     // Appending covers writes racing the current worker's final empty-outbox check.
     workManager.enqueueUniqueWork(UNIQUE_WORK_NAME, ExistingWorkPolicy.APPEND_OR_REPLACE, request)

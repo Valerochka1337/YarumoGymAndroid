@@ -26,7 +26,6 @@ import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
-import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -47,7 +46,13 @@ class CoachSettingsViewModelTest {
           CoachModelCatalog(true, "$owner-default", listOf("$owner-default", "$owner-tool"))
         }
         val gateway = ProbeGateway()
-        val viewModel = viewModel(settings, sessions, catalog, CoachModelProbe(CoachAgent(gateway)))
+        val viewModel =
+            viewModel(
+                settings,
+                sessions,
+                catalog,
+                CoachModelProbe(CoachRunsClient(gateway), settings),
+            )
         collect(viewModel)
         advanceUntilIdle()
 
@@ -170,21 +175,39 @@ class CoachSettingsViewModelTest {
         answer(expectedOwner, expectedSessionEpoch)
   }
 
-  private class ProbeGateway : CoachSettingsViewModelTestGateway {
+  private class ProbeGateway : com.valerochka1337.valerochkagym.data.backend.BackendTransport {
+    override val json = kotlinx.serialization.json.Json
     val calls = mutableListOf<Pair<String, Long?>>()
 
-    override suspend fun complete(
-        expectedOwner: String,
+    override suspend fun public(
+        method: String,
+        path: String,
+        body: kotlinx.serialization.json.JsonElement?,
+    ): kotlinx.serialization.json.JsonElement = error("unused")
+
+    override suspend fun authorized(
+        method: String,
+        path: String,
+        body: kotlinx.serialization.json.JsonElement?,
+    ): kotlinx.serialization.json.JsonElement = error("unused")
+
+    override suspend fun authorizedRawResponse(
+        method: String,
+        path: String,
+        rawBody: ByteArray,
+        headers: Map<String, String>,
+        expectedOwner: String?,
         expectedSessionEpoch: Long?,
-        messages: List<AiApiMessage>,
-        tools: List<AiApiTool>,
-    ): AiApiChatResponse {
-      calls += expectedOwner to expectedSessionEpoch
-      return AiApiChatResponse(
-          choices =
-              listOf(
-                  AiApiChoice(message = AiApiResponseMessage(content = JsonPrimitive("text only")))
-              )
+        retryOnUnauthorized: Boolean,
+        maxResponseBytes: Int?,
+    ): com.valerochka1337.valerochkagym.data.backend.BackendResponse {
+      calls += expectedOwner!! to expectedSessionEpoch
+      return com.valerochka1337.valerochkagym.data.backend.BackendResponse(
+          json.parseToJsonElement("""{"success":false,"message":"Проверка завершена"}"""),
+          byteArrayOf(),
+          emptySet(),
+          expectedOwner,
+          expectedSessionEpoch!!,
       )
     }
   }

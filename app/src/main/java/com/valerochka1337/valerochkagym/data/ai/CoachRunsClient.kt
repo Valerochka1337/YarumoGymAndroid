@@ -14,8 +14,29 @@ import kotlinx.serialization.json.*
  */
 @Singleton
 class CoachRunsClient @Inject constructor(private val transport: BackendTransport) {
-  suspend fun submit(rawJson: String, accountId: String, epoch: Long): JsonObject =
-      request("POST", "/coach/runs", rawJson, accountId, epoch).jsonObject
+  private data class Retry(val until: Long, val failures: Int)
+
+  private val retry = java.util.concurrent.ConcurrentHashMap<String, Retry>()
+
+  suspend fun submit(rawJson: String, accountId: String, epoch: Long): JsonObject {
+    val body = Json.parseToJsonElement(rawJson).jsonObject
+    // Previously persisted requests keep their original contract and bytes.
+    val path =
+        if (body.containsKey("state"))
+            "/coach/sessions/${id(body["state"]!!.jsonObject["snapshot"]!!.jsonObject["workout_id"]!!.jsonPrimitive.content)}/messages"
+        else "/coach/runs"
+    return request("POST", path, rawJson, accountId, epoch).jsonObject
+  }
+
+  suspend fun modelCheck(model: String?, accountId: String, epoch: Long): JsonObject =
+      request(
+              "POST",
+              "/coach/model-check",
+              buildJsonObject { model?.let { put("model", it) } }.toString(),
+              accountId,
+              epoch,
+          )
+          .jsonObject
 
   suspend fun status(runId: String, accountId: String, epoch: Long): JsonObject =
       request("GET", "/coach/runs/${id(runId)}", "", accountId, epoch).jsonObject
@@ -57,12 +78,28 @@ class CoachRunsClient @Inject constructor(private val transport: BackendTranspor
   /**
    * Cursor duplicates are suppressed; gaps fail closed so the caller can poll authoritative state.
    */
-  fun events(runId: String, after: Long, accountId: String, epoch: Long): Flow<JsonObject> = flow {
+  fun events(runId: String, after: Long, accountId: String, epoch: Long): Flow<JsonObject> =
+      eventStream("/coach/runs/${id(runId)}/events", after, accountId, epoch)
+
+  fun sessionEvents(
+      workoutId: String,
+      after: Long,
+      accountId: String,
+      epoch: Long,
+  ): Flow<JsonObject> =
+      eventStream("/coach/sessions/${id(workoutId)}/events", after, accountId, epoch)
+
+  private fun eventStream(
+      path: String,
+      after: Long,
+      accountId: String,
+      epoch: Long,
+  ): Flow<JsonObject> = flow {
     require(after >= 0)
     var cursor = after
     transport
         .authorizedGetEventStream(
-            "/coach/runs/${id(runId)}/events?after=$after",
+            "$path?after=$after",
             accountId,
             epoch,
         )
@@ -86,15 +123,41 @@ class CoachRunsClient @Inject constructor(private val transport: BackendTranspor
       accountId: String,
       epoch: Long,
   ): JsonElement {
-    val response =
-        transport.authorizedRawResponse(
-            method,
-            path,
-            rawJson.encodeToByteArray(),
-            expectedOwner = accountId,
-            expectedSessionEpoch = epoch,
-            retryOnUnauthorized = true,
+    val key = "$accountId:$epoch:$method:${path.substringBefore('?')}"
+    val previous = retry[key]
+    val remaining = (previous?.until ?: 0) - System.currentTimeMillis()
+    if (remaining > 0)
+        throw BackendException(
+            429,
+            "delivery_backoff",
+            "Ожидаем соединение…",
+            retryAfterMillis = remaining,
         )
+    val response =
+        try {
+          transport.authorizedRawResponse(
+              method,
+              path,
+              rawJson.encodeToByteArray(),
+              expectedOwner = accountId,
+              expectedSessionEpoch = epoch,
+              retryOnUnauthorized = true,
+          )
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+          throw cancelled
+        } catch (error: Exception) {
+          if (error !is BackendException || error.status == 429 || error.status >= 500) {
+            val failures = ((previous?.failures ?: 0) + 1).coerceAtMost(6)
+            val wait =
+                maxOf(
+                    (error as? BackendException)?.retryAfterMillis ?: 0,
+                    (1_000L shl failures).coerceAtMost(60_000),
+                ) + kotlin.random.Random.nextLong(0, 500)
+            retry[key] = Retry(System.currentTimeMillis() + wait, failures)
+          }
+          throw error
+        }
+    retry[key] = Retry(System.currentTimeMillis() + (response.retryAfterMillis ?: 0), 0)
     checkOwner(response.owner, response.sessionEpoch, accountId, epoch)
     return response.body
   }

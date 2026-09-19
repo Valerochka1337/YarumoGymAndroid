@@ -15,6 +15,9 @@ data class CoachRunEntity(
     val imported: Boolean = false,
     val cursor: Long = 0,
     val proposalId: String? = null,
+    @androidx.room.ColumnInfo(defaultValue = "'USER'") val origin: String = "USER",
+    val stage: String? = null,
+    val draft: String? = null,
 )
 
 /** A single persisted full snapshot is retried byte-for-byte until acknowledged. */
@@ -42,3 +45,6 @@ data class CoachDirtyEntity(
     @androidx.room.PrimaryKey val workoutId: String,
     val generation: Long = 1,
 )
+
+@Entity(tableName = "coach_event_cursors", primaryKeys = ["accountId", "workoutId"])
+data class CoachEventCursorEntity(val accountId: String, val workoutId: String, val sequence: Long)

@@ -114,6 +114,7 @@ data class BackendResponse(
     val owner: String?,
     /** Snapshot of the authenticated session that dispatched this exact request. */
     val sessionEpoch: Long = 0L,
+    val retryAfterMillis: Long? = null,
 )
 
 data class BackendSessionSnapshot(val tokens: BackendTokens, val epoch: Long)
@@ -420,9 +421,30 @@ class BackendApi @Inject constructor(private val tokens: BackendSessionStore) : 
           error?.get("code")?.jsonPrimitive?.content ?: "http_error",
           error?.get("message")?.jsonPrimitive?.content ?: "Сервер недоступен. Повторите позже",
           fromHttpResponse = true,
+          retryAfterMillis =
+              response.header("Retry-After")?.let { value ->
+                value.toLongOrNull()?.coerceIn(0, 86400)?.times(1000)
+                    ?: runCatching {
+                          (java.time.ZonedDateTime.parse(
+                                      value,
+                                      java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME,
+                                  )
+                                  .toInstant()
+                                  .toEpochMilli() - System.currentTimeMillis())
+                              .coerceAtLeast(0)
+                        }
+                        .getOrNull()
+              },
       )
     }
-    return BackendResponse(parsed, bytes, accepted, owner, sessionEpoch)
+    return BackendResponse(
+        parsed,
+        bytes,
+        accepted,
+        owner,
+        sessionEpoch,
+        response.header("Retry-After")?.toLongOrNull()?.coerceIn(0, 86400)?.times(1000),
+    )
   }
 
   override suspend fun public(method: String, path: String, body: JsonElement?): JsonElement =
@@ -686,7 +708,8 @@ class BackendApi @Inject constructor(private val tokens: BackendSessionStore) : 
                                   BackendStreamEvent(event, data, expectedOwner, dispatch.epoch, id)
                               )
                           sent.getOrThrow()
-                          event !in setOf("completed", "error")
+                          path.startsWith("/coach/sessions/") ||
+                              event !in setOf("completed", "error")
                         }
                       }
                       close()

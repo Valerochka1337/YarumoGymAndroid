@@ -470,6 +470,7 @@ constructor(
             "backend_rejected_operations",
             "coach_sync_state",
             "coach_runs",
+            "coach_event_cursors",
             "coach_session_outbox",
             "coach_receipt_outbox",
             "coach_dirty_sessions",

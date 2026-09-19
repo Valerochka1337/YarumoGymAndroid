@@ -1,134 +1,85 @@
 package com.valerochka1337.valerochkagym.data.ai
 
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.*
+import com.valerochka1337.valerochkagym.data.backend.*
+import com.valerochka1337.valerochkagym.data.settings.SettingsRepository
+import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.test.runTest
-import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.*
 import org.junit.Assert.*
 import org.junit.Test
 
 class CoachModelProbeTest {
   @Test
-  fun `probe uses captured account session while workout stays synthetic`() = runTest {
-    val gateway =
-        object : CoachModelProbeTestGateway {
-          override suspend fun complete(
-              expectedOwner: String,
-              expectedSessionEpoch: Long?,
-              messages: List<AiApiMessage>,
-              tools: List<AiApiTool>,
-          ): AiApiChatResponse {
-            assertEquals("account-a", expectedOwner)
-            assertEquals(7L, expectedSessionEpoch)
-            assertTrue(
-                messages.any {
-                  (it.content as? JsonPrimitive)
-                      ?.content
-                      ?.contains("10000000-0000-4000-8000-000000000001") == true
-                }
-            )
-            return AiApiChatResponse(
-                choices =
-                    listOf(
-                        AiApiChoice(
-                            message = AiApiResponseMessage(content = JsonPrimitive("Только текст"))
-                        )
-                    )
-            )
-          }
-        }
-    assertFalse(CoachModelProbe(CoachAgent(gateway)).verify("account-a", 7L).success)
-  }
-
-  @Test
-  fun `probe verifies read and mutation tools on synthetic identity`() = runTest {
-    val result =
-        probe(
-                tool("read", "get_workout_state", "{}"),
-                tool(
-                    "write",
-                    "submit_workout_changes",
-                    """{"base_revision":0,"operations":[{"action":"add_set","section_id":"10000000-0000-4000-8000-000000000002"}]}""",
-                ),
-            )
-            .verify()
+  fun `probe sends selected model and captured login without personal data`() = runTest {
+    val transport = ProbeTransport()
+    val settings = SettingsRepository(ProbeStore())
+    settings.setCoachModel("owner", "selected")
+    val result = CoachModelProbe(CoachRunsClient(transport), settings).verify("owner", 7)
     assertTrue(result.success)
+    assertEquals("POST /coach/model-check", transport.path)
+    assertEquals("owner", transport.owner)
+    assertEquals(7L, transport.epoch)
+    assertEquals("{\"model\":\"selected\"}", transport.body)
   }
 
   @Test
-  fun `text only model fails compatibility probe`() = runTest {
-    val result = probe(AiApiResponseMessage(content = JsonPrimitive("Готово"))).verify()
-    assertFalse(result.success)
-  }
-
-  @Test
-  fun `foreign section cannot pass synthetic mutation check`() = runTest {
-    val result =
-        probe(
-                tool("read", "get_workout_state", "{}"),
-                tool(
-                    "write",
-                    "submit_workout_changes",
-                    """{"base_revision":0,"operations":[{"action":"add_set","section_id":"20000000-0000-4000-8000-000000000002"}]}""",
-                ),
-            )
-            .verify()
-    assertFalse(result.success)
-  }
-
-  private fun tool(id: String, name: String, args: String) =
-      AiApiResponseMessage(
-          toolCalls = listOf(AiApiToolCall(id, function = AiApiToolCallFunction(name, args)))
-      )
-
-  private fun probe(vararg responses: AiApiResponseMessage): CoachModelProbe {
-    val queue = ArrayDeque(responses.toList())
-    val api =
-        object : CoachModelProbeTestGateway {
-          override suspend fun complete(
-              expectedOwner: String,
-              expectedSessionEpoch: Long?,
-              messages: List<AiApiMessage>,
-              tools: List<AiApiTool>,
-          ): AiApiChatResponse {
-            return AiApiChatResponse(
-                choices =
-                    listOf(
-                        AiApiChoice(
-                            message =
-                                queue.removeFirstOrNull()
-                                    ?: AiApiResponseMessage(content = JsonPrimitive("Завершено"))
-                        )
-                    )
-            )
-          }
-        }
-    return CoachModelProbe(CoachAgent(api))
+  fun `late response from another login cannot pass probe`() = runTest {
+    val transport = ProbeTransport().apply { responseEpoch = 8 }
+    assertFalse(
+        CoachModelProbe(CoachRunsClient(transport), SettingsRepository(ProbeStore()))
+            .verify("owner", 7)
+            .success
+    )
   }
 }
 
-/** Completed-only fixture; streaming behavior uses explicit event fakes below. */
-private interface CoachModelProbeTestGateway :
-    com.valerochka1337.valerochkagym.data.ai.CoachModelGateway {
-  override suspend fun systemPrompt(expectedOwner: String, expectedSessionEpoch: Long?) =
-      "Server coach prompt"
+private class ProbeStore : DataStore<Preferences> {
+  private val state = MutableStateFlow<Preferences>(mutablePreferencesOf())
+  override val data: Flow<Preferences> = state
 
-  suspend fun complete(
-      expectedOwner: String,
-      expectedSessionEpoch: Long?,
-      messages: List<com.valerochka1337.valerochkagym.data.ai.AiApiMessage>,
-      tools: List<com.valerochka1337.valerochkagym.data.ai.AiApiTool>,
-  ): com.valerochka1337.valerochkagym.data.ai.AiApiChatResponse
+  override suspend fun updateData(transform: suspend (Preferences) -> Preferences) =
+      transform(state.value).also { state.value = it }
+}
 
-  override fun stream(
-      expectedOwner: String,
+private class ProbeTransport : BackendTransport {
+  override val json = Json
+  var path = ""
+  var body = ""
+  var owner: String? = null
+  var epoch: Long? = null
+  var responseEpoch = 7L
+
+  override suspend fun public(method: String, path: String, body: JsonElement?): JsonElement =
+      error("unused")
+
+  override suspend fun authorized(method: String, path: String, body: JsonElement?): JsonElement =
+      error("unused")
+
+  override suspend fun authorizedRawResponse(
+      method: String,
+      path: String,
+      rawBody: ByteArray,
+      headers: Map<String, String>,
+      expectedOwner: String?,
       expectedSessionEpoch: Long?,
-      messages: List<com.valerochka1337.valerochkagym.data.ai.AiApiMessage>,
-      tools: List<com.valerochka1337.valerochkagym.data.ai.AiApiTool>,
-  ) =
-      kotlinx.coroutines.flow.flow {
-        emit(
-            com.valerochka1337.valerochkagym.data.ai.CoachModelEvent.Completed(
-                complete(expectedOwner, expectedSessionEpoch, messages, tools)
-            )
-        )
-      }
+      retryOnUnauthorized: Boolean,
+      maxResponseBytes: Int?,
+  ): BackendResponse {
+    this.path = "$method $path"
+    body = rawBody.decodeToString()
+    owner = expectedOwner
+    epoch = expectedSessionEpoch
+    return BackendResponse(
+        buildJsonObject {
+          put("success", true)
+          put("message", "Проверено")
+        },
+        byteArrayOf(),
+        emptySet(),
+        expectedOwner,
+        responseEpoch,
+    )
+  }
 }
