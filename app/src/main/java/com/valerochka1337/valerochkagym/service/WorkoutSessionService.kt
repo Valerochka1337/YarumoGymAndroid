@@ -37,8 +37,6 @@ import com.valerochka1337.valerochkagym.domain.parseQuickSetEdit
 import com.valerochka1337.valerochkagym.service.heartrate.HeartRateConnectionState
 import com.valerochka1337.valerochkagym.service.heartrate.HeartRateMonitor
 import com.valerochka1337.valerochkagym.service.heartrate.freshAt
-import com.valerochka1337.valerochkagym.service.wear.XiaomiWearWorkoutBridge
-import com.valerochka1337.valerochkagym.service.wear.XiaomiWearWorkoutBridge.WatchCommand
 import com.valerochka1337.valerochkagym.ui.navigation.GymRoutes
 import com.valerochka1337.valerochkagym.ui.theme.AccentColor
 import dagger.hilt.android.AndroidEntryPoint
@@ -87,8 +85,6 @@ class WorkoutSessionService : LifecycleService() {
   @Inject lateinit var setMutator: WorkoutSetMutator
 
   @Inject lateinit var workoutEditor: WorkoutEditor
-
-  @Inject lateinit var xiaomiWearWorkoutBridge: XiaomiWearWorkoutBridge
 
   @Inject lateinit var heartRateMonitor: HeartRateMonitor
 
@@ -142,9 +138,7 @@ class WorkoutSessionService : LifecycleService() {
         },
         RECEIVER_NOT_EXPORTED,
     )
-    observeWearCommands()
     coachConversation.attach(lifecycleScope)
-    xiaomiWearWorkoutBridge.start()
     observeHeartRate()
     observeState()
     observeCoachAlerts()
@@ -167,7 +161,6 @@ class WorkoutSessionService : LifecycleService() {
   override fun onDestroy() {
     coachConversation.detach()
     heartRateMonitor.stop()
-    xiaomiWearWorkoutBridge.stop()
     unregisterReceiver(actionReceiver)
     super.onDestroy()
   }
@@ -200,13 +193,11 @@ class WorkoutSessionService : LifecycleService() {
             accent = accentValue
             if (workout == null) {
               currentWorkout?.workout?.id?.let(coachConversation::stopWorkout)
-              xiaomiWearWorkoutBridge.publish(workout = null, rest = null)
               heartRateMonitor.stop()
               stopSelf()
               return@collect
             }
             currentWorkout = workout
-            xiaomiWearWorkoutBridge.publish(workout, rest)
             if (coachInputsChanged) {
               lifecycleScope.launch {
                 CoachDiagnostics.event("initiative.trigger", "source" to "workout_or_rest_changed")
@@ -228,24 +219,10 @@ class WorkoutSessionService : LifecycleService() {
     }
   }
 
-  /** Команды RPK проходят через те же движки, что и действия системного уведомления. */
-  private fun observeWearCommands() {
-    lifecycleScope.launch {
-      xiaomiWearWorkoutBridge.commands.collect { command ->
-        when (command) {
-          is WatchCommand.AddRestSeconds -> restTimerEngine.addSeconds(command.seconds)
-          WatchCommand.SkipRest -> restTimerEngine.skip()
-          WatchCommand.CompleteSet -> completeCurrentSet()
-        }
-      }
-    }
-  }
-
-  /** Live HR не сохраняем: сервис зеркалит свежий пакет на RPK и завершает подходящий отдых. */
+  /** Live HR не сохраняем: свежие измерения управляют завершением отдыха по пульсу. */
   private fun observeHeartRate() {
     lifecycleScope.launch {
       heartRateMonitor.reading.collect { reading ->
-        xiaomiWearWorkoutBridge.publishHeartRate(reading)
         val fresh = reading.freshAt(System.currentTimeMillis())
         if (fresh != null) {
           restTimerEngine.onHeartRate(fresh.bpm, fresh.updatedAtMillis)

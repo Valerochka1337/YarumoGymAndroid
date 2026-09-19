@@ -63,8 +63,8 @@ android {
     applicationId = "com.valerochka1337.valerochkagym"
     minSdk = 36
     targetSdk = 37
-    versionCode = testVersionCode ?: 79
-    versionName = testVersionName ?: "1.3.71"
+    versionCode = testVersionCode ?: 80
+    versionName = testVersionName ?: "1.3.72"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -138,9 +138,6 @@ room { schemaDirectory("$projectDir/schemas") }
 
 dependencies {
   implementation(libs.androidx.exifinterface)
-  // Official Xiaomi Wear interconnect SDK from the Vela third-party-app demo.
-  implementation(files("libs/xms-wearable-lib_1.4_release.aar"))
-
   // Compose
   implementation(platform(libs.androidx.compose.bom))
   implementation(libs.androidx.ui)
