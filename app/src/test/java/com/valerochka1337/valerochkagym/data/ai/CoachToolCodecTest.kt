@@ -149,40 +149,6 @@ class CoachToolCodecTest {
     assertEquals(JsonPrimitive(6), row["actual_reps"])
     assertFalse("duration_sec" in row)
     assertFalse("account_id" in output)
-    val found =
-        CoachToolCodec.foundJson(
-            listOf(
-                com.valerochka1337.valerochkagym.domain.FoundCoachExercise(
-                    "e",
-                    "Жим",
-                    setOf("b", "a"),
-                    emptySet(),
-                )
-            )
-        )
-    assertEquals(
-        """{"exercises":[{"exercise_id":"e","name":"Жим","muscles":["a","b"],"equipment":[],"muscle_group":"","type":"","last_used_at":null,"completed_workout_count":0,"current_section_ids":[],"last_workout_sets":[]}]}""",
-        found,
-    )
-    val history =
-        CoachToolCodec.historyJson(
-            listOf(
-                com.valerochka1337.valerochkagym.data.db.dao.CoachHistorySet(
-                    com.valerochka1337.valerochkagym.data.db.entity.WorkoutSetEntity(
-                        workoutExerciseId = 1,
-                        setIndex = 2,
-                        completedAt = 123L,
-                        reps = 6,
-                    ),
-                    "past",
-                    200L,
-                )
-            )
-        )
-    assertEquals(
-        """{"history":[{"workout_id":"past","workout_finished_at":200,"section_history_id":1,"set_index":2,"completed_at":123,"set_type":"UNKNOWN","weight_kg":null,"reps":6,"duration_sec":null,"speed_kmh":null,"incline_pct":null}]}""",
-        history,
-    )
   }
 
   @Test

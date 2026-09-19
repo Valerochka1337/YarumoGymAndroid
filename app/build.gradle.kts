@@ -138,9 +138,6 @@ room { schemaDirectory("$projectDir/schemas") }
 
 dependencies {
   implementation(libs.androidx.exifinterface)
-  // Official Xiaomi Wear interconnect SDK from the Vela third-party-app demo.
-  implementation(files("libs/xms-wearable-lib_1.4_release.aar"))
-
   // Compose
   implementation(platform(libs.androidx.compose.bom))
   implementation(libs.androidx.ui)

@@ -15,12 +15,84 @@ import org.junit.Test
 
 class DurableCoachCoordinatorTest : RoomDaoTest() {
   @Test
+  fun `conversation confirms a proposal and undoes it through explicit user action`() = runTest {
+    val workout = activeWorkout()
+    val fixture = fixture(FakeTransport())
+    val snapshot = fixture.reader.snapshot("user", workout, 0)!!
+    val set = snapshot.exercises.single().sets.single()
+    val packet =
+        WorkoutChangeSet.Packet(
+            listOf(WorkoutChangeSet.Operation.EditSet(set.syncId, weightKg = 45.0))
+        )
+    val proposal =
+        fixture.editor.saveProposal(
+            "user",
+            workout,
+            packet,
+            snapshot.revision,
+            System.currentTimeMillis() + 60_000,
+        )!!
+
+    assertTrue(fixture.conversation.confirm(workout, proposal.id))
+    assertEquals(
+        45.0,
+        db.workoutDao().getWorkoutFull(workout)!!.exercises.single().sets.single().weightKg!!,
+        0.0,
+    )
+    assertTrue(
+        db.coachDao().messages(workout).any {
+          it.role == "system" && it.text.startsWith("APPLIED|")
+        }
+    )
+    assertTrue(fixture.conversation.undo(workout))
+    assertEquals(
+        set.weightKg!!,
+        db.workoutDao().getWorkoutFull(workout)!!.exercises.single().sets.single().weightKg!!,
+        0.0,
+    )
+  }
+
+  @Test
+  fun `conversation rejects a proposal and disables server initiative without changing sets`() =
+      runTest {
+        val workout = activeWorkout()
+        val fixture = fixture(FakeTransport())
+        val snapshot = fixture.reader.snapshot("user", workout, 0)!!
+        val set = snapshot.exercises.single().sets.single()
+        val packet =
+            WorkoutChangeSet.Packet(
+                listOf(WorkoutChangeSet.Operation.EditSet(set.syncId, weightKg = 45.0))
+            )
+        val proposal =
+            fixture.editor.saveProposal(
+                "user",
+                workout,
+                packet,
+                snapshot.revision,
+                System.currentTimeMillis() + 60_000,
+            )!!
+
+        assertFalse(fixture.conversation.cancel("another-workout", proposal.id))
+        assertTrue(fixture.conversation.cancel(workout, proposal.id))
+        assertNull(db.coachDao().pendingProposal(workout))
+        assertEquals(
+            set.weightKg!!,
+            db.workoutDao().getWorkoutFull(workout)!!.exercises.single().sets.single().weightKg!!,
+            0.0,
+        )
+        assertTrue(db.coachDao().messages(workout).any { it.text.startsWith("REJECTED|") })
+        assertTrue(fixture.conversation.disableInitiative(workout))
+        assertFalse(db.coachDao().context(workout)!!.initiativeEnabled)
+        assertTrue(db.coachRunDao().dirtySessions().any { it.workoutId == workout })
+      }
+
+  @Test
   fun `sending offline persists immutable request and user message together before networking`() =
       runTest {
         val workout = activeWorkout()
         val transport = FakeTransport()
         val fixture = fixture(transport)
-        assertTrue(fixture.coordinator.send(workout, "Что изменить?"))
+        assertTrue(fixture.conversation.send(workout, "Что изменить?"))
         assertEquals(0, transport.submissions.size)
         val run = db.coachRunDao().pending("user").single()
         val request = Json.parseToJsonElement(run.requestJson).jsonObject
@@ -445,6 +517,7 @@ class DurableCoachCoordinatorTest : RoomDaoTest() {
       val coordinator: DurableCoachCoordinator,
       val editor: WorkoutEditor,
       val reader: CoachWorkoutReader,
+      val conversation: CoachConversationService,
   )
 
   private fun TestScope.fixture(transport: FakeTransport): Fixture {
@@ -453,10 +526,13 @@ class DurableCoachCoordinatorTest : RoomDaoTest() {
     val reader = CoachWorkoutReader(db, timer, session)
     val editor =
         WorkoutEditor(db, db.workoutDao(), db.coachDao(), timer, session, WorkoutWriteQueue())
+    val coordinator =
+        DurableCoachCoordinator(CoachRunsClient(transport), db, reader, editor, session)
     return Fixture(
-        DurableCoachCoordinator(CoachRunsClient(transport), db, reader, editor, session),
+        coordinator,
         editor,
         reader,
+        CoachConversationService(coordinator, reader, editor, db, session),
     )
   }
 
