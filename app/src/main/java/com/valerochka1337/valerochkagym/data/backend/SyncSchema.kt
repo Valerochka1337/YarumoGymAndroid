@@ -67,6 +67,7 @@ object SyncSchema {
           "profile_equipment",
           "strength_planner_profiles",
           "strength_planner_key_exercises",
+          "planner_exercise_preferences",
           // These only wake the existing serialized worker; PortableData deliberately excludes them
           // from the generic /sync request.
           "health_logical_records",

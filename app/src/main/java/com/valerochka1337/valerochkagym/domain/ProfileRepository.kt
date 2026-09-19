@@ -72,5 +72,6 @@ interface ProfileRepository {
       target: ProfileEditTarget,
       profile: BasicProfile,
       keyExercises: List<KeyExerciseChoice>,
+      plannerPreferences: List<PlannerExerciseChoice>? = null,
   ): ProfileSaveResult = save(target, profile)
 }

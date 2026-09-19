@@ -436,6 +436,34 @@ class TrainingProposalComposeTest {
   }
 
   @Test
+  fun `pending AI proposal exposes refinement without an approval bypass`() {
+    var refinements = 0
+    compose.setContent {
+      GymTheme {
+        TrainingProposalDetailContent(
+            proposal = proposal(),
+            draft = draft(),
+            saving = false,
+            applied = false,
+            error = null,
+            exerciseChoices = listOf("bench" to "Жим лёжа"),
+            gymChoices = listOf("gym" to "Дом"),
+            onDraftChange = {},
+            onApply = {},
+            onReject = {},
+            onBack = {},
+            onRetry = {},
+            refinement = "Больше отдыха",
+            onRefine = { refinements++ },
+        )
+      }
+    }
+    compose.onNodeWithContentDescription("Уточнить предложение").performScrollTo().performClick()
+    compose.runOnIdle { assertEquals(1, refinements) }
+    compose.onNodeWithContentDescription("Применить предложение").assertIsDisplayed()
+  }
+
+  @Test
   fun `approved proposal exposes result recovery without editing or rejection`() {
     var recoverCalls = 0
     compose.setContent {

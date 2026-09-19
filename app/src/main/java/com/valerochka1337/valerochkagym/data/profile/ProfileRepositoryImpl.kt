@@ -7,6 +7,7 @@ import com.valerochka1337.valerochkagym.data.db.GymDatabase
 import com.valerochka1337.valerochkagym.data.db.dao.ProfileDao
 import com.valerochka1337.valerochkagym.data.db.entity.ExerciseType
 import com.valerochka1337.valerochkagym.data.db.entity.ProfileEntity
+import com.valerochka1337.valerochkagym.data.db.entity.PlannerExercisePreferenceEntity
 import com.valerochka1337.valerochkagym.data.db.entity.ProfileEquipmentPreferenceEntity
 import com.valerochka1337.valerochkagym.data.db.entity.StrengthPlannerKeyExerciseEntity
 import com.valerochka1337.valerochkagym.data.db.entity.StrengthPlannerProfileEntity
@@ -16,6 +17,7 @@ import com.valerochka1337.valerochkagym.domain.KeyExerciseChoice
 import com.valerochka1337.valerochkagym.domain.ProfileEditTarget
 import com.valerochka1337.valerochkagym.domain.ProfileEditorSnapshot
 import com.valerochka1337.valerochkagym.domain.ProfileRepository
+import com.valerochka1337.valerochkagym.domain.PlannerExerciseChoice
 import com.valerochka1337.valerochkagym.domain.ProfileSaveResult
 import com.valerochka1337.valerochkagym.domain.ProfileSex
 import com.valerochka1337.valerochkagym.domain.TrainingGoal
@@ -76,23 +78,30 @@ constructor(
       target: ProfileEditTarget,
       profile: BasicProfile,
       keyExercises: List<KeyExerciseChoice>,
-  ): ProfileSaveResult = saveInternal(target, profile, keyExercises)
+      plannerPreferences: List<PlannerExerciseChoice>?,
+  ): ProfileSaveResult = saveInternal(target, profile, keyExercises, plannerPreferences)
 
   private suspend fun saveInternal(
       target: ProfileEditTarget,
       profile: BasicProfile,
       keyExercises: List<KeyExerciseChoice>?,
+      plannerPreferences: List<PlannerExerciseChoice>? = null,
   ): ProfileSaveResult {
     val normalized =
         ProfileValidator.normalize(profile, clock.nowMillis()) ?: return ProfileSaveResult.Invalid
     if (
         keyExercises != null &&
-            (normalized.trainingGoal != TrainingGoal.STRENGTH ||
-                keyExercises.size > 5 ||
+            (keyExercises.size > 5 ||
                 keyExercises.map(KeyExerciseChoice::exerciseSyncId).distinct().size !=
-                    keyExercises.size)
+                    keyExercises.size ||
+                (normalized.trainingGoal != TrainingGoal.STRENGTH && keyExercises.isNotEmpty()))
     )
         return ProfileSaveResult.Invalid
+    if (
+        plannerPreferences != null &&
+            plannerPreferences.map(PlannerExerciseChoice::exerciseSyncId).distinct().size !=
+                plannerPreferences.size
+    ) return ProfileSaveResult.Invalid
     return mutationMutex.withLock {
       try {
         database.withTransaction {
@@ -148,7 +157,7 @@ constructor(
                 ProfileEquipmentPreferenceEntity(target.scope, it)
               }
           )
-          if (keyExercises != null && selectedExercises != null) {
+          if (keyExercises != null && selectedExercises != null && normalized.trainingGoal == TrainingGoal.STRENGTH) {
             val strengthPlannerProfileDao = database.strengthPlannerProfileDao()
             val existingStrength = strengthPlannerProfileDao.get(target.scope)
             if (!targetStillCurrent(target)) throw StaleProfileTargetException()
@@ -173,6 +182,18 @@ constructor(
                       priority = choice.priority,
                   )
                 },
+            )
+          }
+          if (plannerPreferences != null) {
+            val catalog = database.exerciseDao().getAllOnce().filterNot { it.archived }.associateBy { it.syncId }
+            if (plannerPreferences.any { it.exerciseSyncId !in catalog })
+              return@withTransaction ProfileSaveResult.Invalid
+            val preferences = database.plannerExercisePreferenceDao()
+            preferences.delete(target.scope)
+            preferences.upsert(
+                plannerPreferences.sortedBy { it.exerciseSyncId }.map {
+                  PlannerExercisePreferenceEntity(target.scope, it.exerciseSyncId, it.preference)
+                }
             )
           }
           if (!targetStillCurrent(target)) throw StaleProfileTargetException()

@@ -106,6 +106,29 @@ constructor(
         result
       }
 
+  suspend fun refine(editor: ProposalEditor, text: String, requestId: String): ProposalEditor =
+      withContext(Dispatchers.IO) {
+        actions.withLock {
+          guard(editor.session)
+          val proposal = editor.proposal
+          require(proposal.status == ProposalStatus.PENDING && proposal.expiresAt > clock.nowMillis())
+          val next = api.refine(editor.session, proposal, text, requestId)
+          guard(editor.session)
+          database.withTransaction {
+            dao.saveDraft(
+                TrainingProposalDraftEntity(
+                    editor.session.tokens.userId,
+                    next.proposalId,
+                    next.currentVersion,
+                    ProposalWire.json.encodeToString(next),
+                    ProposalWire.json.encodeToString(next.snapshot.draft),
+                )
+            )
+          }
+          editor.copy(proposal = next, draft = next.snapshot.draft, applied = false)
+        }
+      }
+
   suspend fun save(editor: ProposalEditor, draft: ApprovalDraft): ProposalEditor =
       withContext(Dispatchers.IO) {
         actions.withLock {

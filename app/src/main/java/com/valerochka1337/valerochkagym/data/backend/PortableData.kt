@@ -142,6 +142,31 @@ class PortableData(private val db: SupportSQLiteDatabase) {
             put("keyExercises", JsonArray(keys))
           }
         }
+    profileScope().takeIf { it != "GUEST" }?.let { owner ->
+      val preferences =
+          rows(
+                  "planner_exercise_preferences",
+                  "WHERE scope=? ORDER BY exerciseSyncId",
+                  arrayOf(owner),
+              )
+              .map { row ->
+                buildJsonObject {
+                  put("exerciseId", row.getValue("exerciseSyncId"))
+                  put("preference", row.getValue("preference"))
+                }
+              }
+      if (preferences.isNotEmpty()) {
+        val id =
+            UUID.nameUUIDFromBytes(
+                    "ValerochkaGym.planner-exercise-preferences.v1:$owner".toByteArray(UTF_8),
+                )
+                .toString()
+        result["planner_exercise_preferences:$id"] = buildJsonObject {
+          put("schemaVersion", 1)
+          put("preferences", JsonArray(preferences))
+        }
+      }
+    }
     fun links(
         table: String,
         ownerColumn: String,
@@ -601,6 +626,44 @@ class PortableData(private val db: SupportSQLiteDatabase) {
                 )
               }
             }
+            "planner_exercise_preferences" -> {
+              val scope = profileScope()
+              if (scope == "GUEST") error("Remote planner preferences require an authenticated owner")
+              val expectedId =
+                  UUID.nameUUIDFromBytes(
+                          "ValerochkaGym.planner-exercise-preferences.v1:$scope".toByteArray(UTF_8),
+                      )
+                      .toString()
+              if (
+                  r.id != expectedId ||
+                      n.keys != setOf("schemaVersion", "preferences") ||
+                      n["schemaVersion"]?.jsonPrimitive?.intOrNull != 1
+              ) error("Invalid planner preferences payload")
+              val preferences = n["preferences"]?.jsonArray ?: error("Invalid planner preferences")
+              val mapped = preferences.map { element ->
+                val item = element.jsonObject
+                if (item.keys != setOf("exerciseId", "preference")) error("Invalid planner preference")
+                val exerciseId = item["exerciseId"]?.jsonPrimitive?.content ?: error("Invalid planner exercise")
+                val preference = item["preference"]?.jsonPrimitive?.content
+                if (preference !in setOf("MORE", "LESS", "NEVER")) error("Invalid planner preference")
+                if (runCatching { UUID.fromString(exerciseId).toString() == exerciseId }.getOrDefault(false).not())
+                  error("Invalid planner exercise")
+                exerciseId to requireNotNull(preference)
+              }
+              if (mapped.map { it.first }.distinct().size != mapped.size || mapped != mapped.sortedBy { it.first })
+                error("Noncanonical planner preference order")
+              db.delete("planner_exercise_preferences", "scope=?", arrayOf(scope))
+              mapped.forEach { (exerciseId, preference) ->
+                insert(
+                    "planner_exercise_preferences",
+                    mapOf(
+                        "scope" to JsonPrimitive(scope),
+                        "exerciseSyncId" to JsonPrimitive(exerciseId),
+                        "preference" to JsonPrimitive(preference),
+                    ),
+                )
+              }
+            }
             "exercise" -> {
               val id = JsonPrimitive(stable("exercises", r.id, n - "muscles" - "equipmentIds"))
               replaceLinks(
@@ -878,6 +941,7 @@ class PortableData(private val db: SupportSQLiteDatabase) {
                 "routine" -> "routines"
                 "workout" -> "workouts"
                 "workout_effort" -> "workout_efforts"
+                "planner_exercise_preferences" -> "planner_exercise_preferences"
                 "measurement" -> "body_measurements"
                 "exercise_hint" -> "exercise_personal_hints"
                 "calendar_plan" -> "calendar_plans"
@@ -894,6 +958,17 @@ class PortableData(private val db: SupportSQLiteDatabase) {
                 }
           } else if (r.kind in setOf("calendar_plan", "calendar_rule", "calendar_exception"))
               db.delete(table, "id=?", arrayOf(r.id))
+          else if (r.kind == "planner_exercise_preferences") {
+            val scope = profileScope()
+            if (scope == "GUEST") error("Remote planner preferences require an authenticated owner")
+            val expectedId =
+                UUID.nameUUIDFromBytes(
+                        "ValerochkaGym.planner-exercise-preferences.v1:$scope".toByteArray(UTF_8),
+                    )
+                    .toString()
+            if (r.id != expectedId) error("Planner preference owner identity mismatch")
+            db.delete(table, "scope=?", arrayOf(scope))
+          }
           else
               db.delete(
                   table,

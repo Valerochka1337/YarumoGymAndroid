@@ -5,12 +5,14 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.valerochka1337.valerochkagym.data.db.LocalEquipmentCatalog
 import com.valerochka1337.valerochkagym.data.db.entity.KeyExercisePriority
+import com.valerochka1337.valerochkagym.data.db.entity.PlannerExercisePreference
 import com.valerochka1337.valerochkagym.data.profile.AiProfilePromptGate
 import com.valerochka1337.valerochkagym.domain.BasicProfile
 import com.valerochka1337.valerochkagym.domain.ExperienceLevel
 import com.valerochka1337.valerochkagym.domain.KeyExerciseChoice
 import com.valerochka1337.valerochkagym.domain.ProfileEditTarget
 import com.valerochka1337.valerochkagym.domain.ProfileRepository
+import com.valerochka1337.valerochkagym.domain.PlannerExerciseChoice
 import com.valerochka1337.valerochkagym.domain.ProfileSaveResult
 import com.valerochka1337.valerochkagym.domain.ProfileSex
 import com.valerochka1337.valerochkagym.domain.StrengthExerciseCandidate
@@ -47,6 +49,9 @@ data class ProfileEditorUiState(
     val keyExercises: List<KeyExerciseChoice> = emptyList(),
     val strengthExercises: List<StrengthExerciseCandidate> = emptyList(),
     val showKeyExercises: Boolean = false,
+    val plannerPreferences: List<PlannerExerciseChoice> = emptyList(),
+    val plannerExercises: List<StrengthExerciseCandidate> = emptyList(),
+    val showPlannerPreferences: Boolean = false,
 )
 
 @HiltViewModel
@@ -75,7 +80,9 @@ constructor(
               profileRepository.observe(snapshot.target),
               strengthPlannerRepository?.observe(snapshot.target) ?: flowOf(emptyList()),
               strengthPlannerRepository?.observeLiveStrengthExercises() ?: flowOf(emptyList()),
-          ) { profile, choices, candidates ->
+              strengthPlannerRepository?.observePlannerPreferences(snapshot.target) ?: flowOf(emptyList()),
+              strengthPlannerRepository?.observeLivePlannerExercises() ?: flowOf(emptyList()),
+          ) { profile, choices, candidates, preferences, plannerCandidates ->
             if (profile == null || choices == null) {
               ProfileEditorUiState(isLoading = false, error = "Профиль больше недоступен")
             } else {
@@ -89,6 +96,8 @@ constructor(
                             it.copy(exerciseId = ids[it.exerciseSyncId]?.id)
                           },
                       strengthExercises = candidates,
+                      plannerPreferences = draft?.plannerPreferences ?: preferences.orEmpty(),
+                      plannerExercises = plannerCandidates,
                   )
             }
           }
@@ -162,6 +171,16 @@ constructor(
 
   fun setKeyExerciseSheet(visible: Boolean) = update { copy(showKeyExercises = visible) }
 
+  fun setPlannerPreference(exerciseId: Long, preference: PlannerExercisePreference?) = update {
+    val candidate = plannerExercises.firstOrNull { it.id == exerciseId } ?: return@update this
+    val next = plannerPreferences.associateBy { it.exerciseSyncId }.toMutableMap()
+    if (preference == null) next.remove(candidate.syncId)
+    else next[candidate.syncId] = PlannerExerciseChoice(candidate.id, candidate.syncId, preference)
+    copy(plannerPreferences = next.values.sortedBy { it.exerciseSyncId }, error = null)
+  }
+
+  fun setPlannerPreferenceSheet(visible: Boolean) = update { copy(showPlannerPreferences = visible) }
+
   fun save() {
     val state = _uiState.value
     val target = state.target ?: return
@@ -173,9 +192,12 @@ constructor(
     _uiState.value = state.copy(isSaving = true, error = null)
     viewModelScope.launch {
       val saveResult =
-          if (profile.trainingGoal == TrainingGoal.STRENGTH)
-              profileRepository.saveWithStrength(target, profile, state.keyExercises)
-          else profileRepository.save(target, profile)
+          profileRepository.saveWithStrength(
+              target,
+              profile,
+              state.keyExercises,
+              state.plannerPreferences,
+          )
       when (saveResult) {
         ProfileSaveResult.Saved -> {
           _uiState.value = _uiState.value.copy(isSaving = false)
@@ -258,6 +280,18 @@ private fun profileDraftFrom(
             )
           },
       showKeyExercises = handle.get<Boolean>("profile_draft_key_sheet") ?: false,
+      plannerPreferences =
+          handle.get<ArrayList<String>>("profile_draft_preference_sync").orEmpty().mapIndexedNotNull {
+              index, syncId ->
+            handle
+                .get<ArrayList<String>>("profile_draft_preference_value")
+                ?.getOrNull(index)
+                ?.let { value ->
+                  runCatching { PlannerExercisePreference.valueOf(value) }.getOrNull()
+                }
+                ?.let { preference -> PlannerExerciseChoice(null, syncId, preference) }
+          },
+      showPlannerPreferences = handle.get<Boolean>("profile_draft_preference_sheet") ?: false,
   )
 }
 
@@ -277,6 +311,9 @@ private fun ProfileEditorUiState.saveDraft(handle: SavedStateHandle) {
   handle["profile_draft_key_sync"] = ArrayList(keyExercises.map { it.exerciseSyncId })
   handle["profile_draft_key_priority"] = ArrayList(keyExercises.map { it.priority.name })
   handle["profile_draft_key_sheet"] = showKeyExercises
+  handle["profile_draft_preference_sync"] = ArrayList(plannerPreferences.map { it.exerciseSyncId })
+  handle["profile_draft_preference_value"] = ArrayList(plannerPreferences.map { it.preference.name })
+  handle["profile_draft_preference_sheet"] = showPlannerPreferences
 }
 
 private fun ProfileEditorUiState.toProfileOrNull(nowMillis: Long): BasicProfile? {

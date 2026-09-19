@@ -93,6 +93,8 @@ constructor(
   private fun supportsStrengthPlannerPersonalization(): Boolean =
       supports("strength-planner-personalization")
 
+  private fun supportsAgenticPlanner(): Boolean = supports("ai-planner-agentic-v1")
+
   /** Owner-bound negotiated feature capability; optional transports must not probe when absent. */
   fun supportsHealthLedger(): Boolean = supports("health-ledger-v1")
 
@@ -124,6 +126,8 @@ constructor(
             !it.startsWith("strength_planner_profile:") && !it.startsWith("workout_effort:")
           }
     }
+    if (!supportsAgenticPlanner())
+      result = result.filterKeys { !it.startsWith("planner_exercise_preferences:") }
     if (!supportsAnnotatedWorkoutWrites()) {
       result =
           result
@@ -153,6 +157,7 @@ constructor(
             supportsStrengthPlannerPersonalization() ||
                 it.kind !in setOf("strength_planner_profile", "workout_effort")
           }
+          .filter { supportsAgenticPlanner() || it.kind != "planner_exercise_preferences" }
           .mapNotNull { record ->
             if (supportsAnnotatedWorkoutWrites() || record.kind != "workout") record
             else {
@@ -184,6 +189,8 @@ constructor(
             !it.startsWith("strength_planner_profile:") && !it.startsWith("workout_effort:")
           }
     }
+    if (!supportsAgenticPlanner())
+      result = result.filterKeys { !it.startsWith("planner_exercise_preferences:") }
     if (!supportsAnnotatedWorkoutWrites()) {
       result =
           result
@@ -239,6 +246,7 @@ constructor(
           (change.kind == "profile" && !supportsProfile()) ||
           (change.kind in setOf("strength_planner_profile", "workout_effort") &&
               !supportsStrengthPlannerPersonalization()) ||
+          (change.kind == "planner_exercise_preferences" && !supportsAgenticPlanner()) ||
           (change.kind == "workout" &&
               !supportsAnnotatedWorkoutWrites() &&
               (change.payload?.let(::hasSetNote) == true ||
@@ -378,6 +386,9 @@ constructor(
       db.execSQL("DELETE FROM strength_planner_profiles WHERE scope=?", arrayOf(it))
     }
     profileScope?.let { db.execSQL("DELETE FROM workout_efforts WHERE scope=?", arrayOf(it)) }
+    profileScope?.let {
+      db.execSQL("DELETE FROM planner_exercise_preferences WHERE scope=?", arrayOf(it))
+    }
     profileScope?.let { owner ->
       db.execSQL("DELETE FROM workout_preparations WHERE owner=?", arrayOf(owner))
       db.execSQL("DELETE FROM training_proposal_projections WHERE owner=?", arrayOf(owner))
@@ -446,6 +457,12 @@ constructor(
         )
       }
     }
+    // Preference aggregate has no wire id while a user is a guest; it becomes the owner's single
+    // deterministic record on the next snapshot.
+    db.execSQL(
+        "UPDATE planner_exercise_preferences SET scope=? WHERE scope='GUEST'",
+        arrayOf(owner),
+    )
   }
 
   /** Binds the complete guest health aggregate before the claimed owner's token is installed. */

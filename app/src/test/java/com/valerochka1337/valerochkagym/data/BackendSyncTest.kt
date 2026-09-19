@@ -32,6 +32,34 @@ class BackendSyncTest : RoomDaoTest() {
       )
 
   @Test
+  fun `clearing synced planner preferences sends their aggregate tombstone`() = runTest {
+    val owner = "user-a"
+    val exerciseId = "00000000-0000-4000-8000-000000000001"
+    val recordId =
+        UUID.nameUUIDFromBytes(
+                "ValerochkaGym.planner-exercise-preferences.v1:$owner".encodeToByteArray()
+            )
+            .toString()
+    val key = "planner_exercise_preferences:$recordId"
+    SyncSchema.install(raw)
+    val server = Server().apply { accepted = setOf("ai-planner-agentic-v1") }
+    val sync = BackendSync(db, server, Store())
+    sync.claim(owner)
+    raw.execSQL(
+        "INSERT INTO planner_exercise_preferences(scope,exerciseSyncId,preference) VALUES(?,?,?)",
+        arrayOf(owner, exerciseId, "MORE"),
+    )
+
+    sync.run()
+    assertFalse(requireNotNull(server.records[key]).deleted)
+
+    raw.execSQL("DELETE FROM planner_exercise_preferences WHERE scope=?", arrayOf(owner))
+    sync.run()
+
+    assertTrue(requireNotNull(server.records[key]).deleted)
+  }
+
+  @Test
   fun `account replacement purges retained legacy coach archives`() = runTest {
     SyncSchema.install(raw)
     val sync = BackendSync(db, Server(), Store())

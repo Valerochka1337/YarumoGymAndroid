@@ -28,6 +28,7 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -38,6 +39,103 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PortableDataTest : RoomDaoTest() {
+  @Test
+  fun `planner preference tombstones require the current owner aggregate identity`() = runTest {
+    val owner = "10000000-0000-4000-8000-000000000001"
+    val formerOwner = "20000000-0000-4000-8000-000000000002"
+    val exerciseId = "30000000-0000-4000-8000-000000000003"
+    val sql = db.openHelper.writableDatabase
+    fun aggregateId(scope: String) =
+        UUID.nameUUIDFromBytes(
+                "ValerochkaGym.planner-exercise-preferences.v1:$scope".toByteArray(UTF_8)
+            )
+            .toString()
+    SyncSchema.install(sql)
+    sql.execSQL("UPDATE backend_state SET owner=?,phase='OWNED' WHERE id=1", arrayOf(owner))
+    sql.execSQL(
+        "INSERT INTO planner_exercise_preferences(scope,exerciseSyncId,preference) VALUES(?,?,?)",
+        arrayOf(owner, exerciseId, "MORE"),
+    )
+    val portable = PortableData(sql)
+
+    listOf("not-an-owner-id", aggregateId(formerOwner)).forEach { invalidId ->
+      try {
+        db.withTransaction {
+          portable.apply(
+              emptyList(),
+              listOf(CloudRecord("planner_exercise_preferences", invalidId, 1, deleted = true)),
+          )
+        }
+        throw AssertionError("A foreign planner preference tombstone must be rejected")
+      } catch (_: IllegalStateException) {}
+      assertEquals(1, db.plannerExercisePreferenceDao().get(owner).size)
+    }
+
+    db.withTransaction {
+      portable.apply(
+          emptyList(),
+          listOf(
+              CloudRecord(
+                  "planner_exercise_preferences",
+                  aggregateId(owner),
+                  2,
+                  deleted = true,
+              )
+          ),
+      )
+    }
+    assertTrue(db.plannerExercisePreferenceDao().get(owner).isEmpty())
+  }
+
+  @Test
+  fun `planner preferences omit an unsaved empty owner aggregate and emit sorted saved choices`() =
+      runTest {
+        val owner = "10000000-0000-4000-8000-000000000001"
+        val firstExercise = "20000000-0000-4000-8000-000000000002"
+        val secondExercise = "30000000-0000-4000-8000-000000000003"
+        val sql = db.openHelper.writableDatabase
+        val recordId =
+            UUID.nameUUIDFromBytes(
+                    "ValerochkaGym.planner-exercise-preferences.v1:$owner".toByteArray(UTF_8)
+                )
+                .toString()
+        SyncSchema.install(sql)
+        sql.execSQL("UPDATE backend_state SET owner=?,phase='OWNED' WHERE id=1", arrayOf(owner))
+
+        assertFalse(
+            PortableData(sql)
+                .snapshot()
+                .containsKey("planner_exercise_preferences:$recordId")
+        )
+
+        sql.execSQL(
+            "INSERT INTO planner_exercise_preferences(scope,exerciseSyncId,preference) VALUES(?,?,?)",
+            arrayOf(owner, secondExercise, "NEVER"),
+        )
+        sql.execSQL(
+            "INSERT INTO planner_exercise_preferences(scope,exerciseSyncId,preference) VALUES(?,?,?)",
+            arrayOf(owner, firstExercise, "MORE"),
+        )
+
+        val record =
+            requireNotNull(PortableData(sql).snapshot()["planner_exercise_preferences:$recordId"])
+        assertEquals(1, record["schemaVersion"]?.jsonPrimitive?.int)
+        assertEquals(
+            listOf(firstExercise to "MORE", secondExercise to "NEVER"),
+            record["preferences"]?.jsonArray?.map { preference ->
+              preference.jsonObject.getValue("exerciseId").jsonPrimitive.content to
+                  preference.jsonObject.getValue("preference").jsonPrimitive.content
+            },
+        )
+
+        sql.execSQL("DELETE FROM planner_exercise_preferences WHERE scope=?", arrayOf(owner))
+        assertFalse(
+            PortableData(sql)
+                .snapshot()
+                .containsKey("planner_exercise_preferences:$recordId")
+        )
+      }
+
   @Test
   fun `strength planner records use separate canonical wire without changing baseline profile`() =
       runTest {

@@ -35,6 +35,7 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.valerochka1337.valerochkagym.data.db.LocalEquipmentCatalog
 import com.valerochka1337.valerochkagym.data.db.entity.KeyExercisePriority
+import com.valerochka1337.valerochkagym.data.db.entity.PlannerExercisePreference
 import com.valerochka1337.valerochkagym.domain.ExperienceLevel
 import com.valerochka1337.valerochkagym.domain.ProfileSex
 import com.valerochka1337.valerochkagym.domain.TrainingGoal
@@ -80,6 +81,14 @@ fun ProfileScreen(
         haptics.tap()
         viewModel.setKeyExerciseSheet(it)
       },
+      onPlannerPreference = { id, preference ->
+        haptics.tap()
+        viewModel.setPlannerPreference(id, preference)
+      },
+      onPlannerPreferenceSheet = {
+        haptics.tap()
+        viewModel.setPlannerPreferenceSheet(it)
+      },
       onSave = {
         haptics.confirm()
         viewModel.save()
@@ -105,6 +114,8 @@ internal fun ProfileScreenContent(
     onKeyPriority: (Long, KeyExercisePriority) -> Unit = { _, _ -> },
     onRemoveKeyExercise: (String) -> Unit = {},
     onKeySheet: (Boolean) -> Unit = {},
+    onPlannerPreference: (Long, PlannerExercisePreference?) -> Unit = { _, _ -> },
+    onPlannerPreferenceSheet: (Boolean) -> Unit = {},
     onSave: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -200,6 +211,24 @@ internal fun ProfileScreenContent(
                 }
               }
             }
+          }
+          GymCard(modifier = Modifier.fillMaxWidth()) {
+              Text(
+                  "Предпочтения упражнений",
+                  style = MaterialTheme.typography.titleMedium,
+                  fontWeight = FontWeight.SemiBold,
+              )
+              Text(
+                  "Выберите чаще, реже или никогда для любого доступного упражнения.",
+                  style = MaterialTheme.typography.bodySmall,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
+              Spacer(Modifier.height(8.dp))
+              PillButton(
+                  text = "Настроить (${state.plannerPreferences.size})",
+                  onClick = { onPlannerPreferenceSheet(true) },
+                  compact = true,
+              )
           }
           ProfileChoiceCard(
               "Опыт",
@@ -314,7 +343,59 @@ internal fun ProfileScreenContent(
         onDismiss = { onKeySheet(false) },
     )
   }
+  if (state.showPlannerPreferences) {
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = { onPlannerPreferenceSheet(false) },
+        title = { Text("Предпочтения упражнений") },
+        text = {
+          Column(Modifier.verticalScroll(rememberScrollState())) {
+            state.plannerExercises.forEach { exercise ->
+              val selected =
+                  state.plannerPreferences.firstOrNull { it.exerciseId == exercise.id }?.preference
+              Text(exercise.name, style = MaterialTheme.typography.titleSmall)
+              FlowRow(
+                  horizontalArrangement = Arrangement.spacedBy(8.dp),
+                  verticalArrangement = Arrangement.spacedBy(8.dp),
+              ) {
+                PlannerExercisePreference.entries.forEach { preference ->
+                  FilterChip(
+                      selected = selected == preference,
+                      onClick = {
+                        onPlannerPreference(
+                            exercise.id,
+                            if (selected == preference) null else preference,
+                        )
+                      },
+                      label = { Text(plannerPreferenceLabel(preference)) },
+                      modifier =
+                          Modifier.semantics {
+                            contentDescription =
+                                "${exercise.name}: ${plannerPreferenceLabel(preference)}"
+                          },
+                  )
+                }
+              }
+              Spacer(Modifier.height(12.dp))
+            }
+          }
+        },
+        confirmButton = {
+          PillButton(
+              text = "Готово",
+              onClick = { onPlannerPreferenceSheet(false) },
+              compact = true,
+          )
+        },
+    )
+  }
 }
+
+private fun plannerPreferenceLabel(value: PlannerExercisePreference) =
+    when (value) {
+      PlannerExercisePreference.MORE -> "Чаще"
+      PlannerExercisePreference.LESS -> "Реже"
+      PlannerExercisePreference.NEVER -> "Никогда"
+    }
 
 @Composable
 private fun <T> ProfileChoiceCard(

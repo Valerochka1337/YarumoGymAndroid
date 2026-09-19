@@ -33,6 +33,13 @@ class CalendarAiRepositoryTest : RoomDaoTest() {
     var stale = false
     var badContext = false
     var forbidden = false
+    var agentic = false
+    var invalidProjection = false
+    var invalidFocusSlot = false
+    var invalidDuration = false
+
+    override val acceptedCapabilities: Set<String>
+      get() = if (agentic) setOf("ai-planner-agentic-v1") else emptySet()
 
     override suspend fun public(method: String, path: String, body: JsonElement?) = error("unused")
 
@@ -50,7 +57,7 @@ class CalendarAiRepositoryTest : RoomDaoTest() {
         maxResponseBytes: Int?,
     ): BackendResponse {
       calls++
-      assertEquals("/ai/calendar-drafts", path)
+      assertEquals(if (agentic) "/ai/calendar-drafts-v2" else "/ai/calendar-drafts", path)
       assertFalse(retryOnUnauthorized)
       assertEquals(OWNER, expectedOwner)
       assertEquals(3L, expectedSessionEpoch)
@@ -91,6 +98,24 @@ class CalendarAiRepositoryTest : RoomDaoTest() {
           put("capturedAtMillis", 100)
         }
         put("proposal", json.encodeToJsonElement(p))
+        if (agentic) {
+          putJsonObject("agenticProjection") {
+            putJsonArray("candidateIds") { add(if (invalidProjection) OTHER else EXERCISE) }
+            putJsonObject("skeleton") {
+              put("focusExerciseId", if (invalidFocusSlot) OTHER else EXERCISE)
+              put("minDurationSec", 0)
+              put("maxDurationSec", if (invalidDuration) 44 else 2700)
+              putJsonArray("slots") {
+                addJsonObject {
+                  put("slotId", "focus")
+                  putJsonArray("allowedExerciseIds") { add(if (invalidFocusSlot) OTHER else EXERCISE) }
+                  put("minDurationSec", 0)
+                  put("maxDurationSec", if (invalidDuration) 44 else 2700)
+                }
+              }
+            }
+          }
+        }
       }
       if (stale) ready.current = false
       return BackendResponse(
@@ -211,6 +236,43 @@ class CalendarAiRepositoryTest : RoomDaoTest() {
         s.forbidden = true
         assertTrue(runCatching { repo(r, s).generate(intent()) }.isFailure)
       }
+
+  @Test
+  fun `agentic response rejects a projection that widens beyond the local catalog`() = runTest {
+    val (r, s) = fixture()
+    s.agentic = true
+    assertEquals(PROPOSAL, repo(r, s).generate(intent()).proposalId)
+    s.invalidProjection = true
+    assertEquals(
+        "ai_invalid_response",
+        (runCatching { repo(r, s).generate(intent()) }.exceptionOrNull() as BackendException).code,
+    )
+  }
+
+  @Test
+  fun `agentic response rejects never focus allowlist and duration projection mismatches`() = runTest {
+    val (r, s) = fixture()
+    s.agentic = true
+    db.plannerExercisePreferenceDao()
+        .upsert(listOf(PlannerExercisePreferenceEntity(OWNER, EXERCISE, PlannerExercisePreference.NEVER)))
+    assertEquals(
+        "ai_invalid_response",
+        (runCatching { repo(r, s).generate(intent()) }.exceptionOrNull() as BackendException).code,
+    )
+
+    db.plannerExercisePreferenceDao().delete(OWNER)
+    s.invalidFocusSlot = true
+    assertEquals(
+        "ai_invalid_response",
+        (runCatching { repo(r, s).generate(intent()) }.exceptionOrNull() as BackendException).code,
+    )
+    s.invalidFocusSlot = false
+    s.invalidDuration = true
+    assertEquals(
+        "ai_invalid_response",
+        (runCatching { repo(r, s).generate(intent()) }.exceptionOrNull() as BackendException).code,
+    )
+  }
 
   @Test
   fun `active workout blocks calendar AI before provider request`() = runTest {

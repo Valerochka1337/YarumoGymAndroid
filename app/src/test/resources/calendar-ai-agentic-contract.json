@@ -1,0 +1,12 @@
+{
+  "capability": "ai-planner-agentic-v1",
+  "projection": {
+    "candidateIds": ["00000000-0000-4000-8000-000000000001"],
+    "skeleton": {
+      "focusExerciseId": "00000000-0000-4000-8000-000000000001",
+      "slots": [{"slotId":"focus","allowedExerciseIds":["00000000-0000-4000-8000-000000000001"],"minDurationSec":180,"maxDurationSec":3600}],
+      "minDurationSec":600,
+      "maxDurationSec":3600
+    }
+  }
+}

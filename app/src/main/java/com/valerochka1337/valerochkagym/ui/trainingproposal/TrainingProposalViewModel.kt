@@ -26,6 +26,7 @@ data class TrainingProposalUiState(
     val explanation: PlannerExplanation? = null,
     val loading: Boolean = false,
     val saving: Boolean = false,
+    val refinement: String = "",
     val error: String? = null,
     val exerciseChoices: List<Pair<String, String>> = emptyList(),
     val exerciseTypes: Map<String, com.valerochka1337.valerochkagym.data.db.entity.ExerciseType> =
@@ -136,7 +137,13 @@ constructor(
             val editor = repository.open(id)
             if (token != generation || !repository.isCurrent(editor.session)) return@launch
             bound = editor.session
-            mutableState.update { it.copy(editor = editor, loading = false) }
+            mutableState.update {
+              it.copy(
+                  editor = editor,
+                  loading = false,
+                  refinement = refinementKey(editor)?.let { key -> savedState.get<String>(key) }.orEmpty(),
+              )
+            }
             if (editor.proposal.source == ProposalSource.AI) {
               val explanation =
                   try {
@@ -180,6 +187,47 @@ constructor(
   fun approve() = decision(true)
 
   fun reject() = decision(false)
+
+  fun setRefinement(value: String) {
+    if (!mutableState.value.saving) {
+      refinementKey(mutableState.value.editor)?.let { key ->
+        if (savedState.get<String>(key) != value) savedState.remove<String>("$key.requestId")
+      }
+      mutableState.update { it.copy(refinement = value, error = null) }
+      refinementKey(mutableState.value.editor)?.let { savedState[it] = value }
+    }
+  }
+
+  fun refine() {
+    val editor = mutableState.value.editor ?: return
+    val text = mutableState.value.refinement.trim()
+    if (text.isEmpty() || text.length > 2000 || mutableState.value.saving) return
+    val key = refinementKey(editor) ?: return
+    val requestId = savedState.get<String>("$key.requestId") ?: java.util.UUID.randomUUID().toString()
+    savedState["$key.requestId"] = requestId
+    val token = generation
+    mutableState.update { it.copy(saving = true, error = null) }
+    viewModelScope.launch {
+      try {
+        val next = repository.refine(editor, text, requestId)
+        if (token == generation && repository.isCurrent(next.session)) {
+          savedState.remove<String>("$key.requestId")
+          savedState.remove<String>(key)
+          mutableState.update { it.copy(editor = next, refinement = "") }
+        }
+      } catch (error: CancellationException) {
+        throw error
+      } catch (error: Exception) {
+        if (token == generation) mutableState.update { it.copy(error = message(error)) }
+      } finally {
+        if (token == generation) mutableState.update { it.copy(saving = false) }
+      }
+    }
+  }
+
+  private fun refinementKey(editor: ProposalEditor?): String? = editor?.let {
+    "proposal_refinement.${it.session.tokens.userId}.${it.session.epoch}.${it.proposal.proposalId}.${it.proposal.currentVersion}"
+  }
 
   private fun decision(approve: Boolean) {
     val editor = mutableState.value.editor ?: return
