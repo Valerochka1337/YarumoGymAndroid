@@ -3,10 +3,13 @@ package com.valerochka1337.valerochkagym.service
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
+import androidx.room.Room
 import androidx.room.withTransaction
+import androidx.test.core.app.ApplicationProvider
 import com.valerochka1337.valerochkagym.data.RoomDaoTest
 import com.valerochka1337.valerochkagym.data.ai.*
 import com.valerochka1337.valerochkagym.data.backend.*
+import com.valerochka1337.valerochkagym.data.db.GymDatabase
 import com.valerochka1337.valerochkagym.data.db.entity.*
 import com.valerochka1337.valerochkagym.data.settings.SettingsRepository
 import com.valerochka1337.valerochkagym.domain.*
@@ -634,27 +637,48 @@ class DurableCoachCoordinatorTest : RoomDaoTest() {
     }
   }
 
+  @OptIn(ExperimentalCoroutinesApi::class)
   @Test
   fun `frequent saved changes coalesce and ordinary ticks do not send snapshots`() = runTest {
+    // Room and the delivery loop must share virtual time: observing a PUT on a real
+    // thread does not mean its acknowledgement or the initial wake has been drained.
+    db.close()
+    db =
+        Room.inMemoryDatabaseBuilder(
+                ApplicationProvider.getApplicationContext(),
+                GymDatabase::class.java,
+            )
+            .allowMainThreadQueries()
+            .setQueryCoroutineContext(StandardTestDispatcher(testScheduler))
+            .build()
     val transport = FakeTransport()
     val fixture = fixture(transport)
-    withContext(Dispatchers.Default) {
-      val workout = activeWorkout()
-      val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-      try {
-        fixture.coordinator.attach(scope)
-        withTimeout(5_000) { while (transport.sessionUpdates.isEmpty()) delay(10) }
-        val initial = transport.sessionUpdates.size
-        repeat(10) { fixture.coordinator.changed(workout, immediate = false) }
-        assertEquals(initial, transport.sessionUpdates.size)
-        withTimeout(2_000) { while (transport.sessionUpdates.size == initial) delay(10) }
-        assertEquals(initial + 1, transport.sessionUpdates.size)
-        delay(1_200)
-        assertEquals(initial + 1, transport.sessionUpdates.size)
-      } finally {
-        fixture.coordinator.detach()
-        scope.cancel()
-      }
+    val workout = activeWorkout()
+    try {
+      fixture.coordinator.attach(backgroundScope)
+      runCurrent()
+      assertEquals(1, transport.sessionUpdates.size)
+      assertTrue(db.coachRunDao().session(workout)!!.delivered)
+
+      repeat(10) { assertTrue(fixture.coordinator.changed(workout, immediate = false)) }
+      runCurrent()
+      assertEquals(1, transport.sessionUpdates.size)
+
+      advanceTimeBy(999)
+      runCurrent()
+      assertEquals(1, transport.sessionUpdates.size)
+      advanceTimeBy(1)
+      runCurrent()
+      assertEquals(2, transport.sessionUpdates.size)
+      assertTrue(db.coachRunDao().session(workout)!!.delivered)
+      assertTrue(db.coachRunDao().dirtySessions().isEmpty())
+
+      advanceTimeBy(5_000)
+      runCurrent()
+      assertEquals(2, transport.sessionUpdates.size)
+    } finally {
+      fixture.coordinator.detach()
+      runCurrent()
     }
   }
 
