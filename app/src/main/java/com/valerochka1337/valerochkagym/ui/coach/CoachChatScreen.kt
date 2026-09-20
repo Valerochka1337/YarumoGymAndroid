@@ -55,6 +55,7 @@ fun CoachChatScreen(
       onSend = viewModel::send,
       onRetry = viewModel::retry,
       onConfirm = viewModel::confirm,
+      onAnswerQuestion = viewModel::answerQuestion,
       onCancel = viewModel::cancel,
       onCancelWithReason = viewModel::cancelWithReason,
       onUndo = viewModel::undo,

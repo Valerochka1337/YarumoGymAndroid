@@ -141,6 +141,8 @@ import kotlinx.serialization.json.JsonPrimitive
             WorkoutExerciseEntity::class,
             WorkoutGymEntity::class,
             WorkoutSetEntity::class,
+            com.valerochka1337.valerochkagym.data.db.entity.CoachBehaviorEntity::class,
+            com.valerochka1337.valerochkagym.data.db.entity.CoachPhaseEntity::class,
             CoachMessageEntity::class,
             CoachProposalEntity::class,
             CoachCommandReceiptEntity::class,
@@ -153,7 +155,7 @@ import kotlinx.serialization.json.JsonPrimitive
             com.valerochka1337.valerochkagym.data.db.entity.CoachSessionOutboxEntity::class,
             com.valerochka1337.valerochkagym.data.db.entity.CoachReceiptOutboxEntity::class,
         ],
-    version = 36,
+    version = 37,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -1098,6 +1100,19 @@ abstract class GymDatabase : RoomDatabase() {
           }
         }
 
+    val MIGRATION_36_37: Migration =
+        object : Migration(36, 37) {
+          override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                "CREATE TABLE IF NOT EXISTS coach_behavior (id TEXT NOT NULL PRIMARY KEY, accountId TEXT NOT NULL, workoutId TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL, requestJson TEXT)"
+            )
+            db.execSQL(
+                "CREATE TABLE IF NOT EXISTS coach_phase (accountId TEXT NOT NULL, workoutId TEXT NOT NULL, phase TEXT NOT NULL, paused INTEGER NOT NULL, resolvedConcernKeys TEXT NOT NULL, PRIMARY KEY(accountId,workoutId))"
+            )
+            addColumnIfMissing(db, "coach_receipt_outbox", "workoutId TEXT")
+          }
+        }
+
     val MIGRATION_34_35: Migration =
         object : Migration(34, 35) {
           override fun migrate(db: SupportSQLiteDatabase) {
@@ -1567,6 +1582,7 @@ abstract class GymDatabase : RoomDatabase() {
             MIGRATION_33_34,
             MIGRATION_34_35,
             MIGRATION_35_36,
+            MIGRATION_36_37,
         )
 
     private val legacyCoachJson = Json {

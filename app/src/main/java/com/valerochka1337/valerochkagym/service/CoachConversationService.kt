@@ -71,6 +71,9 @@ constructor(
         }
       }
 
+  suspend fun answerQuestion(workoutId: String, id: String, option: String) =
+      remote.answerQuestion(workoutId, id, option)
+
   suspend fun retry(workoutId: String, errorMessageId: String): Boolean =
       CoachDiagnostics.trace("conversation.retry") {
         remote.retry(workoutId, errorMessageId).also {
