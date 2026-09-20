@@ -105,6 +105,8 @@ object CoachToolCodec {
           buildJsonObject {
             put("workout_id", snapshot.workoutId)
             put("revision", snapshot.revision)
+            put("phase", snapshot.phase)
+            put("paused", snapshot.paused)
             put("elapsed_seconds", snapshot.elapsedSeconds)
             put("observed_at_millis", snapshot.observedAtMillis)
             snapshot.futureRestSeconds?.let { put("future_rest_seconds", it) }

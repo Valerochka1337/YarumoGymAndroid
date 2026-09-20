@@ -5,6 +5,20 @@ import com.valerochka1337.valerochkagym.data.db.entity.*
 
 @Dao
 interface CoachRunDao {
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun saveBehavior(value: CoachBehaviorEntity)
+
+  @Query("SELECT * FROM coach_behavior WHERE id=:id")
+  suspend fun behavior(id: String): CoachBehaviorEntity?
+
+  @Query("SELECT * FROM coach_behavior WHERE accountId=:owner AND requestJson IS NOT NULL")
+  suspend fun pendingAnswers(owner: String): List<CoachBehaviorEntity>
+
+  @Query("SELECT * FROM coach_phase WHERE accountId=:owner AND workoutId=:workout")
+  suspend fun phase(owner: String, workout: String): CoachPhaseEntity?
+
+  @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun savePhase(value: CoachPhaseEntity)
+
   @Query("SELECT sequence FROM coach_event_cursors WHERE accountId=:owner AND workoutId=:workout")
   suspend fun eventCursor(owner: String, workout: String): Long?
 

@@ -31,6 +31,7 @@ constructor(
     private val sessions: BackendSessionStore,
     private val settings: SettingsRepository? = null,
 ) {
+  private val behavior by lazy { CoachBehaviorClient(client, database, reader, editor, sessions) }
   val running = MutableStateFlow<Set<String>>(emptySet())
   val drafts = MutableStateFlow<Map<String, CoachDraft>>(emptyMap())
   val stages = MutableStateFlow<Map<String, String>>(emptyMap())
@@ -121,6 +122,8 @@ constructor(
                             if (!current(owner, epoch)) return@withTransaction
                             if (sequence <= (dao.eventCursor(owner, workout) ?: 0))
                                 return@withTransaction
+                            if (behavior.accept(owner, workout, epoch, event))
+                                alerts.tryEmit(workout)
                             val status = event["run"] as? JsonObject
                             if (status != null) {
                               discoverRun(status, owner, workout)
@@ -352,6 +355,15 @@ constructor(
         .also { if (it) schedule() }
   }
 
+  suspend fun answerQuestion(workoutId: String, id: String, option: String): Boolean =
+      behavior.answer(workoutId, id, option).also { if (it) schedule() }
+
+  suspend fun resolveConcern(workoutId: String, id: String): Boolean =
+      behavior.resolve(workoutId, id).also { if (it) schedule() }
+
+  suspend fun setPhase(workoutId: String, phase: String): Boolean =
+      behavior.phase(workoutId, phase).also { if (it) schedule() }
+
   suspend fun changed(workoutId: String, immediate: Boolean = true): Boolean {
     val session = sessions.snapshot() ?: return false
     val workout = database.workoutDao().getWorkoutFull(workoutId) ?: return false
@@ -387,6 +399,10 @@ constructor(
     put("sequence", nextSequence(owner, workout))
     put("contextVersion", CoachToolCodec.contextVersion(snapshot))
     put("snapshot", Json.parseToJsonElement(CoachToolCodec.snapshotJson(snapshot)))
+    put(
+        "resolvedConcernKeys",
+        Json.parseToJsonElement(dao.phase(owner, workout)?.resolvedConcernKeys ?: "[]"),
+    )
     put(
         "initiativeEnabled",
         enabled() && (database.coachDao().context(workout)?.initiativeEnabled ?: true),
@@ -426,7 +442,21 @@ constructor(
                     put("eventId", UUID.randomUUID().toString())
                     put("sequence", sequence)
                     put("contextVersion", version)
-                    put("snapshot", snapshotJson)
+                    put(
+                        "snapshot",
+                        JsonObject(
+                            snapshotJson!!.jsonObject +
+                                mapOf(
+                                    "finished" to JsonPrimitive(full?.workout?.finishedAt != null)
+                                )
+                        ),
+                    )
+                    put(
+                        "resolvedConcernKeys",
+                        Json.parseToJsonElement(
+                            dao.phase(owner, workoutId)?.resolvedConcernKeys ?: "[]"
+                        ),
+                    )
                     put("initiativeEnabled", active && (context?.initiativeEnabled ?: true))
                     put("active", active)
                   }
@@ -453,6 +483,7 @@ constructor(
     try {
       deliveryMutex.withLock { pumpState(owner, epoch) }
       statusMutex.withLock { pumpRuns(owner, epoch) }
+      recoverSessionEvents(owner, epoch)
     } finally {
       if (!current(owner, epoch)) {
         drafts.value = emptyMap()
@@ -464,8 +495,46 @@ constructor(
         (dao.pending(owner).isNotEmpty() ||
             dao.pendingSessions(owner).isNotEmpty() ||
             dao.receipts(owner).isNotEmpty() ||
+            dao.pendingAnswers(owner).isNotEmpty() ||
             dao.dirtySessions().isNotEmpty() ||
             dao.sessionsNeedingDiscovery(owner).any { !isActiveSession(it) })
+  }
+
+  private suspend fun recoverSessionEvents(owner: String, epoch: Long) {
+    for (outbox in dao.sessions(owner).takeLast(5)) {
+      if (!current(owner, epoch)) return
+      if (streaming == owner to outbox.workoutId) continue
+      attempt {
+        withTimeoutOrNull(1_000) {
+          client
+              .sessionEvents(
+                  outbox.workoutId,
+                  dao.eventCursor(owner, outbox.workoutId) ?: 0,
+                  owner,
+                  epoch,
+              )
+              .collect { event ->
+                statusMutex.withLock {
+                  var visible = false
+                  database.withTransaction {
+                    if (!current(owner, epoch)) return@withTransaction
+                    val sequence = requireNotNull(event["sequence"]?.jsonPrimitive?.longOrNull)
+                    if (sequence <= (dao.eventCursor(owner, outbox.workoutId) ?: 0))
+                        return@withTransaction
+                    (event["run"] as? JsonObject)?.let {
+                      discoverRun(it, owner, outbox.workoutId)
+                      importStatus(it, owner, epoch)
+                    }
+                    visible = behavior.accept(owner, outbox.workoutId, epoch, event)
+                    check(current(owner, epoch))
+                    dao.saveEventCursor(CoachEventCursorEntity(owner, outbox.workoutId, sequence))
+                  }
+                  if (visible) alerts.tryEmit(outbox.workoutId)
+                }
+              }
+        }
+      }
+    }
   }
 
   private suspend fun attempt(block: suspend () -> Unit) {
@@ -524,10 +593,19 @@ constructor(
         }
       }
     }
+    attempt { behavior.deliver(owner, epoch) }
     for (receipt in dao.receipts(owner)) {
       if (!current(owner, epoch)) return
       attempt {
-        client.receipt(receipt.runId, receipt.payload, owner, epoch)
+        if (receipt.workoutId != null)
+            client.interventionReceipt(
+                receipt.workoutId,
+                receipt.runId,
+                receipt.payload,
+                owner,
+                epoch,
+            )
+        else client.receipt(receipt.runId, receipt.payload, owner, epoch)
         database.withTransaction {
           if (!current(owner, epoch)) return@withTransaction
           dao.deliveredReceipt(receipt.receiptId)

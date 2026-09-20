@@ -160,8 +160,25 @@ interface CoachDao {
   @Query("DELETE FROM coach_event_cursors WHERE accountId=:accountId")
   suspend fun clearRemoteEventCursors(accountId: String)
 
+  @Query(
+      "SELECT * FROM coach_behavior WHERE workoutId=:workout ORDER BY CASE WHEN kind='concern' THEN 0 ELSE 1 END,id"
+  )
+  fun observeBehavior(
+      workout: String
+  ): kotlinx.coroutines.flow.Flow<
+      List<com.valerochka1337.valerochkagym.data.db.entity.CoachBehaviorEntity>
+  >
+
+  @Query("DELETE FROM coach_behavior WHERE accountId=:accountId")
+  suspend fun clearBehavior(accountId: String)
+
+  @Query("DELETE FROM coach_phase WHERE accountId=:accountId")
+  suspend fun clearPhase(accountId: String)
+
   @androidx.room.Transaction
   suspend fun clearAccount(accountId: String) {
+    clearBehavior(accountId)
+    clearPhase(accountId)
     clearDirtySessions(accountId)
     clearRemoteEventCursors(accountId)
     clearRemoteRuns(accountId)

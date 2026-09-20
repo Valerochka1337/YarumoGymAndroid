@@ -32,6 +32,8 @@ data class WorkoutSnapshot(
     val autoregulationOptions:
         com.valerochka1337.valerochkagym.domain.autoregulation.AutoregulationOptions =
         com.valerochka1337.valerochkagym.domain.autoregulation.AutoregulationOptions(),
+    val phase: String = "UNKNOWN",
+    val paused: Boolean = false,
 )
 
 data class CoachProfile(

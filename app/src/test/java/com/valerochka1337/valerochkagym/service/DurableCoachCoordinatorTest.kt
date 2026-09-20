@@ -3,6 +3,7 @@ package com.valerochka1337.valerochkagym.service
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
+import androidx.room.withTransaction
 import com.valerochka1337.valerochkagym.data.RoomDaoTest
 import com.valerochka1337.valerochkagym.data.ai.*
 import com.valerochka1337.valerochkagym.data.backend.*
@@ -692,6 +693,195 @@ class DurableCoachCoordinatorTest : RoomDaoTest() {
         assertTrue(db.coachRunDao().dirtySessions().none { it.workoutId == workout })
       }
 
+  @Test
+  fun `behavior concern is persisted with replay cursor without a fake run`() = runTest {
+    val workout = activeWorkout()
+    val id = UUID.randomUUID().toString()
+    val event = buildJsonObject {
+      put("sequence", 1)
+      put("type", "concern")
+      put("eventId", id)
+      put("text", "Уточните самочувствие")
+      put(
+          "decision",
+          buildJsonObject {
+            put(
+                "state",
+                buildJsonObject {
+                  put("openConcerns", JsonArray(listOf(JsonPrimitive("workout:PAIN"))))
+                },
+            )
+          },
+      )
+    }
+    val transport = FakeTransport().apply { streamEvents = listOf(event, event) }
+    val f = fixture(transport)
+    withContext(Dispatchers.Default) { f.coordinator.deliverPending() }
+    withContext(Dispatchers.Default) { f.coordinator.deliverPending() }
+    assertEquals(1L, db.coachRunDao().eventCursor("user", workout))
+    assertEquals(1, db.coachDao().messages(workout).count { it.id == id })
+    assertTrue(db.coachRunDao().runsForWorkout("user", workout).isEmpty())
+    assertTrue(f.coordinator.resolveConcern(workout, id))
+    withContext(Dispatchers.Default) { f.coordinator.deliverPending() }
+    assertEquals("RESOLVED", db.coachRunDao().behavior(id)!!.status)
+    assertEquals(
+        "workout:PAIN",
+        transport.sessionUpdates
+            .last()["resolvedConcernKeys"]!!
+            .jsonArray
+            .single()
+            .jsonPrimitive
+            .content,
+    )
+  }
+
+  @Test
+  fun `structured proposal commits application ledger and receipt atomically`() = runTest {
+    val workout = activeWorkout()
+    val f = fixture(FakeTransport())
+    val snapshot = f.reader.snapshot("user", workout, 0)!!
+    val id = UUID.randomUUID().toString()
+    val result = buildJsonObject {
+      put("kind", "proposal")
+      put("text", "Изменить вес")
+      put(
+          "proposal",
+          buildJsonObject {
+            put("proposalId", id)
+            put("version", 1)
+            put("baseRevision", snapshot.revision)
+            put("contextVersion", CoachToolCodec.contextVersion(snapshot))
+            put("expiresAtMillis", System.currentTimeMillis() + 60_000)
+            put(
+                "operations",
+                JsonArray(
+                    listOf(
+                        buildJsonObject {
+                          put("action", "edit_set")
+                          put("set_id", snapshot.exercises.single().sets.single().syncId)
+                          put("values", buildJsonObject { put("weight_kg", 45) })
+                        }
+                    )
+                ),
+            )
+          },
+      )
+    }
+    db.withTransaction {
+      assertTrue(
+          f.behavior.accept(
+              "user",
+              workout,
+              0,
+              buildJsonObject {
+                put("type", "intervention")
+                put("result", result)
+              },
+          )
+      )
+    }
+    assertEquals(
+        50.0,
+        db.workoutDao().getWorkoutFull(workout)!!.exercises.single().sets.single().weightKg!!,
+        0.0,
+    )
+    val applied = f.editor.confirmProposal("user", id, UUID.randomUUID().toString(), 0)
+    assertEquals(CommandResult.APPLIED, applied.result)
+    val receipt = db.coachRunDao().receipts("user").single()
+    assertEquals(workout, receipt.workoutId)
+    assertEquals(id, receipt.runId)
+    assertEquals(
+        applied.revision,
+        Json.parseToJsonElement(receipt.payload).jsonObject["resultRevision"]!!.jsonPrimitive.long,
+    )
+    assertEquals("APPLIED", db.coachRunDao().behavior(id)!!.status)
+    assertNotEquals(
+        CommandResult.APPLIED,
+        f.editor.confirmProposal("user", id, UUID.randomUUID().toString(), 0).result,
+    )
+    assertEquals(1, db.coachRunDao().receipts("user").size)
+    assertEquals(
+        45.0,
+        db.workoutDao().getWorkoutFull(workout)!!.exercises.single().sets.single().weightKg!!,
+        0.0,
+    )
+  }
+
+  @Test
+  fun `answer is durably queued without applying a workout change`() = runTest {
+    val workout = activeWorkout()
+    val full = db.workoutDao().getWorkoutFull(workout)!!
+    db.workoutDao()
+        .setSetCompleted(full.exercises.single().sets.single().id, true, System.currentTimeMillis())
+    val transport = FakeTransport()
+    val f = fixture(transport)
+    val snapshot = f.reader.snapshot("user", workout, 0)!!
+    val id = UUID.randomUUID().toString()
+    val result = buildJsonObject {
+      put("kind", "question")
+      put("text", "Почему?")
+      put(
+          "question",
+          buildJsonObject {
+            put("questionId", id)
+            put("version", 1)
+            put("setId", snapshot.previousSetId)
+            put("expiresAtMillis", System.currentTimeMillis() + 60_000)
+            put(
+                "options",
+                JsonArray(
+                    listOf(
+                        buildJsonObject {
+                          put("id", "PLANNED_EFFORT")
+                          put("text", "Специально")
+                        }
+                    )
+                ),
+            )
+          },
+      )
+    }
+    db.withTransaction {
+      f.behavior.accept(
+          "user",
+          workout,
+          0,
+          buildJsonObject {
+            put("type", "intervention")
+            put("result", result)
+          },
+      )
+    }
+    assertTrue(f.coordinator.answerQuestion(workout, id, "PLANNED_EFFORT"))
+    val bytes = db.coachRunDao().behavior(id)!!.requestJson!!
+    assertFalse(f.coordinator.answerQuestion(workout, id, "PLANNED_EFFORT"))
+    assertEquals(snapshot.revision, f.reader.snapshot("user", workout, 0)!!.revision)
+    transport.answerResult = buildJsonObject {
+      put("questionId", id)
+      put("status", "ANSWERED")
+      put("kind", "no_change")
+    }
+    fixture(transport).behavior.deliver("user", 0)
+    assertEquals(listOf(bytes), transport.answerBodies)
+    assertNull(db.coachRunDao().behavior(id)!!.requestJson)
+    assertEquals("ANSWERED", db.coachRunDao().behavior(id)!!.status)
+    assertTrue(db.coachRunDao().receipts("user").isEmpty())
+  }
+
+  @Test
+  fun `phase is unknown until explicit start and pause survives a coordinator restart`() = runTest {
+    val workout = activeWorkout()
+    val f = fixture(FakeTransport())
+    assertEquals("UNKNOWN", f.reader.snapshot("user", workout, 0)!!.phase)
+    assertTrue(f.coordinator.setPhase(workout, "IN_SET"))
+    assertTrue(f.coordinator.setPhase(workout, "PAUSED"))
+    val restored = fixture(FakeTransport())
+    assertEquals("IN_SET", restored.reader.snapshot("user", workout, 0)!!.phase)
+    assertTrue(restored.reader.snapshot("user", workout, 0)!!.paused)
+    assertTrue(restored.coordinator.setPhase(workout, "RESUME"))
+    assertFalse(restored.reader.snapshot("user", workout, 0)!!.paused)
+  }
+
   private suspend fun activeWorkout(): String {
     val id = insertWorkout(UUID.randomUUID().toString())
     val exercise =
@@ -712,6 +902,7 @@ class DurableCoachCoordinatorTest : RoomDaoTest() {
 
   private data class Fixture(
       val coordinator: DurableCoachCoordinator,
+      val behavior: CoachBehaviorClient,
       val editor: WorkoutEditor,
       val reader: CoachWorkoutReader,
       val conversation: CoachConversationService,
@@ -730,6 +921,7 @@ class DurableCoachCoordinatorTest : RoomDaoTest() {
         DurableCoachCoordinator(CoachRunsClient(transport), db, reader, editor, session, settings)
     return Fixture(
         coordinator,
+        CoachBehaviorClient(CoachRunsClient(transport), db, reader, editor, session),
         editor,
         reader,
         CoachConversationService(coordinator, reader, editor, db, session),
@@ -776,6 +968,9 @@ class DurableCoachCoordinatorTest : RoomDaoTest() {
       awaitCancellation()
     }
 
+    val answerBodies = mutableListOf<String>()
+    var answerResult = buildJsonObject {}
+    var failAnswer = false
     var onPut: suspend () -> Unit = {}
     var resultKind = "answer"
     var malformedFirst = false
@@ -800,6 +995,11 @@ class DurableCoachCoordinatorTest : RoomDaoTest() {
     ): BackendResponse {
       val body =
           when {
+            method == "POST" && path.endsWith("/answers") -> {
+              answerBodies += rawBody.decodeToString()
+              if (failAnswer) throw BackendException(409, "stale", "Вопрос устарел")
+              answerResult
+            }
             method == "PUT" -> {
               sessionUpdates.add(json.parseToJsonElement(rawBody.decodeToString()).jsonObject)
               onPut()

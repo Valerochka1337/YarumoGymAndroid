@@ -34,7 +34,7 @@ constructor(
   private val busyAction = MutableStateFlow(false)
   private val highlightedIds = MutableStateFlow<Set<String>>(emptySet())
 
-  private val persisted =
+  private val basePersisted =
       combine(
           coachDao.observeMessages(workoutId),
           coachDao.observePendingProposal(workoutId),
@@ -77,6 +77,10 @@ constructor(
             draftValue,
         )
       }
+  private val persisted =
+      combine(basePersisted, coachDao.observeBehavior(workoutId)) { chat, behavior ->
+        chat.copy(behavior = behavior)
+      }
   private val transient =
       combine(status, error, busyAction, conversation.responseDrafts) {
           statusValue,
@@ -117,6 +121,7 @@ constructor(
                               )
                     },
                 proposal = persistedValue.proposal,
+                behavior = persistedValue.behavior,
                 draft = persistedValue.draft,
                 busy = transientValue.actionBusy || workoutId in running,
                 status = transientValue.status ?: stages[workoutId],
@@ -170,6 +175,14 @@ constructor(
       reason: com.valerochka1337.valerochkagym.domain.CoachRejectionReason,
   ) = action { conversation.cancel(workoutId, id, reason) }
 
+  fun answerQuestion(id: String, option: String) = action {
+    conversation.answerQuestion(workoutId, id, option)
+  }
+
+  fun resolveConcern(id: String) = action { conversation.resolveConcern(workoutId, id) }
+
+  fun phase(value: String) = action { conversation.setPhase(workoutId, value) }
+
   fun undo() = action { conversation.undo(workoutId) }
 
   fun disableInitiative() = action { conversation.disableInitiative(workoutId) }
@@ -211,6 +224,8 @@ constructor(
       val proposal: CoachChatProposal?,
       val context: com.valerochka1337.valerochkagym.data.db.entity.CoachSessionContextEntity?,
       val draft: String,
+      val behavior: List<com.valerochka1337.valerochkagym.data.db.entity.CoachBehaviorEntity> =
+          emptyList(),
   )
 
   private data class TransientChat(

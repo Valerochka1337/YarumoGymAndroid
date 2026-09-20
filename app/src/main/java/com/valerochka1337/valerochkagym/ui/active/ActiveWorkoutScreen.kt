@@ -255,6 +255,7 @@ fun ActiveWorkoutScreen(
                   onDiscard = viewModel::discard,
                   onAddRestSeconds = viewModel::addRestSeconds,
                   onSkipRest = viewModel::skipRest,
+                  onCoachPhase = viewModel::coachPhase,
                   onScanHeartRate = ::startHeartRateSearch,
                   onConnectHeartRate = viewModel::connectHeartRate,
                   onCancelHeartRateSelection = viewModel::cancelHeartRateSelection,
@@ -359,6 +360,7 @@ internal fun ActiveWorkoutContent(
     onConnectHeartRate: (HeartRateDevice) -> Unit,
     onCancelHeartRateSelection: () -> Unit,
     onEditWorkoutNote: () -> Unit = {},
+    onCoachPhase: (String) -> Unit = {},
 ) {
   val workout = state.workout ?: return
   val roomExercises = workout.exercises
@@ -476,6 +478,29 @@ internal fun ActiveWorkoutContent(
         contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+      if (liveCoachEnabled)
+          item("coach-phase") {
+            androidx.compose.foundation.layout.FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+              listOf(
+                      "Начал подход" to "IN_SET",
+                      "Готов к диалогу" to "READY",
+                      "Пауза общения" to "PAUSED",
+                      "Продолжить общение" to "RESUME",
+                  )
+                  .forEach { (label, phase) ->
+                    TextButton(
+                        onClick = {
+                          haptics.tap()
+                          onCoachPhase(phase)
+                        }
+                    ) {
+                      Text(label)
+                    }
+                  }
+            }
+          }
       items(exercises, key = { it.workoutExercise.id }) { exercise ->
         val index = exercises.indexOf(exercise)
         ReorderableItem(

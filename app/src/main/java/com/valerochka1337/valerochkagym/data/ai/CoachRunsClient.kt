@@ -72,6 +72,38 @@ class CoachRunsClient @Inject constructor(private val transport: BackendTranspor
     request("POST", "/coach/runs/${id(runId)}/receipt", rawJson, accountId, epoch)
   }
 
+  suspend fun answer(
+      workoutId: String,
+      questionId: String,
+      rawJson: String,
+      accountId: String,
+      epoch: Long,
+  ): JsonObject =
+      request(
+              "POST",
+              "/coach/sessions/${id(workoutId)}/questions/${id(questionId)}/answers",
+              rawJson,
+              accountId,
+              epoch,
+          )
+          .jsonObject
+
+  suspend fun interventionReceipt(
+      workoutId: String,
+      proposalId: String,
+      rawJson: String,
+      accountId: String,
+      epoch: Long,
+  ) {
+    request(
+        "POST",
+        "/coach/sessions/${id(workoutId)}/proposals/${id(proposalId)}/receipt",
+        rawJson,
+        accountId,
+        epoch,
+    )
+  }
+
   suspend fun cancel(runId: String, accountId: String, epoch: Long): JsonObject =
       request("POST", "/coach/runs/${id(runId)}/cancel", "{}", accountId, epoch).jsonObject
 

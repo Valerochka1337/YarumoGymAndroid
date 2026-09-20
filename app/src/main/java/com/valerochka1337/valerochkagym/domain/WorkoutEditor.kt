@@ -93,6 +93,15 @@ constructor(
                     .flatMap { it.sets }
                     .none { set -> !set.isCompleted && set.id != setId }
             workoutDao.setSetCompleted(setId, true, System.currentTimeMillis())
+            sessions.snapshot()?.tokens?.userId?.let { owner ->
+              val phase =
+                  database.coachRunDao().phase(owner, workoutId)
+                      ?: com.valerochka1337.valerochkagym.data.db.entity.CoachPhaseEntity(
+                          owner,
+                          workoutId,
+                      )
+              database.coachRunDao().savePhase(phase.copy(phase = "READY"))
+            }
             database.openHelper.writableDatabase.execSQL(
                 "UPDATE workouts SET coachRevision = coachRevision + 1 WHERE id=?",
                 arrayOf<Any?>(workoutId),
@@ -339,7 +348,10 @@ constructor(
       serverProposalId: String? = null,
       expectedContextVersion: String? = null,
   ): ModelProposalSaveResult =
-      writes.write {
+      // A preview only writes proposal rows, serialized by Room. Do not acquire the workout
+      // mutex inside an SSE transaction: an actual workout write may already hold that mutex
+      // while waiting for Room. Application still always goes through writes.write.
+      run {
         try {
           database.withTransaction {
             if (!belongsToLiveAccount(accountId, expectedSessionEpoch) || !isCurrent()) {
@@ -489,6 +501,32 @@ constructor(
                             ?: return@withTransaction Applied(stale(operationId, ""), null)
                     if (proposal.accountId != accountId)
                         return@withTransaction Applied(stale(operationId, ""), null)
+                    val structured = database.coachRunDao().behavior(proposalId)
+                    if (structured != null) {
+                      if (structured.accountId != accountId)
+                          return@withTransaction Applied(stale(operationId, ""), null)
+                      val json =
+                          kotlinx.serialization.json.Json.parseToJsonElement(structured.payload)
+                              as kotlinx.serialization.json.JsonObject
+                      val payload = json["proposal"] as kotlinx.serialization.json.JsonObject
+                      val expected =
+                          (payload["contextVersion"] as kotlinx.serialization.json.JsonPrimitive)
+                              .content
+                      val current =
+                          CoachWorkoutReader(database, restTimer, sessions)
+                              .snapshot(accountId, proposal.workoutId, expectedSessionEpoch)
+                      if (
+                          current == null ||
+                              current.paused ||
+                              current.phase == "IN_SET" ||
+                              com.valerochka1337.valerochkagym.data.ai.CoachToolCodec
+                                  .contextVersion(current) != expected
+                      ) {
+                        coachDao.setProposalState(proposalId, "STALE")
+                        enqueueServerReceipt(accountId, proposalId, "STALE")
+                        return@withTransaction Applied(stale(operationId, proposal.workoutId), null)
+                      }
+                    }
                     val remoteRun = database.coachRunDao().proposal(proposalId)
                     if (remoteRun != null) {
                       val current =
@@ -651,6 +689,38 @@ constructor(
       }
 
   private suspend fun enqueueServerReceipt(accountId: String, proposalId: String, status: String) {
+    val structured = database.coachRunDao().behavior(proposalId)
+    if (structured != null && structured.accountId == accountId && structured.kind == "proposal") {
+      val id =
+          java.util.UUID.nameUUIDFromBytes("intervention:$proposalId:$status".toByteArray())
+              .toString()
+      val revision = workoutDao.getWorkoutFull(structured.workoutId)?.workout?.coachRevision
+      val payload =
+          kotlinx.serialization.json
+              .buildJsonObject {
+                put("receiptId", kotlinx.serialization.json.JsonPrimitive(id))
+                put("version", kotlinx.serialization.json.JsonPrimitive(1))
+                put("status", kotlinx.serialization.json.JsonPrimitive(status))
+                revision?.let {
+                  put("resultRevision", kotlinx.serialization.json.JsonPrimitive(it))
+                }
+              }
+              .toString()
+      database
+          .coachRunDao()
+          .receipt(
+              com.valerochka1337.valerochkagym.data.db.entity.CoachReceiptOutboxEntity(
+                  id,
+                  accountId,
+                  proposalId,
+                  payload,
+                  structured.workoutId,
+              )
+          )
+      database.coachRunDao().saveBehavior(structured.copy(status = status))
+      database.coachRunDao().markDirty(structured.workoutId)
+      return
+    }
     val run = database.coachRunDao().proposal(proposalId) ?: return
     if (run.accountId != accountId) return
     val receiptId =

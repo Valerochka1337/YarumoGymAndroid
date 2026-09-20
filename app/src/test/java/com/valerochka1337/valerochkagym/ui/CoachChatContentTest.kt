@@ -25,6 +25,7 @@ abstract class CoachChatSemanticsBase {
       initial: CoachChatUiState,
       applied: (String) -> Unit = {},
       sent: (String) -> Unit = {},
+      answered: (String, String) -> Unit = { _, _ -> },
       retried: (String) -> Unit = {},
       canceled: (String) -> Unit = {},
       declined: ((String, com.valerochka1337.valerochkagym.domain.CoachRejectionReason) -> Unit)? =
@@ -40,6 +41,7 @@ abstract class CoachChatSemanticsBase {
               onBack = {},
               onDraftChange = { state.value = state.value.copy(draft = it) },
               onSend = sent,
+              onAnswerQuestion = answered,
               onRetry = retried,
               onConfirm = { id ->
                 applied(id)
@@ -54,6 +56,33 @@ abstract class CoachChatSemanticsBase {
       }
     }
     return state
+  }
+
+  @Test
+  fun `answering a structured question does not confirm plan changes`() {
+    var answer: String? = null
+    var applied = false
+    content(
+        CoachChatUiState(
+            behavior =
+                listOf(
+                    com.valerochka1337.valerochkagym.data.db.entity.CoachBehaviorEntity(
+                        id = "question",
+                        accountId = "owner",
+                        workoutId = "workout",
+                        kind = "question",
+                        payload =
+                            """{"text":"Что произошло?","question":{"options":[{"id":"hard","text":"Было тяжелее"}]}}""",
+                    )
+                )
+        ),
+        applied = { applied = true },
+        answered = { id, value -> answer = "$id:$value" },
+    )
+    compose.onNodeWithTag("coach-conversation").performScrollToNode(hasText("Было тяжелее"))
+    compose.onNodeWithText("Было тяжелее").performScrollTo().performClick()
+    assertEquals("question:hard", answer)
+    assertTrue(!applied)
   }
 
   @Test

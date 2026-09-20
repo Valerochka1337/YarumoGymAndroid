@@ -76,6 +76,8 @@ data class CoachChatUiState(
     val readOnly: Boolean = false,
     val initiativeEnabled: Boolean = true,
     val canUndo: Boolean = false,
+    val behavior: List<com.valerochka1337.valerochkagym.data.db.entity.CoachBehaviorEntity> =
+        emptyList(),
 ) {
   fun retryText(message: CoachChatMessage): String? {
     if (!message.failed || messages.lastOrNull()?.id != message.id || proposal != null || readOnly)
@@ -112,6 +114,9 @@ fun CoachChatContent(
         ((String, com.valerochka1337.valerochkagym.domain.CoachRejectionReason) -> Unit)? =
         null,
     imeInsets: WindowInsets = WindowInsets.ime,
+    onAnswerQuestion: (String, String) -> Unit = { _, _ -> },
+    onResolveConcern: (String) -> Unit = {},
+    onPhase: (String) -> Unit = {},
 ) {
   val last = state.messages.lastOrNull()
   val latestLast by rememberUpdatedState(last)
@@ -183,8 +188,14 @@ fun CoachChatContent(
           previousOffset = offset
         }
   }
+  val visibleBehavior =
+      state.behavior.filter {
+        it.kind in setOf("question", "concern") && it.status in setOf("OPEN", "PENDING")
+      }
+  val leadingItems = visibleBehavior.size + if (state.readOnly) 0 else 1
   val itemCount =
       state.messages.size.coerceAtLeast(1) +
+          leadingItems +
           (if (waitingStatus != null) 1 else 0) +
           (if (state.error != null) 1 else 0) +
           (if (state.readOnly || state.proposal != null) 1 else 0)
@@ -194,6 +205,7 @@ fun CoachChatContent(
       state.proposal?.id,
       waitingStatus,
       state.readOnly,
+      visibleBehavior.map { it.id },
   ) {
     if (!openedHistory || followAnswer) {
       withFrameNanos {}
@@ -201,7 +213,7 @@ fun CoachChatContent(
       try {
         val firstNew = if (!openedHistory) state.messages.indexOfFirst { it.isNew } else -1
         if (firstNew >= 0) {
-          listState.scrollToItem(firstNew)
+          listState.scrollToItem(firstNew + leadingItems)
           followAnswer = false
         } else listState.scrollToItem(itemCount - 1, Int.MAX_VALUE)
       } finally {
@@ -272,6 +284,38 @@ fun CoachChatContent(
                   else "Опишите, что нужно изменить, или выберите быструю фразу."
               )
             }
+        if (!state.readOnly)
+            item("coach-phase") {
+              FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(
+                        "Начал подход" to "IN_SET",
+                        "Готов к диалогу" to "READY",
+                        "Пауза общения" to "PAUSED",
+                        "Продолжить общение" to "RESUME",
+                    )
+                    .forEach { (label, phase) ->
+                      TextButton(
+                          onClick = {
+                            haptics.tap()
+                            onPhase(phase)
+                          }
+                      ) {
+                        Text(label)
+                      }
+                    }
+              }
+            }
+        items(
+            visibleBehavior,
+            key = { "behavior:${it.id}" },
+        ) { entry ->
+          CoachBehaviorCard(
+              entry,
+              state.busy || (state.readOnly && entry.kind == "question"),
+              onAnswerQuestion,
+              onResolveConcern,
+          )
+        }
         items(state.messages, key = { "message:${it.id}" }) { message ->
           val actionResult = message.actionResult()
           if (actionResult != null) {

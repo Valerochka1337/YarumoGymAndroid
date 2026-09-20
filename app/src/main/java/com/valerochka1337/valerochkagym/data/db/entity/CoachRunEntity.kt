@@ -38,6 +38,7 @@ data class CoachReceiptOutboxEntity(
     val accountId: String,
     val runId: String,
     val payload: String,
+    val workoutId: String? = null,
 )
 
 @Entity(tableName = "coach_dirty_sessions")
