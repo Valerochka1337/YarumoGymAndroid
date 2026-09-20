@@ -76,6 +76,8 @@ data class CoachChatUiState(
     val readOnly: Boolean = false,
     val initiativeEnabled: Boolean = true,
     val canUndo: Boolean = false,
+    val behavior: List<com.valerochka1337.valerochkagym.data.db.entity.CoachBehaviorEntity> =
+        emptyList(),
 ) {
   fun retryText(message: CoachChatMessage): String? {
     if (!message.failed || messages.lastOrNull()?.id != message.id || proposal != null || readOnly)
@@ -112,6 +114,7 @@ fun CoachChatContent(
         ((String, com.valerochka1337.valerochkagym.domain.CoachRejectionReason) -> Unit)? =
         null,
     imeInsets: WindowInsets = WindowInsets.ime,
+    onAnswerQuestion: (String, String) -> Unit = { _, _ -> },
 ) {
   val last = state.messages.lastOrNull()
   val latestLast by rememberUpdatedState(last)
@@ -183,6 +186,10 @@ fun CoachChatContent(
           previousOffset = offset
         }
   }
+  val visibleBehavior =
+      state.behavior.filter {
+        it.kind == "question" && it.status in setOf("OPEN", "PENDING", "STALE", "EXPIRED")
+      }
   val itemCount =
       state.messages.size.coerceAtLeast(1) +
           (if (waitingStatus != null) 1 else 0) +
@@ -194,6 +201,7 @@ fun CoachChatContent(
       state.proposal?.id,
       waitingStatus,
       state.readOnly,
+      visibleBehavior.map { it.id },
   ) {
     if (!openedHistory || followAnswer) {
       withFrameNanos {}
@@ -273,6 +281,11 @@ fun CoachChatContent(
               )
             }
         items(state.messages, key = { "message:${it.id}" }) { message ->
+          val question = visibleBehavior.firstOrNull { it.id == message.id }
+          if (question != null) {
+            CoachBehaviorCard(question, state.busy || state.readOnly, onAnswerQuestion)
+            return@items
+          }
           val actionResult = message.actionResult()
           if (actionResult != null) {
             AppliedActionMessage(message = message, result = actionResult)

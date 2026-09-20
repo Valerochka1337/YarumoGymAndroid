@@ -105,6 +105,8 @@ object CoachToolCodec {
           buildJsonObject {
             put("workout_id", snapshot.workoutId)
             put("revision", snapshot.revision)
+            put("phase", snapshot.phase)
+            put("paused", snapshot.paused)
             put("elapsed_seconds", snapshot.elapsedSeconds)
             put("observed_at_millis", snapshot.observedAtMillis)
             snapshot.futureRestSeconds?.let { put("future_rest_seconds", it) }
@@ -209,6 +211,7 @@ object CoachToolCodec {
                                   add(
                                       buildJsonObject {
                                         put("set_id", set.syncId)
+                                        put("note", set.note)
                                         put("index", set.setIndex)
                                         put("completed", set.completed)
                                         set.completedAt?.let { put("completed_at", it) }
@@ -262,6 +265,7 @@ object CoachToolCodec {
                                         put("completed_at", row.completedAt)
                                         put("workout_id", row.workoutId)
                                         put("set_id", row.setSyncId)
+                                        put("note", row.note)
                                         put("interrupted", row.interrupted)
                                         put("set_index", row.setIndex)
                                         row.weightKg?.let { put("weight_kg", it) }

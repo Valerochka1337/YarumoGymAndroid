@@ -105,6 +105,7 @@ constructor(
                                 reportedFeelings = set.reportedFeelingsJson.decodeStrings(),
                                 actualRir = set.actualRir,
                                 actualRirAtLeastFour = set.actualRirAtLeastFour,
+                                note = set.note,
                             )
                           },
                   history =
@@ -124,6 +125,7 @@ constructor(
                               setSyncId = set.syncId,
                               actualRir = set.actualRir,
                               actualRirAtLeastFour = set.actualRirAtLeastFour,
+                              note = set.note,
                               interrupted =
                                   "INTERRUPTED" in set.reportedFeelingsJson.decodeStrings(),
                           )
@@ -155,6 +157,7 @@ constructor(
         currentIndex
             .takeIf { it >= 0 }
             ?.let { index -> allSets.drop(index + 1).firstOrNull { !it.completed }?.syncId }
+    val rest = restSnapshot()
     return WorkoutSnapshot(
         accountId = accountId,
         workoutId = workoutId,
@@ -172,10 +175,22 @@ constructor(
                 else profile.preferredRepMax,
             ),
         coachDecisions = CoachDecisionMemory.decode(context?.decisionMemoryJson ?: "[]"),
+        phase =
+            when {
+              rest != null -> "RESTING"
+              previous != null &&
+                  exercises.firstOrNull { e -> e.sets.any { it.syncId == previous } }?.sectionId !=
+                      exercises
+                          .firstOrNull { e -> e.sets.any { it.syncId == current } }
+                          ?.sectionId &&
+                  current != null -> "BETWEEN_EXERCISES"
+              else -> "READY"
+            },
+        paused = false,
         currentSetId = current,
         previousSetId = previous,
         nextSetId = next,
-        rest = restSnapshot(),
+        rest = rest,
         elapsedSeconds =
             ((System.currentTimeMillis() - full.workout.startedAt) / 1_000).coerceAtLeast(0),
         availableTimeMinutes =
