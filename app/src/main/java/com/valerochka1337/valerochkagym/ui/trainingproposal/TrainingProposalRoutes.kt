@@ -1,10 +1,8 @@
 package com.valerochka1337.valerochkagym.ui.trainingproposal
 
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.valerochka1337.valerochkagym.ui.calendar.ManualPlanningForm
 import com.valerochka1337.valerochkagym.ui.calendarai.WorkoutPreparationCard
 import com.valerochka1337.valerochkagym.ui.components.GlowBackground
 
@@ -16,22 +14,18 @@ fun TrainingProposalInboxScreen(
     viewModel: TrainingProposalViewModel = hiltViewModel(),
 ) {
   val state by viewModel.uiState.collectAsStateWithLifecycle()
-  LaunchedEffect(viewModel) { viewModel.refresh() }
-  var manual by rememberSaveable { mutableStateOf(false) }
+  LaunchedEffect(viewModel, state.inbox.bindingGeneration) { viewModel.ensureInbox() }
   GlowBackground {
     TrainingProposalInboxContent(
-        state.items,
-        state.loading,
-        state.error,
-        state.nextCursor != null,
-        { viewModel.refresh() },
-        { viewModel.refresh(true) },
+        state.inbox.items,
+        state.inbox.loading,
+        state.inbox.error,
+        state.inbox.nextCursor != null,
+        viewModel::retryInbox,
+        viewModel::loadMore,
         onOpen,
         onBack,
         onCreateAi = onCreateAi,
-        onManual = { manual = !manual },
-        manualSelected = manual,
-        manualContent = { if (manual) ManualPlanningForm(onClose = { manual = false }) },
         preparationContent = { WorkoutPreparationCard(onCreateAi, onOpen) },
     )
   }
@@ -65,6 +59,10 @@ fun TrainingProposalDetailScreen(
         explanation = state.explanation,
         exerciseTypes = state.exerciseTypes,
         availableExerciseIds = state.availableExerciseIds,
+        copySaved = state.copySaved,
+        copyScheduled = state.copyScheduled,
+        onSaveCopy = viewModel::saveCopy,
+        onScheduleCopy = viewModel::scheduleCopy,
     )
   }
 }

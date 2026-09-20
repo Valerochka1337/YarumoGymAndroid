@@ -12,8 +12,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
-import androidx.compose.ui.test.assertIsNotSelected
-import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -44,6 +42,49 @@ import org.robolectric.annotation.Config
 @Config(application = Application::class, qualifiers = "w840dp-h900dp-xhdpi")
 class TrainingProposalComposeTest {
   @get:Rule val compose = createComposeRule()
+
+  @Test
+  fun `previous proposal offers saving and scheduling on a new date`() {
+    val oldDraft = draft().copy(startsAtMillis = 0)
+    val oldProposal = proposal().copy(status = ProposalStatus.STALE, expiresAt = 1)
+    var saved = 0
+    var scheduled: Long? = null
+    compose.setContent {
+      GymTheme {
+        TrainingProposalDetailContent(
+            oldProposal,
+            oldDraft,
+            false,
+            false,
+            null,
+            listOf("bench" to "Жим лёжа"),
+            emptyList(),
+            {},
+            {},
+            {},
+            {},
+            {},
+            onSaveCopy = { saved++ },
+            onScheduleCopy = { instant, _ -> scheduled = instant },
+        )
+      }
+    }
+    compose
+        .onNodeWithText("Сохранить в тренировки")
+        .performScrollTo()
+        .assertIsEnabled()
+        .performClick()
+    compose.onNodeWithText("Запланировать на другую дату").performScrollTo().performClick()
+    compose
+        .onNodeWithText("Добавить в календарь")
+        .performScrollTo()
+        .assertIsEnabled()
+        .performClick()
+    compose.runOnIdle {
+      assertEquals(1, saved)
+      org.junit.Assert.assertTrue(scheduled!! > System.currentTimeMillis())
+    }
+  }
 
   @Test
   @Config(qualifiers = "w360dp-h900dp-xhdpi")
@@ -103,9 +144,8 @@ class TrainingProposalComposeTest {
   }
 
   @Test
-  fun `program button reflects opening and closing its form`() {
+  fun `planning inbox omits program and refresh controls`() {
     compose.setContent {
-      var manual by remember { mutableStateOf(false) }
       GymTheme {
         TrainingProposalInboxContent(
             emptyList(),
@@ -117,14 +157,11 @@ class TrainingProposalComposeTest {
             {},
             {},
             onCreateAi = {},
-            onManual = { manual = !manual },
-            manualSelected = manual,
         )
       }
     }
-    compose.onNodeWithText("Из программы").assertIsNotSelected().performClick()
-    compose.onNodeWithText("Из программы").assertIsSelected().performClick()
-    compose.onNodeWithText("Из программы").assertIsNotSelected()
+    compose.onNodeWithText("Из программы").assertDoesNotExist()
+    compose.onNodeWithContentDescription("Обновить предложения").assertDoesNotExist()
   }
 
   @Test
@@ -156,9 +193,8 @@ class TrainingProposalComposeTest {
 
   @Test
   @Config(qualifiers = "w360dp-h800dp-xhdpi")
-  fun `planning hub exposes both creation actions with empty proposals at large font`() {
+  fun `planning hub keeps ai action and empty state at large font`() {
     var ai = 0
-    var manual = 0
     compose.setContent {
       val density = LocalDensity.current
       CompositionLocalProvider(LocalDensity provides Density(density.density, 2f)) {
@@ -173,19 +209,15 @@ class TrainingProposalComposeTest {
               {},
               {},
               onCreateAi = { ai++ },
-              onManual = { manual++ },
           )
         }
       }
     }
     compose.onNodeWithText("Составить с ИИ").performScrollTo().performClick()
-    compose.onNodeWithText("Из программы").performScrollTo().performClick()
     compose.onNodeWithText("Пока нет предложений").performScrollTo().assertIsDisplayed()
-    compose.onNodeWithContentDescription("Обновить предложения").assertIsDisplayed()
-    compose.runOnIdle {
-      assertEquals(1, ai)
-      assertEquals(1, manual)
-    }
+    compose.onNodeWithText("Из программы").assertDoesNotExist()
+    compose.onNodeWithContentDescription("Обновить предложения").assertDoesNotExist()
+    compose.runOnIdle { assertEquals(1, ai) }
   }
 
   @Test
@@ -491,7 +523,9 @@ class TrainingProposalComposeTest {
         .assertIsEnabled()
         .performClick()
     compose
-        .onNodeWithText("Этот вариант больше нельзя редактировать.")
+        .onNodeWithText(
+            "План можно сохранить как личную программу или запланировать на новую дату."
+        )
         .performScrollTo()
         .assertIsDisplayed()
     compose.runOnIdle { assertEquals(1, recoverCalls) }
@@ -508,7 +542,7 @@ class TrainingProposalComposeTest {
             loading = true,
             error = "Не удалось обновить",
             hasMore = true,
-            onRefresh = { retries++ },
+            onRetry = { retries++ },
             onMore = {},
             onOpen = { opened = it },
             onBack = {},

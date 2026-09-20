@@ -156,14 +156,21 @@ class ActiveWorkoutRepositoryTest : RoomDaoTest() {
   }
 
   @Test
-  fun `startFromRoutine prefills sets from the last completed workout`() = runTest {
+  fun `startFromRoutine preserves explicit targets over completed history`() = runTest {
     val squat = addExercise("Присед")
+    val treadmill = addExercise("Дорожка", type = ExerciseType.CARDIO)
     val routineId = addRoutine("День A")
     addRoutineExercise(
         routineId,
         squat,
         position = 0,
-        plannedSets = listOf(planned(100.0, 5), planned(100.0, 5)),
+        plannedSets = listOf(planned(100.0, 5), planned(102.5, 4)),
+    )
+    addRoutineExercise(
+        routineId,
+        treadmill,
+        position = 1,
+        plannedSets = listOf(PlannedSet(durationSec = 900, speedKmh = 9.5, inclinePct = 3.0)),
     )
     seedHistory(
         squat,
@@ -172,13 +179,37 @@ class ActiveWorkoutRepositoryTest : RoomDaoTest() {
             completedSet(weightKg = 112.5, reps = 4),
         ),
     )
+    seedHistory(
+        treadmill,
+        listOf(completedSet(durationSec = 600, speedKmh = 6.0, inclinePct = 0.0)),
+    )
 
     val workoutId = repository.startFromRoutine(routineId)
 
-    val sets = sortedWorkoutFull(workoutFull(workoutId)).exercises.single().sets
-    assertEquals(listOf(110.0, 112.5), sets.map { it.weightKg })
-    assertEquals(listOf(6, 4), sets.map { it.reps })
-    assertTrue(sets.none { it.isCompleted })
+    val exercises =
+        sortedWorkoutFull(workoutFull(workoutId)).exercises.associateBy { it.exercise.id }
+    val strengthSets = exercises.getValue(squat).sets
+    assertEquals(listOf(100.0, 102.5), strengthSets.map { it.weightKg })
+    assertEquals(listOf(5, 4), strengthSets.map { it.reps })
+    assertEquals(strengthSets.map { it.weightKg }, strengthSets.map { it.originalWeightKg })
+    assertEquals(strengthSets.map { it.reps }, strengthSets.map { it.originalReps })
+    assertEquals(strengthSets.map { it.weightKg }, strengthSets.map { it.targetWeightKg })
+    assertEquals(strengthSets.map { it.reps }, strengthSets.map { it.targetReps })
+    assertTrue(strengthSets.none { it.isCompleted })
+
+    val cardioSet = exercises.getValue(treadmill).sets.single()
+    assertEquals(900, cardioSet.durationSec)
+    assertEquals(9.5, cardioSet.speedKmh!!, 0.0)
+    assertEquals(3.0, cardioSet.inclinePct!!, 0.0)
+    assertNull(cardioSet.weightKg)
+    assertEquals(cardioSet.durationSec, cardioSet.originalDurationSec)
+    assertEquals(cardioSet.speedKmh, cardioSet.originalSpeedKmh)
+    assertEquals(cardioSet.inclinePct, cardioSet.originalInclinePct)
+    assertEquals(cardioSet.durationSec, cardioSet.targetDurationSec)
+    assertEquals(cardioSet.speedKmh, cardioSet.targetSpeedKmh)
+    assertEquals(cardioSet.inclinePct, cardioSet.targetInclinePct)
+    assertNull(cardioSet.targetWeightKg)
+    assertFalse(cardioSet.isCompleted)
   }
 
   @Test
@@ -196,22 +227,36 @@ class ActiveWorkoutRepositoryTest : RoomDaoTest() {
   }
 
   @Test
-  fun `startFromRoutine takes the tail from plannedSets when history is shorter`() = runTest {
-    val squat = addExercise("Присед")
+  fun `startFromRoutine prefills blank planned sets from completed history`() = runTest {
+    val treadmill = addExercise("Дорожка", type = ExerciseType.CARDIO)
     val routineId = addRoutine("День A")
     addRoutineExercise(
         routineId,
-        squat,
+        treadmill,
         position = 0,
-        plannedSets = listOf(planned(100.0, 5), planned(100.0, 5), planned(100.0, 5)),
+        plannedSets = listOf(PlannedSet(), PlannedSet(), PlannedSet()),
     )
-    seedHistory(squat, listOf(completedSet(weightKg = 110.0, reps = 6)))
+    seedHistory(
+        treadmill,
+        listOf(
+            completedSet(durationSec = 600, speedKmh = 6.0, inclinePct = 0.0),
+            completedSet(durationSec = 450, speedKmh = 7.5, inclinePct = 2.0),
+        ),
+    )
 
     val workoutId = repository.startFromRoutine(routineId)
 
     val sets = sortedWorkoutFull(workoutFull(workoutId)).exercises.single().sets
-    assertEquals(listOf(110.0, 100.0, 100.0), sets.map { it.weightKg })
-    assertEquals(listOf(6, 5, 5), sets.map { it.reps })
+    assertEquals(listOf(600, 450, null), sets.map { it.durationSec })
+    assertEquals(listOf(6.0, 7.5, null), sets.map { it.speedKmh })
+    assertEquals(listOf(0.0, 2.0, null), sets.map { it.inclinePct })
+    assertEquals(sets.map { it.durationSec }, sets.map { it.originalDurationSec })
+    assertEquals(sets.map { it.speedKmh }, sets.map { it.originalSpeedKmh })
+    assertEquals(sets.map { it.inclinePct }, sets.map { it.originalInclinePct })
+    assertEquals(sets.map { it.durationSec }, sets.map { it.targetDurationSec })
+    assertEquals(sets.map { it.speedKmh }, sets.map { it.targetSpeedKmh })
+    assertEquals(sets.map { it.inclinePct }, sets.map { it.targetInclinePct })
+    assertTrue(sets.none { it.isCompleted })
   }
 
   @Test
@@ -747,8 +792,9 @@ class ActiveWorkoutRepositoryTest : RoomDaoTest() {
 
   /** Seeds a finished workout whose completed sets become the "last time" prefill source. */
   private suspend fun seedHistory(exerciseId: Long, sets: List<WorkoutSetEntity>) {
-    insertWorkout("history", startedAt = 100, finishedAt = 500)
-    val workoutExerciseId = insertWorkoutExercise("history", exerciseId)
+    val historyId = "history-$exerciseId"
+    insertWorkout(historyId, startedAt = 100, finishedAt = 500)
+    val workoutExerciseId = insertWorkoutExercise(historyId, exerciseId)
     workoutDao.insertSets(
         sets.mapIndexed { index, set ->
           set.copy(workoutExerciseId = workoutExerciseId, setIndex = index)
@@ -759,12 +805,21 @@ class ActiveWorkoutRepositoryTest : RoomDaoTest() {
   private fun planned(weightKg: Double, reps: Int): PlannedSet =
       PlannedSet(weightKg = weightKg, reps = reps)
 
-  private fun completedSet(weightKg: Double, reps: Int): WorkoutSetEntity =
+  private fun completedSet(
+      weightKg: Double? = null,
+      reps: Int? = null,
+      durationSec: Int? = null,
+      speedKmh: Double? = null,
+      inclinePct: Double? = null,
+  ): WorkoutSetEntity =
       WorkoutSetEntity(
           workoutExerciseId = 0,
           setIndex = 0,
           weightKg = weightKg,
           reps = reps,
+          durationSec = durationSec,
+          speedKmh = speedKmh,
+          inclinePct = inclinePct,
           isCompleted = true,
       )
 

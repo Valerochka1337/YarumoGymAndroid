@@ -1,6 +1,11 @@
 package com.valerochka1337.valerochkagym.data
 
+import com.valerochka1337.valerochkagym.data.backend.SyncSchema
 import com.valerochka1337.valerochkagym.data.db.PlannedSet
+import com.valerochka1337.valerochkagym.data.db.entity.CalendarExceptionEntity
+import com.valerochka1337.valerochkagym.data.db.entity.CalendarExceptionKind
+import com.valerochka1337.valerochkagym.data.db.entity.CalendarPlanEntity
+import com.valerochka1337.valerochkagym.data.db.entity.CalendarRuleEntity
 import com.valerochka1337.valerochkagym.data.db.entity.ConfigurationTombstoneKind
 import com.valerochka1337.valerochkagym.data.db.entity.EquipmentRequirementState
 import com.valerochka1337.valerochkagym.data.db.entity.ExerciseEntity
@@ -823,6 +828,69 @@ class GymRepositoryImplTest : RoomDaoTest() {
     )
   }
 
+  @Test
+  fun `deleting a scheduled routine removes calendar entries and preserves completed history`() =
+      runTest {
+        SyncSchema.install(db.openHelper.writableDatabase)
+        val exerciseId = db.exerciseDao().insert(exercise("Жим"))
+        val routine =
+            repository.saveRoutineConfiguration(
+                RoutineConfigurationDraft(
+                    routine = RoutineEntity(name = "Запланированная"),
+                    exercises =
+                        listOf(
+                            RoutineExerciseEntity(
+                                routineId = 0,
+                                exerciseId = exerciseId,
+                                position = 0,
+                            ),
+                        ),
+                    gymIds = emptySet(),
+                ),
+            ) as SaveRoutineConfigurationResult.Saved
+        db.calendarPlanDao()
+            .upsertPlan(
+                CalendarPlanEntity("plan", routine.routineId, 1_800_000_000_000, "UTC"),
+            )
+        db.calendarPlanDao()
+            .upsertRule(
+                CalendarRuleEntity("rule", routine.routineId, 1, "08:30", "UTC", "2026-09-20"),
+            )
+        db.calendarPlanDao()
+            .upsertException(
+                CalendarExceptionEntity(
+                    id = "exception",
+                    ruleId = "rule",
+                    instanceKey = "2026-09-21",
+                    kind = CalendarExceptionKind.CANCELLED,
+                ),
+            )
+        db.workoutDao()
+            .insertWorkout(
+                WorkoutEntity(
+                    id = "completed",
+                    routineId = routine.routineId,
+                    name = "Завершённая",
+                    startedAt = 1_700_000_000_000,
+                    finishedAt = 1_700_000_360_000,
+                ),
+            )
+        val workoutExerciseId = insertWorkoutExercise("completed", exerciseId)
+        insertSet(workoutExerciseId, setIndex = 0, weightKg = 100.0, reps = 5, isCompleted = true)
+        val generationBeforeDeletion = backendGeneration()
+
+        assertTrue(repository.deleteRoutine(routine.routineId) != null)
+
+        assertEquals(null, db.routineDao().getRoutineWithExercises(routine.routineId))
+        assertEquals(0, tableCount("calendar_plans"))
+        assertEquals(0, tableCount("calendar_rules"))
+        assertEquals(0, tableCount("calendar_exceptions"))
+        val preserved = db.workoutDao().getWorkoutFull("completed")!!
+        assertEquals(null, preserved.workout.routineId)
+        assertEquals(1, preserved.exercises.single().sets.size)
+        assertTrue(backendGeneration() >= generationBeforeDeletion + 6)
+      }
+
   private suspend fun savedGym(name: String, exerciseIds: Set<Long> = emptySet()): String =
       (repository.saveGym(null, name, exerciseIds) as SaveGymResult.Saved).gymId
 
@@ -833,4 +901,10 @@ class GymRepositoryImplTest : RoomDaoTest() {
           type = ExerciseType.STRENGTH,
           isCustom = true,
       )
+
+  private fun backendGeneration(): Long =
+      db.openHelper.writableDatabase.query("SELECT generation FROM backend_state WHERE id=1").use {
+        check(it.moveToFirst())
+        it.getLong(0)
+      }
 }

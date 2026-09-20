@@ -12,9 +12,7 @@ import androidx.compose.material.icons.automirrored.rounded.Undo
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.FitnessCenter
-import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -36,7 +34,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -82,61 +79,30 @@ fun TrainingProposalInboxContent(
     loading: Boolean,
     error: String?,
     hasMore: Boolean,
-    onRefresh: () -> Unit,
+    onRetry: () -> Unit,
     onMore: () -> Unit,
     onOpen: (String) -> Unit,
     onBack: () -> Unit,
     onCreateAi: (() -> Unit)? = null,
-    onManual: (() -> Unit)? = null,
-    manualContent: @Composable () -> Unit = {},
     preparationContent: @Composable () -> Unit = {},
-    manualSelected: Boolean = false,
 ) {
   val haptics = gymHaptics()
   PlanningScreen(
       "Планирование",
       onBack,
-      actions = {
-        IconButton(onClick = onRefresh, enabled = !loading) {
-          Icon(Icons.Rounded.Refresh, "Обновить предложения")
-        }
-      },
   ) {
     if (onCreateAi != null) {
       Text("Новая тренировка", style = MaterialTheme.typography.titleLarge)
       Text(
-          "Составьте план с ИИ или выберите готовую программу. Перед добавлением в календарь план можно проверить.",
+          "Составьте план с ИИ. Перед добавлением в календарь план можно проверить.",
           style = MaterialTheme.typography.bodyMedium,
           color = MaterialTheme.colorScheme.onSurfaceVariant,
       )
-      FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        FilledTonalButton(onClick = onCreateAi) {
-          Icon(Icons.Rounded.AutoAwesome, null)
-          Text("Составить с ИИ", Modifier.padding(start = 8.dp))
-        }
-        if (onManual != null)
-            OutlinedButton(
-                onClick = {
-                  haptics.tap()
-                  onManual()
-                },
-                modifier = Modifier.semantics { selected = manualSelected },
-                colors =
-                    ButtonDefaults.outlinedButtonColors(
-                        containerColor =
-                            if (manualSelected) MaterialTheme.colorScheme.primaryContainer
-                            else androidx.compose.ui.graphics.Color.Unspecified,
-                        contentColor =
-                            if (manualSelected) MaterialTheme.colorScheme.onPrimaryContainer
-                            else MaterialTheme.colorScheme.primary,
-                    ),
-            ) {
-              Icon(if (manualSelected) Icons.Rounded.Check else Icons.Rounded.FitnessCenter, null)
-              Text("Из программы", Modifier.padding(start = 8.dp))
-            }
+      FilledTonalButton(onClick = onCreateAi) {
+        Icon(Icons.Rounded.AutoAwesome, null)
+        Text("Составить с ИИ", Modifier.padding(start = 8.dp))
       }
     }
-    manualContent()
     preparationContent()
     Text("Предложения", style = MaterialTheme.typography.titleLarge)
     if (loading) {
@@ -151,7 +117,7 @@ fun TrainingProposalInboxContent(
           "Повторить",
           {
             haptics.tap()
-            onRefresh()
+            onRetry()
           },
           modifier = Modifier.fillMaxWidth(),
       )
@@ -225,6 +191,10 @@ fun TrainingProposalDetailContent(
     explanation: PlannerExplanation? = null,
     exerciseTypes: Map<String, ExerciseType> = emptyMap(),
     availableExerciseIds: Set<String> = exerciseChoices.map { it.first }.toSet(),
+    copySaved: Boolean = false,
+    copyScheduled: Boolean = false,
+    onSaveCopy: (() -> Unit)? = null,
+    onScheduleCopy: ((Long, String) -> Unit)? = null,
 ) {
   val haptics = gymHaptics()
   val invalidInputs =
@@ -325,7 +295,7 @@ fun TrainingProposalDetailContent(
         }
       }
     } else if (!canEdit) {
-      Text("Этот вариант больше нельзя редактировать.")
+      Text("План можно сохранить как личную программу или запланировать на новую дату.")
     }
 
     if (canEdit && (!isDraftValid(draft) || transientInputInvalid)) {
@@ -390,6 +360,67 @@ fun TrainingProposalDetailContent(
                 },
         ) {
           Text("Отклонить")
+        }
+      }
+    }
+    val canCopy =
+        !saving && !transientInputInvalid && isDraftValid(draft, requireFutureStart = false)
+    if (onSaveCopy != null) {
+      OutlinedButton(
+          onClick = {
+            haptics.confirm()
+            onSaveCopy()
+          },
+          enabled = canCopy && !copySaved,
+          modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
+      ) {
+        Text(if (copySaved) "Сохранено в тренировках" else "Сохранить в тренировки")
+      }
+    }
+    if (onScheduleCopy != null) {
+      var scheduling by
+          rememberSaveable(proposal.proposalId, proposal.currentVersion) { mutableStateOf(false) }
+      if (copyScheduled) {
+        Text("Добавлено в календарь")
+      } else {
+        OutlinedButton(
+            onClick = {
+              haptics.tap()
+              scheduling = !scheduling
+            },
+            enabled = canCopy,
+            modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
+        ) {
+          Text(if (scheduling) "Отмена" else "Запланировать на другую дату")
+        }
+        if (scheduling) {
+          val deviceZone = rememberDeviceTimeZone()
+          val initial =
+              remember(proposal.proposalId) {
+                java.time.ZonedDateTime.now(deviceZone).plusHours(1).withSecond(0).withNano(0)
+              }
+          var date by
+              rememberSaveable(proposal.proposalId) {
+                mutableStateOf(initial.toLocalDate().toString())
+              }
+          var time by
+              rememberSaveable(proposal.proposalId) {
+                mutableStateOf(initial.toLocalTime().toString())
+              }
+          PlanningDateTimeFields(date, time, deviceZone.id, { date = it }, { time = it }, {})
+          val start = resolvePlanningDateTime(date, time, deviceZone)
+          val instant = (start as? PlanningDateTimeResolution.Resolved)?.instantMillis
+          PillButton(
+              "Добавить в календарь",
+              {
+                if (instant != null) {
+                  haptics.confirm()
+                  onScheduleCopy(instant, deviceZone.id)
+                }
+              },
+              enabled = canCopy && instant != null && instant > System.currentTimeMillis(),
+              modifier = Modifier.fillMaxWidth(),
+          )
         }
       }
     }
@@ -867,7 +898,7 @@ private fun SetEditor(
 
 private fun emptyPlannedSet() = ProposalPlannedSet(null, null, null, null, null)
 
-private fun isDraftValid(draft: ApprovalDraft): Boolean =
+private fun isDraftValid(draft: ApprovalDraft, requireFutureStart: Boolean = true): Boolean =
     draft.name == draft.name.trim() &&
         draft.name.isNotEmpty() &&
         draft.name.length <= 200 &&
@@ -875,7 +906,7 @@ private fun isDraftValid(draft: ApprovalDraft): Boolean =
         draft.gymIds == draft.gymIds.distinct().sorted() &&
         draft.exercises.size in 1..30 &&
         draft.exercises.map { it.exerciseId }.distinct().size == draft.exercises.size &&
-        draft.startsAtMillis > System.currentTimeMillis() &&
+        (!requireFutureStart || draft.startsAtMillis > System.currentTimeMillis()) &&
         runCatching { ZoneId.of(draft.timeZoneId).id == draft.timeZoneId }.getOrDefault(false) &&
         draft.exercises.all { exercise ->
           exercise.exerciseId.isNotBlank() &&

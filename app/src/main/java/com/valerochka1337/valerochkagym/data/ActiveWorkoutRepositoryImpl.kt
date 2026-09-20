@@ -83,28 +83,35 @@ constructor(
                             position = position,
                         ),
                     )
-                val previous = workoutDao.lastCompletedSetsForExercise(item.exercise.id)
+                val hasExplicitTargets =
+                    item.routineExercise.plannedSets.any { it.hasExplicitTargets() }
+                val previous =
+                    if (hasExplicitTargets) emptyList()
+                    else workoutDao.lastCompletedSetsForExercise(item.exercise.id)
                 val sets =
                     item.routineExercise.plannedSets.mapIndexed { index, planned ->
-                      val source = previous.getOrNull(index)
-                      source?.copy(
-                          id = 0,
-                          workoutExerciseId = workoutExerciseId,
-                          setIndex = index,
-                          isCompleted = false,
-                          note = "",
-                          syncId = UUID.randomUUID().toString(),
-                          originalWeightKg = source.weightKg,
-                          originalReps = source.reps,
-                          originalDurationSec = source.durationSec,
-                          originalSpeedKmh = source.speedKmh,
-                          originalInclinePct = source.inclinePct,
-                          targetWeightKg = source.weightKg,
-                          targetReps = source.reps,
-                          targetDurationSec = source.durationSec,
-                          targetSpeedKmh = source.speedKmh,
-                          targetInclinePct = source.inclinePct,
-                      ) ?: planned.toSet(workoutExerciseId, index)
+                      if (hasExplicitTargets) planned.toSet(workoutExerciseId, index)
+                      else {
+                        val source = previous.getOrNull(index)
+                        source?.copy(
+                            id = 0,
+                            workoutExerciseId = workoutExerciseId,
+                            setIndex = index,
+                            isCompleted = false,
+                            note = "",
+                            syncId = UUID.randomUUID().toString(),
+                            originalWeightKg = source.weightKg,
+                            originalReps = source.reps,
+                            originalDurationSec = source.durationSec,
+                            originalSpeedKmh = source.speedKmh,
+                            originalInclinePct = source.inclinePct,
+                            targetWeightKg = source.weightKg,
+                            targetReps = source.reps,
+                            targetDurationSec = source.durationSec,
+                            targetSpeedKmh = source.speedKmh,
+                            targetInclinePct = source.inclinePct,
+                        ) ?: planned.toSet(workoutExerciseId, index)
+                      }
                     }
                 if (sets.isNotEmpty()) workoutDao.insertSets(sets)
               }
@@ -453,6 +460,13 @@ private fun WorkoutSetEntity.isBlank(): Boolean =
         speedKmh == null &&
         inclinePct == null &&
         note.isBlank()
+
+private fun PlannedSet.hasExplicitTargets(): Boolean =
+    weightKg != null ||
+        reps != null ||
+        durationSec != null ||
+        speedKmh != null ||
+        inclinePct != null
 
 private fun PlannedSet.toSet(workoutExerciseId: Long, setIndex: Int): WorkoutSetEntity =
     WorkoutSetEntity(

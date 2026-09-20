@@ -11,24 +11,44 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextReplacement
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.dp
+import com.valerochka1337.valerochkagym.data.ai.CalendarAiIntent
+import com.valerochka1337.valerochkagym.data.ai.PreparationEntity
+import com.valerochka1337.valerochkagym.data.trainingproposal.ApprovalDraft
+import com.valerochka1337.valerochkagym.data.trainingproposal.ProposalAuthor
+import com.valerochka1337.valerochkagym.data.trainingproposal.ProposalSnapshot
+import com.valerochka1337.valerochkagym.data.trainingproposal.ProposalSource
+import com.valerochka1337.valerochkagym.data.trainingproposal.ProposalStatus
+import com.valerochka1337.valerochkagym.data.trainingproposal.ProposalWire
+import com.valerochka1337.valerochkagym.data.trainingproposal.TrainingProposal
+import com.valerochka1337.valerochkagym.ui.components.PlanningScreen
 import com.valerochka1337.valerochkagym.ui.theme.GymTheme
+import kotlinx.serialization.encodeToString
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 
 @RunWith(RobolectricTestRunner::class)
 @Config(application = Application::class, qualifiers = "w840dp-h900dp-xhdpi")
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
 class CalendarAiComposeTest {
   @get:Rule val compose = createComposeRule()
 
@@ -102,6 +122,84 @@ class CalendarAiComposeTest {
     compose.onNodeWithText("Следующая тренировка").assertIsDisplayed()
     compose.onNodeWithText("Повторить").assertIsDisplayed().assertIsEnabled().performClick()
     compose.runOnIdle { assertEquals(1, retries) }
+  }
+
+  @Test
+  @Config(qualifiers = "w360dp-h800dp-xhdpi")
+  fun `recalculation actions wrap without clipping at font scale two and stay clickable`() {
+    assertRecalculationActions(fontScale = 2f, wrapped = true)
+  }
+
+  @Test
+  @Config(qualifiers = "w360dp-h800dp-xhdpi")
+  fun `recalculation actions fit the compact screen at normal font and stay clickable`() {
+    assertRecalculationActions(fontScale = 1f, wrapped = true)
+  }
+
+  @Test
+  @Config(qualifiers = "w480dp-h800dp-xhdpi")
+  fun `recalculation actions share a row when space is available`() {
+    assertRecalculationActions(fontScale = 1f, wrapped = false)
+  }
+
+  private fun assertRecalculationActions(fontScale: Float, wrapped: Boolean) {
+    var opened = 0
+    var edits = 0
+    var targetPx = 0f
+    compose.setContent {
+      val density = LocalDensity.current
+      targetPx = with(density) { 56.dp.toPx() }
+      CompositionLocalProvider(
+          LocalDensity provides Density(density.density, fontScale = fontScale)
+      ) {
+        GymTheme {
+          PlanningScreen(title = "Планирование", onBack = {}) {
+            WorkoutPreparationCardContent(
+                row = activePreparationWithProposal(),
+                onPrepare = { edits++ },
+                onOpen = { opened++ },
+            )
+          }
+        }
+      }
+    }
+
+    val openBounds = compose.onNodeWithText("Посмотреть").fetchSemanticsNode().boundsInRoot
+    val editBounds = compose.onNodeWithText("Изменить условия").fetchSemanticsNode().boundsInRoot
+    if (wrapped) {
+      assertTrue("whole actions occupy separate rows", openBounds.bottom <= editBounds.top)
+    } else {
+      assertEquals("actions share a row", openBounds.top, editBounds.top, 1f)
+      assertTrue("actions do not overlap", openBounds.right <= editBounds.left)
+    }
+
+    listOf("Посмотреть", "Изменить условия").forEach { label ->
+      compose.onNodeWithText(label).performScrollTo()
+      val layouts = mutableListOf<TextLayoutResult>()
+      compose.onNodeWithText(label, useUnmergedTree = true).performSemanticsAction(
+          SemanticsActions.GetTextLayoutResult
+      ) {
+        it(layouts)
+      }
+      val layout = layouts.single()
+      assertEquals(1, layout.lineCount)
+      assertFalse("$label clips vertically", layout.didOverflowHeight)
+      assertTrue(
+          "$label fits horizontally",
+          layout.getLineLeft(0) >= 0f && layout.getLineRight(0) <= layout.size.width,
+      )
+      assertFalse("$label is ellipsized", layout.isLineEllipsized(0))
+      assertTrue(
+          "$label has a 56dp target",
+          compose.onNodeWithText(label).fetchSemanticsNode().boundsInRoot.height >= targetPx,
+      )
+      compose.onNodeWithText(label).performScrollTo().performClick()
+    }
+
+    compose.runOnIdle {
+      assertEquals(1, opened)
+      assertEquals(1, edits)
+    }
   }
 
   @Test
@@ -292,6 +390,38 @@ private fun sampleState(profilePrompt: String? = null) =
               )
             },
     )
+
+private fun activePreparationWithProposal(): PreparationEntity {
+  val proposal =
+      TrainingProposal(
+          proposalId = "proposal-1",
+          author = ProposalAuthor(ProposalSource.AI, null),
+          recipientId = "owner-1",
+          source = ProposalSource.AI,
+          status = ProposalStatus.PENDING,
+          currentVersion = 1,
+          createdAt = 0,
+          updatedAt = 0,
+          expiresAt = Long.MAX_VALUE,
+          snapshot =
+              ProposalSnapshot(
+                  version = 1,
+                  draft = ApprovalDraft("План", emptyList(), emptyList(), 0, "UTC"),
+                  ownerRevision = 0,
+                  catalogRevision = 0,
+                  createdAt = 0,
+              ),
+      )
+  return PreparationEntity(
+      owner = "owner-1",
+      requestId = "request-1",
+      intentJson =
+          ProposalWire.json.encodeToString(CalendarAiIntent(2_000_000_000_000, "UTC", emptyList())),
+      replacesJson = "[]",
+      state = "RUNNING",
+      proposalJson = ProposalWire.json.encodeToString(proposal),
+  )
+}
 
 private fun CalendarAiUiState.withForm(
     change: CalendarAiForm.() -> CalendarAiForm

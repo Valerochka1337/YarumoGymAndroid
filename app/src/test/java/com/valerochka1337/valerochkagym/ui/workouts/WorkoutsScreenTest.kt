@@ -200,6 +200,34 @@ class WorkoutsScreenTest {
     assertEquals(listOf(2L), shared)
   }
 
+  @Test
+  fun `only a personal routine exposes edit and invokes its callback`() {
+    val edited = mutableListOf<Long>()
+    compose.setContent {
+      GymTheme {
+        WorkoutRoutinesList(
+            routines = routines(),
+            selectedRoutineId = null,
+            templatesExpanded = true,
+            onTemplatesExpandedChange = {},
+            onRoutineSelected = {},
+            onOpenRoutine = {},
+            onEditRoutine = { edited += it },
+            onDuplicateRoutine = {},
+            onDeleteRoutine = {},
+        )
+      }
+    }
+
+    compose.onAllNodesWithContentDescription("Меню программы")[0].performClick()
+    compose.onNodeWithText("Редактировать").assertDoesNotExist()
+    compose.onNodeWithText("Открыть").performClick()
+    compose.onAllNodesWithContentDescription("Меню программы")[1].performClick()
+    compose.onNodeWithText("Редактировать").performClick()
+
+    assertEquals(listOf(2L), edited)
+  }
+
   private fun routines() =
       listOf(
           RoutineCardUi(

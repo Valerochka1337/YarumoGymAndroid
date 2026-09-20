@@ -60,10 +60,16 @@ interface CalendarPlanDao {
   @Query("SELECT * FROM calendar_plans WHERE id=:id")
   suspend fun plan(id: String): CalendarPlanEntity?
 
+  @Query("SELECT * FROM calendar_plans WHERE routineId=:routineId")
+  suspend fun plansForRoutine(routineId: Long): List<CalendarPlanEntity>
+
   @Query("SELECT COUNT(*) FROM calendar_plans") suspend fun planCount(): Int
 
   @Query("SELECT * FROM calendar_rules WHERE id=:id")
   suspend fun rule(id: String): CalendarRuleEntity?
+
+  @Query("SELECT * FROM calendar_rules WHERE routineId=:routineId")
+  suspend fun rulesForRoutine(routineId: Long): List<CalendarRuleEntity>
 
   @Query("SELECT COUNT(*) FROM calendar_rules") suspend fun ruleCount(): Int
 
