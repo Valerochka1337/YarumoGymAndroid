@@ -394,58 +394,51 @@ class DurableCoachCoordinatorTest : RoomDaoTest() {
       }
 
   @Test
-  fun `follow up supersedes pending proposal and journals stale receipt before delivery`() =
-      runTest {
-        val workout = activeWorkout()
-        val fixture = fixture(FakeTransport())
-        val snapshot = fixture.reader.snapshot("user", workout, 0)!!
-        val runId = UUID.randomUUID().toString()
-        val proposalId = UUID.randomUUID().toString()
-        val version = CoachToolCodec.contextVersion(snapshot)
-        db.coachRunDao()
-            .insert(
-                CoachRunEntity(
-                    runId,
-                    "user",
-                    workout,
-                    "{}",
-                    version,
-                    1,
-                    submitted = true,
-                    imported = true,
-                    proposalId = proposalId,
-                )
-            )
-        assertTrue(
-            fixture.editor.saveModelProposalResult(
+  fun `follow up preserves pending proposal and its confirmation`() = runTest {
+    val workout = activeWorkout()
+    val fixture = fixture(FakeTransport())
+    val snapshot = fixture.reader.snapshot("user", workout, 0)!!
+    val runId = UUID.randomUUID().toString()
+    val proposalId = UUID.randomUUID().toString()
+    val version = CoachToolCodec.contextVersion(snapshot)
+    db.coachRunDao()
+        .insert(
+            CoachRunEntity(
+                runId,
                 "user",
                 workout,
-                snapshot.revision,
-                listOf(
-                    CoachChangeIntent.EditSet(
-                        snapshot.exercises.single().sets.single().syncId,
-                        CoachSetValues(setOf("weight_kg"), weightKg = 45.0),
-                        false,
-                    )
-                ),
-                System.currentTimeMillis() + 60_000,
-                0,
-                serverProposalId = proposalId,
-                expectedContextVersion = version,
-            ) is ModelProposalSaveResult.Saved
+                "{}",
+                version,
+                1,
+                submitted = true,
+                imported = true,
+                proposalId = proposalId,
+            )
         )
-        assertTrue(fixture.coordinator.send(workout, "Лучше измени число повторений"))
-        assertNull(db.coachDao().pendingProposal(workout))
-        assertEquals("SUPERSEDED", db.coachDao().proposalForId(proposalId)!!.state)
-        val receipt = db.coachRunDao().receipts("user").single()
-        assertEquals(runId, receipt.runId)
-        assertEquals(
-            "STALE",
-            Json.parseToJsonElement(receipt.payload).jsonObject["status"]!!.jsonPrimitive.content,
-        )
-        assertEquals(1, db.coachRunDao().pending("user").size)
-        assertEquals(1, db.coachDao().messages(workout).count { it.role == "user" })
-      }
+    assertTrue(
+        fixture.editor.saveModelProposalResult(
+            "user",
+            workout,
+            snapshot.revision,
+            listOf(
+                CoachChangeIntent.EditSet(
+                    snapshot.exercises.single().sets.single().syncId,
+                    CoachSetValues(setOf("weight_kg"), weightKg = 45.0),
+                    false,
+                )
+            ),
+            System.currentTimeMillis() + 60_000,
+            0,
+            serverProposalId = proposalId,
+            expectedContextVersion = version,
+        ) is ModelProposalSaveResult.Saved
+    )
+    assertTrue(fixture.coordinator.send(workout, "Почему предлагаешь изменить вес?"))
+    assertEquals(proposalId, db.coachDao().pendingProposal(workout)!!.id)
+    assertTrue(db.coachRunDao().receipts("user").isEmpty())
+    assertEquals(1, db.coachRunDao().pending("user").size)
+    assertEquals(1, db.coachDao().messages(workout).count { it.role == "user" })
+  }
 
   @Test
   fun `deleted workout sends inactive session using last durable snapshot`() = runTest {
@@ -714,7 +707,7 @@ class DurableCoachCoordinatorTest : RoomDaoTest() {
           },
       )
     }
-    val transport = FakeTransport().apply { streamEvents = listOf(event, event) }
+    val transport = FakeTransport().apply { httpEvents = listOf(event, event) }
     val f = fixture(transport)
     withContext(Dispatchers.Default) { f.coordinator.deliverPending() }
     withContext(Dispatchers.Default) { f.coordinator.deliverPending() }
@@ -784,6 +777,9 @@ class DurableCoachCoordinatorTest : RoomDaoTest() {
         db.workoutDao().getWorkoutFull(workout)!!.exercises.single().sets.single().weightKg!!,
         0.0,
     )
+    assertTrue(f.coordinator.send(workout, "Почему такой вес?"))
+    assertEquals(id, db.coachDao().pendingProposal(workout)!!.id)
+    assertTrue(db.coachRunDao().receipts("user").isEmpty())
     val applied = f.editor.confirmProposal("user", id, UUID.randomUUID().toString(), 0)
     assertEquals(CommandResult.APPLIED, applied.result)
     val receipt = db.coachRunDao().receipts("user").single()
@@ -896,11 +892,11 @@ class DurableCoachCoordinatorTest : RoomDaoTest() {
   fun `phase follows rest and remaining sets without manual status buttons`() = runTest {
     val workout = activeWorkout()
     val f = fixture(FakeTransport())
-    assertEquals("IN_SET", f.reader.snapshot("user", workout, 0)!!.phase)
+    assertEquals("READY", f.reader.snapshot("user", workout, 0)!!.phase)
     f.timer.start(60)
     assertEquals("RESTING", f.reader.snapshot("user", workout, 0)!!.phase)
     f.timer.skip()
-    assertEquals("IN_SET", f.reader.snapshot("user", workout, 0)!!.phase)
+    assertEquals("READY", f.reader.snapshot("user", workout, 0)!!.phase)
     val set = db.workoutDao().getWorkoutFull(workout)!!.exercises.first().sets.first()
     db.workoutDao().setSetCompleted(set.id, true, System.currentTimeMillis())
     assertEquals("READY", f.reader.snapshot("user", workout, 0)!!.phase)
@@ -921,8 +917,143 @@ class DurableCoachCoordinatorTest : RoomDaoTest() {
             )
         )
     val f = fixture(FakeTransport())
-    assertEquals("IN_SET", f.reader.snapshot("user", workout, 0)!!.phase)
+    assertEquals("READY", f.reader.snapshot("user", workout, 0)!!.phase)
     assertFalse(f.reader.snapshot("user", workout, 0)!!.paused)
+  }
+
+  @Test
+  fun `http replay delivers concern with no stream and resumes without duplicates`() = runTest {
+    val workout = activeWorkout()
+    val id = UUID.randomUUID().toString()
+    val transport = FakeTransport()
+    transport.httpEvents =
+        listOf(
+            buildJsonObject {
+              put("sequence", 1)
+              put("type", "concern")
+              put("eventId", id)
+              put("text", "Останови движение, которое вызывает боль.")
+            }
+        )
+    val f = fixture(transport)
+    f.coordinator.deliverPending()
+    assertEquals(1L, db.coachRunDao().eventCursor("user", workout))
+    assertEquals(1, db.coachDao().messages(workout).count { it.id == id })
+    fixture(transport).coordinator.deliverPending()
+    assertEquals(1, db.coachDao().messages(workout).count { it.id == id })
+    assertEquals(listOf(0L, 1L), transport.httpCursors)
+    assertTrue(transport.streamAfter.isEmpty())
+  }
+
+  @Test
+  fun `manual rest and set notes are available to the coach without claiming execution`() =
+      runTest {
+        val workout = activeWorkout()
+        val f = fixture(FakeTransport())
+        val set = db.workoutDao().getWorkoutFull(workout)!!.exercises.single().sets.single()
+        db.openHelper.writableDatabase.execSQL(
+            "UPDATE workout_sets SET note=? WHERE id=?",
+            arrayOf<Any>("Остановился специально", set.id),
+        )
+        val snapshot = f.reader.snapshot("user", workout, 0)!!
+        assertEquals("READY", snapshot.phase)
+        val wire = Json.parseToJsonElement(CoachToolCodec.snapshotJson(snapshot)).jsonObject
+        assertEquals(
+            "Остановился специально",
+            wire["exercises"]!!
+                .jsonArray
+                .single()
+                .jsonObject["sets"]!!
+                .jsonArray
+                .single()
+                .jsonObject["note"]!!
+                .jsonPrimitive
+                .content,
+        )
+      }
+
+  @Test
+  fun `proposal from refreshed server context can be confirmed after an older request`() = runTest {
+    val workout = activeWorkout()
+    val transport = FakeTransport()
+    val f = fixture(transport)
+    val snapshot = f.reader.snapshot("user", workout, 0)!!
+    val version = CoachToolCodec.contextVersion(snapshot)
+    val runId = UUID.randomUUID().toString()
+    val proposalId = UUID.randomUUID().toString()
+    val run = buildJsonObject {
+      put("runId", runId)
+      put("requestId", runId)
+      put("workoutId", workout)
+      put("origin", "USER")
+      put("contextVersion", "0".repeat(64))
+      put("state", "SUCCEEDED")
+      put(
+          "result",
+          buildJsonObject {
+            put("kind", "proposal")
+            put("text", "Изменить вес следующего подхода")
+            put(
+                "proposal",
+                buildJsonObject {
+                  put("proposalId", proposalId)
+                  put("contextVersion", version)
+                  put("baseRevision", snapshot.revision)
+                  put("expiresAtMillis", System.currentTimeMillis() + 60_000)
+                  put(
+                      "operations",
+                      buildJsonArray {
+                        add(
+                            buildJsonObject {
+                              put("action", "edit_set")
+                              put("set_id", snapshot.exercises.single().sets.single().syncId)
+                              put("values", buildJsonObject { put("weight_kg", 45) })
+                            }
+                        )
+                      },
+                  )
+                },
+            )
+          },
+      )
+    }
+    transport.httpEvents =
+        listOf(
+            buildJsonObject {
+              put("sequence", 1)
+              put("type", "completed")
+              put("run", run)
+            }
+        )
+    f.coordinator.deliverPending()
+    assertEquals(proposalId, db.coachDao().pendingProposal(workout)!!.id)
+    assertEquals(version, db.coachRunDao().run(runId)!!.contextVersion)
+    assertEquals(
+        CommandResult.APPLIED,
+        f.editor.confirmProposal("user", proposalId, UUID.randomUUID().toString(), 0).result,
+    )
+  }
+
+  @Test
+  fun `background http recovery drains every event page before completion`() = runTest {
+    val workout = activeWorkout()
+    val transport = FakeTransport()
+    val id = UUID.randomUUID().toString()
+    transport.httpEvents =
+        (1..101).map { sequence ->
+          buildJsonObject {
+            put("sequence", sequence)
+            put("type", if (sequence == 101) "concern" else "progress")
+            if (sequence == 101) {
+              put("eventId", id)
+              put("text", "Останови движение, которое вызывает боль.")
+            }
+          }
+        }
+    fixture(transport).coordinator.deliverPending()
+    assertEquals(listOf(0L, 100L), transport.httpCursors)
+    assertEquals(101L, db.coachRunDao().eventCursor("user", workout))
+    assertEquals(1, db.coachDao().messages(workout).count { it.id == id })
   }
 
   private suspend fun activeWorkout(): String {
@@ -992,6 +1123,8 @@ class DurableCoachCoordinatorTest : RoomDaoTest() {
     val statusCalls = java.util.concurrent.CopyOnWriteArrayList<String>()
     val polledStatuses = mutableMapOf<String, JsonObject>()
     var streamEvents: List<JsonObject> = emptyList()
+    var httpEvents: List<JsonObject> = emptyList()
+    val httpCursors = mutableListOf<Long>()
     val streamAfter = java.util.concurrent.CopyOnWriteArrayList<Long>()
 
     override fun authorizedGetEventStream(
@@ -1051,6 +1184,13 @@ class DurableCoachCoordinatorTest : RoomDaoTest() {
               buildJsonObject {}
             }
             method == "POST" && path.endsWith("/receipt") -> buildJsonObject {}
+            method == "GET" && path.contains("/event-page?") -> {
+              val cursor = path.substringAfter("after=").toLong()
+              httpCursors += cursor
+              JsonArray(
+                  httpEvents.filter { it["sequence"]!!.jsonPrimitive.long > cursor }.take(100)
+              )
+            }
             method == "GET" && path.contains("/sessions/") -> {
               listCalls.add(path.substringAfter("/sessions/").substringBefore('/'))
               JsonArray(emptyList())

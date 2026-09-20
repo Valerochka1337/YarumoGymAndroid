@@ -87,6 +87,7 @@ data class SnapshotSet(
     val reportedFeelings: Set<String> = emptySet(),
     val actualRir: Int? = null,
     val actualRirAtLeastFour: Boolean = false,
+    val note: String = "",
 )
 
 data class SnapshotHistory(
@@ -103,6 +104,7 @@ data class SnapshotHistory(
     val actualRir: Int? = null,
     val actualRirAtLeastFour: Boolean = false,
     val interrupted: Boolean = false,
+    val note: String = "",
 )
 
 data class SnapshotPulse(val bpm: Int, val measuredAtMillis: Long)

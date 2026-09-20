@@ -175,8 +175,10 @@ constructor(
           var interval = 2_000L
           while (isActive) {
             val session = sessions.snapshot()
-            if (session != null)
-                attempt { statusMutex.withLock { pumpRuns(session.tokens.userId, session.epoch) } }
+            if (session != null) {
+              attempt { statusMutex.withLock { pumpRuns(session.tokens.userId, session.epoch) } }
+              recoverSessionEvents(session.tokens.userId, session.epoch)
+            }
             withTimeoutOrNull(interval + kotlin.random.Random.nextLong(0, 500)) {
               runWake.receive()
             }
@@ -280,14 +282,6 @@ constructor(
                 database.coachDao().context(workoutId)
                     ?: CoachSessionContextEntity(workoutId, owner)
             database.coachDao().saveContext(context.copy(initiativePendingInteraction = false))
-            database
-                .coachDao()
-                .pendingProposal(workoutId)
-                ?.takeIf { it.accountId == owner }
-                ?.let { old ->
-                  database.coachDao().setProposalState(old.id, "SUPERSEDED")
-                  dao.proposal(old.id)?.let { queueReceipt(it, old.id, "STALE", session.epoch) }
-                }
             saveMessage(
                 CoachMessageEntity(requestId, owner, workoutId, "user", text, now, "PENDING")
             )
@@ -495,38 +489,38 @@ constructor(
   }
 
   private suspend fun recoverSessionEvents(owner: String, epoch: Long) {
-    for (outbox in dao.sessions(owner).takeLast(5)) {
+    val active = database.workoutDao().getActiveWorkoutId()
+    val workouts = (listOfNotNull(active) + dao.sessions(owner).map { it.workoutId }).distinct()
+    for (workout in workouts) {
       if (!current(owner, epoch)) return
-      if (streaming == owner to outbox.workoutId) continue
       attempt {
-        withTimeoutOrNull(1_000) {
-          client
-              .sessionEvents(
-                  outbox.workoutId,
-                  dao.eventCursor(owner, outbox.workoutId) ?: 0,
-                  owner,
-                  epoch,
-              )
-              .collect { event ->
-                statusMutex.withLock {
-                  var visible = false
-                  database.withTransaction {
-                    if (!current(owner, epoch)) return@withTransaction
-                    val sequence = requireNotNull(event["sequence"]?.jsonPrimitive?.longOrNull)
-                    if (sequence <= (dao.eventCursor(owner, outbox.workoutId) ?: 0))
-                        return@withTransaction
-                    (event["run"] as? JsonObject)?.let {
-                      discoverRun(it, owner, outbox.workoutId)
-                      importStatus(it, owner, epoch)
-                    }
-                    visible = behavior.accept(owner, outbox.workoutId, epoch, event)
-                    check(current(owner, epoch))
-                    dao.saveEventCursor(CoachEventCursorEntity(owner, outbox.workoutId, sequence))
-                  }
-                  if (visible) alerts.tryEmit(outbox.workoutId)
+        // Drain all pages before a background worker reports delivery complete. Every event
+        // and cursor commit atomically; interruption resumes from the last committed cursor.
+        do {
+          if (!current(owner, epoch)) return@attempt
+          val page =
+              client.sessionEventPage(workout, dao.eventCursor(owner, workout) ?: 0, owner, epoch)
+          for (event in page) {
+            statusMutex.withLock {
+              var visible = false
+              database.withTransaction {
+                if (!current(owner, epoch)) return@withTransaction
+                val sequence = requireNotNull(event["sequence"]?.jsonPrimitive?.longOrNull)
+                val cursor = dao.eventCursor(owner, workout) ?: 0
+                if (sequence <= cursor) return@withTransaction
+                require(sequence == cursor + 1) { "Missing coach events" }
+                (event["run"] as? JsonObject)?.let {
+                  discoverRun(it, owner, workout)
+                  importStatus(it, owner, epoch)
                 }
+                visible = behavior.accept(owner, workout, epoch, event)
+                check(current(owner, epoch))
+                dao.saveEventCursor(CoachEventCursorEntity(owner, workout, sequence))
               }
-        }
+              if (visible) alerts.tryEmit(workout)
+            }
+          }
+        } while (page.size == 100)
       }
     }
   }
@@ -699,7 +693,17 @@ constructor(
         return
     val origin =
         status.string("origin")?.takeIf { it == "USER" || it == "COACH" } ?: storedRun.origin
-    val run = storedRun.copy(origin = origin)
+    // The server can refresh state while executing an accepted user message. Keep immutable
+    // request bytes, but validate and confirm its proposal against the proposal's own context.
+    val proposalContext =
+        ((status["result"] as? JsonObject)?.get("proposal") as? JsonObject)?.string(
+            "contextVersion"
+        )
+    val run =
+        storedRun.copy(
+            origin = origin,
+            contextVersion = proposalContext ?: storedRun.contextVersion,
+        )
     if (run != storedRun) dao.update(run)
     if (run.origin == "USER")
         status.string("stage")?.let { stages.value += run.workoutId to stageLabel(it) }

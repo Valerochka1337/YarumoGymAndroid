@@ -105,6 +105,7 @@ constructor(
                                 reportedFeelings = set.reportedFeelingsJson.decodeStrings(),
                                 actualRir = set.actualRir,
                                 actualRirAtLeastFour = set.actualRirAtLeastFour,
+                                note = set.note,
                             )
                           },
                   history =
@@ -124,6 +125,7 @@ constructor(
                               setSyncId = set.syncId,
                               actualRir = set.actualRir,
                               actualRirAtLeastFour = set.actualRirAtLeastFour,
+                              note = set.note,
                               interrupted =
                                   "INTERRUPTED" in set.reportedFeelingsJson.decodeStrings(),
                           )
@@ -176,7 +178,12 @@ constructor(
         phase =
             when {
               rest != null -> "RESTING"
-              current != null -> "IN_SET"
+              previous != null &&
+                  exercises.firstOrNull { e -> e.sets.any { it.syncId == previous } }?.sectionId !=
+                      exercises
+                          .firstOrNull { e -> e.sets.any { it.syncId == current } }
+                          ?.sectionId &&
+                  current != null -> "BETWEEN_EXERCISES"
               else -> "READY"
             },
         paused = false,

@@ -64,6 +64,22 @@ class CoachRunsClient @Inject constructor(private val transport: BackendTranspor
     return result
   }
 
+  suspend fun sessionEventPage(
+      workoutId: String,
+      after: Long,
+      accountId: String,
+      epoch: Long,
+  ): List<JsonObject> =
+      request(
+              "GET",
+              "/coach/sessions/${id(workoutId)}/event-page?after=$after",
+              "",
+              accountId,
+              epoch,
+          )
+          .jsonArray
+          .map { it.jsonObject }
+
   suspend fun putSession(workoutId: String, rawJson: String, accountId: String, epoch: Long) {
     request("PUT", "/coach/sessions/${id(workoutId)}", rawJson, accountId, epoch)
   }
