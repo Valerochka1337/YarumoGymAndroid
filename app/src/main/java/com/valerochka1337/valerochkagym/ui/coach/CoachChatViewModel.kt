@@ -179,10 +179,6 @@ constructor(
     conversation.answerQuestion(workoutId, id, option)
   }
 
-  fun resolveConcern(id: String) = action { conversation.resolveConcern(workoutId, id) }
-
-  fun phase(value: String) = action { conversation.setPhase(workoutId, value) }
-
   fun undo() = action { conversation.undo(workoutId) }
 
   fun disableInitiative() = action { conversation.disableInitiative(workoutId) }

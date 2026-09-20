@@ -721,24 +721,23 @@ class DurableCoachCoordinatorTest : RoomDaoTest() {
     assertEquals(1L, db.coachRunDao().eventCursor("user", workout))
     assertEquals(1, db.coachDao().messages(workout).count { it.id == id })
     assertTrue(db.coachRunDao().runsForWorkout("user", workout).isEmpty())
-    assertTrue(f.coordinator.resolveConcern(workout, id))
-    withContext(Dispatchers.Default) { f.coordinator.deliverPending() }
-    assertEquals("RESOLVED", db.coachRunDao().behavior(id)!!.status)
-    assertEquals(
-        "workout:PAIN",
-        transport.sessionUpdates
-            .last()["resolvedConcernKeys"]!!
-            .jsonArray
-            .single()
-            .jsonPrimitive
-            .content,
+    f.behavior.accept(
+        "user",
+        workout,
+        0,
+        buildJsonObject {
+          put("type", "concern_resolved")
+          put("resolvedConcernKeys", JsonArray(listOf(JsonPrimitive("workout:PAIN"))))
+        },
     )
+    assertEquals("RESOLVED", db.coachRunDao().behavior(id)!!.status)
   }
 
   @Test
   fun `structured proposal commits application ledger and receipt atomically`() = runTest {
     val workout = activeWorkout()
     val f = fixture(FakeTransport())
+    f.timer.start(60)
     val snapshot = f.reader.snapshot("user", workout, 0)!!
     val id = UUID.randomUUID().toString()
     val result = buildJsonObject {
@@ -808,78 +807,122 @@ class DurableCoachCoordinatorTest : RoomDaoTest() {
   }
 
   @Test
-  fun `answer is durably queued without applying a workout change`() = runTest {
-    val workout = activeWorkout()
-    val full = db.workoutDao().getWorkoutFull(workout)!!
-    db.workoutDao()
-        .setSetCompleted(full.exercises.single().sets.single().id, true, System.currentTimeMillis())
-    val transport = FakeTransport()
-    val f = fixture(transport)
-    val snapshot = f.reader.snapshot("user", workout, 0)!!
-    val id = UUID.randomUUID().toString()
-    val result = buildJsonObject {
-      put("kind", "question")
-      put("text", "Почему?")
-      put(
-          "question",
-          buildJsonObject {
-            put("questionId", id)
-            put("version", 1)
-            put("setId", snapshot.previousSetId)
-            put("expiresAtMillis", System.currentTimeMillis() + 60_000)
-            put(
-                "options",
-                JsonArray(
-                    listOf(
-                        buildJsonObject {
-                          put("id", "PLANNED_EFFORT")
-                          put("text", "Специально")
-                        }
-                    )
-                ),
+  fun `expired question answer survives invalidation and retry without applying a workout change`() =
+      runTest {
+        val workout = activeWorkout()
+        val full = db.workoutDao().getWorkoutFull(workout)!!
+        db.workoutDao()
+            .setSetCompleted(
+                full.exercises.single().sets.single().id,
+                true,
+                System.currentTimeMillis(),
             )
-          },
-      )
-    }
-    db.withTransaction {
-      f.behavior.accept(
-          "user",
-          workout,
-          0,
-          buildJsonObject {
-            put("type", "intervention")
-            put("result", result)
-          },
-      )
-    }
-    assertTrue(f.coordinator.answerQuestion(workout, id, "PLANNED_EFFORT"))
-    val bytes = db.coachRunDao().behavior(id)!!.requestJson!!
-    assertFalse(f.coordinator.answerQuestion(workout, id, "PLANNED_EFFORT"))
-    assertEquals(snapshot.revision, f.reader.snapshot("user", workout, 0)!!.revision)
-    transport.answerResult = buildJsonObject {
-      put("questionId", id)
-      put("status", "ANSWERED")
-      put("kind", "no_change")
-    }
-    fixture(transport).behavior.deliver("user", 0)
-    assertEquals(listOf(bytes), transport.answerBodies)
-    assertNull(db.coachRunDao().behavior(id)!!.requestJson)
-    assertEquals("ANSWERED", db.coachRunDao().behavior(id)!!.status)
-    assertTrue(db.coachRunDao().receipts("user").isEmpty())
+        val transport = FakeTransport()
+        val f = fixture(transport)
+        val snapshot = f.reader.snapshot("user", workout, 0)!!
+        val id = UUID.randomUUID().toString()
+        val result = buildJsonObject {
+          put("kind", "question")
+          put("text", "Почему?")
+          put(
+              "question",
+              buildJsonObject {
+                put("questionId", id)
+                put("version", 1)
+                put("setId", snapshot.previousSetId)
+                put("expiresAtMillis", System.currentTimeMillis() - 60_000)
+                put(
+                    "options",
+                    JsonArray(
+                        listOf(
+                            buildJsonObject {
+                              put("id", "PLANNED_EFFORT")
+                              put("text", "Специально")
+                            }
+                        )
+                    ),
+                )
+              },
+          )
+        }
+        db.withTransaction {
+          f.behavior.accept(
+              "user",
+              workout,
+              0,
+              buildJsonObject {
+                put("type", "intervention")
+                put("result", result)
+              },
+          )
+        }
+        assertTrue(f.coordinator.answerQuestion(workout, id, "PLANNED_EFFORT"))
+        val bytes = db.coachRunDao().behavior(id)!!.requestJson!!
+        assertEquals(
+            1,
+            db.coachDao().messages(workout).count { it.role == "user" && it.text == "Специально" },
+        )
+        f.behavior.accept(
+            "user",
+            workout,
+            0,
+            buildJsonObject {
+              put("type", "intervention_answer")
+              put(
+                  "result",
+                  buildJsonObject {
+                    put("questionId", id)
+                    put("status", "STALE")
+                  },
+              )
+            },
+        )
+        assertEquals(bytes, db.coachRunDao().behavior(id)!!.requestJson)
+        assertFalse(f.coordinator.answerQuestion(workout, id, "PLANNED_EFFORT"))
+        assertEquals(snapshot.revision, f.reader.snapshot("user", workout, 0)!!.revision)
+        transport.answerResult = buildJsonObject {
+          put("questionId", id)
+          put("status", "ANSWERED")
+          put("kind", "no_change")
+        }
+        fixture(transport).behavior.deliver("user", 0)
+        assertEquals(listOf(bytes), transport.answerBodies)
+        assertNull(db.coachRunDao().behavior(id)!!.requestJson)
+        assertEquals("ANSWERED", db.coachRunDao().behavior(id)!!.status)
+        assertTrue(db.coachRunDao().receipts("user").isEmpty())
+      }
+
+  @Test
+  fun `phase follows rest and remaining sets without manual status buttons`() = runTest {
+    val workout = activeWorkout()
+    val f = fixture(FakeTransport())
+    assertEquals("IN_SET", f.reader.snapshot("user", workout, 0)!!.phase)
+    f.timer.start(60)
+    assertEquals("RESTING", f.reader.snapshot("user", workout, 0)!!.phase)
+    f.timer.skip()
+    assertEquals("IN_SET", f.reader.snapshot("user", workout, 0)!!.phase)
+    val set = db.workoutDao().getWorkoutFull(workout)!!.exercises.first().sets.first()
+    db.workoutDao().setSetCompleted(set.id, true, System.currentTimeMillis())
+    assertEquals("READY", f.reader.snapshot("user", workout, 0)!!.phase)
+    val restored = fixture(FakeTransport())
+    assertEquals("READY", restored.reader.snapshot("user", workout, 0)!!.phase)
   }
 
   @Test
-  fun `phase is unknown until explicit start and pause survives a coordinator restart`() = runTest {
+  fun `old manual pause cannot strand automatically derived workout phase`() = runTest {
     val workout = activeWorkout()
+    db.coachRunDao()
+        .savePhase(
+            com.valerochka1337.valerochkagym.data.db.entity.CoachPhaseEntity(
+                "user",
+                workout,
+                "READY",
+                true,
+            )
+        )
     val f = fixture(FakeTransport())
-    assertEquals("UNKNOWN", f.reader.snapshot("user", workout, 0)!!.phase)
-    assertTrue(f.coordinator.setPhase(workout, "IN_SET"))
-    assertTrue(f.coordinator.setPhase(workout, "PAUSED"))
-    val restored = fixture(FakeTransport())
-    assertEquals("IN_SET", restored.reader.snapshot("user", workout, 0)!!.phase)
-    assertTrue(restored.reader.snapshot("user", workout, 0)!!.paused)
-    assertTrue(restored.coordinator.setPhase(workout, "RESUME"))
-    assertFalse(restored.reader.snapshot("user", workout, 0)!!.paused)
+    assertEquals("IN_SET", f.reader.snapshot("user", workout, 0)!!.phase)
+    assertFalse(f.reader.snapshot("user", workout, 0)!!.paused)
   }
 
   private suspend fun activeWorkout(): String {
@@ -906,6 +949,7 @@ class DurableCoachCoordinatorTest : RoomDaoTest() {
       val editor: WorkoutEditor,
       val reader: CoachWorkoutReader,
       val conversation: CoachConversationService,
+      val timer: RestTimerEngine,
   )
 
   private fun TestScope.fixture(
@@ -925,6 +969,7 @@ class DurableCoachCoordinatorTest : RoomDaoTest() {
         editor,
         reader,
         CoachConversationService(coordinator, reader, editor, db, session),
+        timer,
     )
   }
 

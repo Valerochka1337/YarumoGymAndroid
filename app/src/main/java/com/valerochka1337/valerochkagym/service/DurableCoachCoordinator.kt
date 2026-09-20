@@ -358,12 +358,6 @@ constructor(
   suspend fun answerQuestion(workoutId: String, id: String, option: String): Boolean =
       behavior.answer(workoutId, id, option).also { if (it) schedule() }
 
-  suspend fun resolveConcern(workoutId: String, id: String): Boolean =
-      behavior.resolve(workoutId, id).also { if (it) schedule() }
-
-  suspend fun setPhase(workoutId: String, phase: String): Boolean =
-      behavior.phase(workoutId, phase).also { if (it) schedule() }
-
   suspend fun changed(workoutId: String, immediate: Boolean = true): Boolean {
     val session = sessions.snapshot() ?: return false
     val workout = database.workoutDao().getWorkoutFull(workoutId) ?: return false

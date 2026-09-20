@@ -74,10 +74,6 @@ constructor(
   suspend fun answerQuestion(workoutId: String, id: String, option: String) =
       remote.answerQuestion(workoutId, id, option)
 
-  suspend fun resolveConcern(workoutId: String, id: String) = remote.resolveConcern(workoutId, id)
-
-  suspend fun setPhase(workoutId: String, phase: String) = remote.setPhase(workoutId, phase)
-
   suspend fun retry(workoutId: String, errorMessageId: String): Boolean =
       CoachDiagnostics.trace("conversation.retry") {
         remote.retry(workoutId, errorMessageId).also {

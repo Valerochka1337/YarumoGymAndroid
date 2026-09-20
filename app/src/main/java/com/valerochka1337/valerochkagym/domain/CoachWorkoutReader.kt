@@ -155,7 +155,7 @@ constructor(
         currentIndex
             .takeIf { it >= 0 }
             ?.let { index -> allSets.drop(index + 1).firstOrNull { !it.completed }?.syncId }
-    val phase = database.coachRunDao().phase(accountId, workoutId)
+    val rest = restSnapshot()
     return WorkoutSnapshot(
         accountId = accountId,
         workoutId = workoutId,
@@ -174,13 +174,16 @@ constructor(
             ),
         coachDecisions = CoachDecisionMemory.decode(context?.decisionMemoryJson ?: "[]"),
         phase =
-            if (phase?.phase == "IN_SET") "IN_SET"
-            else if (restSnapshot() != null) "RESTING" else phase?.phase ?: "UNKNOWN",
-        paused = phase?.paused ?: false,
+            when {
+              rest != null -> "RESTING"
+              current != null -> "IN_SET"
+              else -> "READY"
+            },
+        paused = false,
         currentSetId = current,
         previousSetId = previous,
         nextSetId = next,
-        rest = restSnapshot(),
+        rest = rest,
         elapsedSeconds =
             ((System.currentTimeMillis() - full.workout.startedAt) / 1_000).coerceAtLeast(0),
         availableTimeMinutes =

@@ -93,15 +93,6 @@ constructor(
                     .flatMap { it.sets }
                     .none { set -> !set.isCompleted && set.id != setId }
             workoutDao.setSetCompleted(setId, true, System.currentTimeMillis())
-            sessions.snapshot()?.tokens?.userId?.let { owner ->
-              val phase =
-                  database.coachRunDao().phase(owner, workoutId)
-                      ?: com.valerochka1337.valerochkagym.data.db.entity.CoachPhaseEntity(
-                          owner,
-                          workoutId,
-                      )
-              database.coachRunDao().savePhase(phase.copy(phase = "READY"))
-            }
             database.openHelper.writableDatabase.execSQL(
                 "UPDATE workouts SET coachRevision = coachRevision + 1 WHERE id=?",
                 arrayOf<Any?>(workoutId),

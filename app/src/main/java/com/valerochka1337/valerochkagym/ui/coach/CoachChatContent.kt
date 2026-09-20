@@ -115,8 +115,6 @@ fun CoachChatContent(
         null,
     imeInsets: WindowInsets = WindowInsets.ime,
     onAnswerQuestion: (String, String) -> Unit = { _, _ -> },
-    onResolveConcern: (String) -> Unit = {},
-    onPhase: (String) -> Unit = {},
 ) {
   val last = state.messages.lastOrNull()
   val latestLast by rememberUpdatedState(last)
@@ -190,12 +188,10 @@ fun CoachChatContent(
   }
   val visibleBehavior =
       state.behavior.filter {
-        it.kind in setOf("question", "concern") && it.status in setOf("OPEN", "PENDING")
+        it.kind == "question" && it.status in setOf("OPEN", "PENDING", "STALE", "EXPIRED")
       }
-  val leadingItems = visibleBehavior.size + if (state.readOnly) 0 else 1
   val itemCount =
       state.messages.size.coerceAtLeast(1) +
-          leadingItems +
           (if (waitingStatus != null) 1 else 0) +
           (if (state.error != null) 1 else 0) +
           (if (state.readOnly || state.proposal != null) 1 else 0)
@@ -213,7 +209,7 @@ fun CoachChatContent(
       try {
         val firstNew = if (!openedHistory) state.messages.indexOfFirst { it.isNew } else -1
         if (firstNew >= 0) {
-          listState.scrollToItem(firstNew + leadingItems)
+          listState.scrollToItem(firstNew)
           followAnswer = false
         } else listState.scrollToItem(itemCount - 1, Int.MAX_VALUE)
       } finally {
@@ -284,39 +280,12 @@ fun CoachChatContent(
                   else "Опишите, что нужно изменить, или выберите быструю фразу."
               )
             }
-        if (!state.readOnly)
-            item("coach-phase") {
-              FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(
-                        "Начал подход" to "IN_SET",
-                        "Готов к диалогу" to "READY",
-                        "Пауза общения" to "PAUSED",
-                        "Продолжить общение" to "RESUME",
-                    )
-                    .forEach { (label, phase) ->
-                      TextButton(
-                          onClick = {
-                            haptics.tap()
-                            onPhase(phase)
-                          }
-                      ) {
-                        Text(label)
-                      }
-                    }
-              }
-            }
-        items(
-            visibleBehavior,
-            key = { "behavior:${it.id}" },
-        ) { entry ->
-          CoachBehaviorCard(
-              entry,
-              state.busy || (state.readOnly && entry.kind == "question"),
-              onAnswerQuestion,
-              onResolveConcern,
-          )
-        }
         items(state.messages, key = { "message:${it.id}" }) { message ->
+          val question = visibleBehavior.firstOrNull { it.id == message.id }
+          if (question != null) {
+            CoachBehaviorCard(question, state.busy || state.readOnly, onAnswerQuestion)
+            return@items
+          }
           val actionResult = message.actionResult()
           if (actionResult != null) {
             AppliedActionMessage(message = message, result = actionResult)

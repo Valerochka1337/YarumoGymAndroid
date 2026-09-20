@@ -5,6 +5,11 @@ import com.valerochka1337.valerochkagym.data.db.entity.*
 
 @Dao
 interface CoachRunDao {
+  @Query(
+      "SELECT * FROM coach_behavior WHERE accountId=:owner AND workoutId=:workout AND kind='concern' AND status='OPEN'"
+  )
+  suspend fun concerns(owner: String, workout: String): List<CoachBehaviorEntity>
+
   @Insert(onConflict = OnConflictStrategy.REPLACE)
   suspend fun saveBehavior(value: CoachBehaviorEntity)
 

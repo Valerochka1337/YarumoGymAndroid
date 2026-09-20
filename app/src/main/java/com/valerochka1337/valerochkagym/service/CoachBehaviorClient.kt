@@ -44,6 +44,37 @@ internal class CoachBehaviorClient(
           return true
         }
       }
+      "concern_resolved" -> {
+        val keys =
+            event["resolvedConcernKeys"]
+                ?.jsonArray
+                .orEmpty()
+                .map { it.jsonPrimitive.content }
+                .toSet()
+        for (row in dao.concerns(owner, workout)) {
+          val payload = Json.parseToJsonElement(row.payload).jsonObject
+          val decision = payload["decision"]!!.jsonObject
+          val state = decision["state"]!!.jsonObject
+          val remaining =
+              state["openConcerns"]!!.jsonArray.filter { it.jsonPrimitive.content !in keys }
+          val updated =
+              JsonObject(
+                  payload +
+                      ("decision" to
+                          JsonObject(
+                              decision +
+                                  ("state" to
+                                      JsonObject(state + ("openConcerns" to JsonArray(remaining))))
+                          ))
+              )
+          dao.saveBehavior(
+              row.copy(
+                  payload = updated.toString(),
+                  status = if (remaining.isEmpty()) "RESOLVED" else row.status,
+              )
+          )
+        }
+      }
       "intervention",
       "intervention_answer" -> {
         val result = event["result"] as? JsonObject ?: return false
@@ -51,10 +82,19 @@ internal class CoachBehaviorClient(
           dao.behavior(id)
               ?.takeIf { it.accountId == owner && it.workoutId == workout }
               ?.let {
+                if (it.status == "PENDING" && result.text("status") in setOf("STALE", "EXPIRED"))
+                    return@let
                 dao.saveBehavior(
                     it.copy(status = result.text("status") ?: "ANSWERED", requestJson = null)
                 )
               }
+        }
+        result.text("answerId")?.let { answerId ->
+          result.text("userText")?.let { message("answer:$answerId", owner, workout, it, "user") }
+          result
+              .text("text")
+              ?.takeIf { it.isNotBlank() }
+              ?.let { message("answer-reply:$answerId", owner, workout, it) }
         }
         val question = result["question"] as? JsonObject
         if (question != null) {
@@ -63,9 +103,9 @@ internal class CoachBehaviorClient(
           if (dao.behavior(id) == null) {
             val snapshot = reader.snapshot(owner, workout, epoch)
             val relevant =
-                snapshot?.previousSetId == question.text("setId") &&
-                    (question["expiresAtMillis"]?.jsonPrimitive?.longOrNull ?: 0) >
-                        System.currentTimeMillis()
+                snapshot?.exercises?.any { e ->
+                  e.sets.any { it.syncId == question.text("setId") }
+                } == true
             dao.saveBehavior(
                 CoachBehaviorEntity(
                     id,
@@ -161,78 +201,24 @@ internal class CoachBehaviorClient(
           dao.behavior(id)?.takeIf {
             it.accountId == owner && it.workoutId == workout && it.kind == "question"
           } ?: return@withTransaction false
-      if (row.status != "OPEN") return@withTransaction false
+      if (row.status !in setOf("OPEN", "STALE", "EXPIRED")) return@withTransaction false
       val q = Json.parseToJsonElement(row.payload).jsonObject["question"]!!.jsonObject
       if (q["options"]!!.jsonArray.none { it.jsonObject.text("id") == option })
           return@withTransaction false
-      val snapshot = reader.snapshot(owner, workout, session.epoch)
-      if (
-          snapshot?.previousSetId != q.text("setId") ||
-              (q["expiresAtMillis"]?.jsonPrimitive?.longOrNull ?: 0) <= System.currentTimeMillis()
-      ) {
-        dao.saveBehavior(row.copy(status = "STALE"))
-        return@withTransaction false
-      }
       val request = buildJsonObject {
         put("answerId", UUID.randomUUID().toString())
         put("expectedVersion", requireNotNull(q["version"]))
         put("answer", option)
       }
       dao.saveBehavior(row.copy(status = "PENDING", requestJson = request.toString()))
-      check(live(owner, session.epoch))
-      true
-    }
-  }
-
-  suspend fun resolve(workout: String, id: String): Boolean {
-    val session = sessions.snapshot() ?: return false
-    return db.withTransaction {
-      val owner = session.tokens.userId
-      if (!live(owner, session.epoch)) return@withTransaction false
-      val row =
-          dao.behavior(id)?.takeIf {
-            it.accountId == owner &&
-                it.workoutId == workout &&
-                it.kind == "concern" &&
-                it.status == "OPEN"
-          } ?: return@withTransaction false
-      val keys =
-          Json.parseToJsonElement(row.payload)
-              .jsonObject["decision"]!!
-              .jsonObject["state"]!!
-              .jsonObject["openConcerns"]!!
+      val label =
+          q["options"]!!
               .jsonArray
-      val phase = dao.phase(owner, workout) ?: CoachPhaseEntity(owner, workout)
-      val resolved =
-          (Json.parseToJsonElement(phase.resolvedConcernKeys).jsonArray + keys).distinct()
-      dao.savePhase(phase.copy(resolvedConcernKeys = JsonArray(resolved).toString()))
-      dao.saveBehavior(row.copy(status = "RESOLVED"))
-      dao.markDirty(workout)
+              .first { it.jsonObject.text("id") == option }
+              .jsonObject
+              .text("text")!!
+      message("answer:${request.text("answerId")}", owner, workout, label, "user")
       check(live(owner, session.epoch))
-      true
-    }
-  }
-
-  suspend fun phase(workout: String, phase: String): Boolean {
-    require(phase in setOf("READY", "IN_SET", "BETWEEN_EXERCISES", "PAUSED", "RESUME"))
-    val session = sessions.snapshot() ?: return false
-    return db.withTransaction {
-      if (
-          !live(session.tokens.userId, session.epoch) ||
-              db.workoutDao().getActiveWorkoutId() != workout
-      )
-          return@withTransaction false
-      val old =
-          dao.phase(session.tokens.userId, workout)
-              ?: CoachPhaseEntity(session.tokens.userId, workout)
-      dao.savePhase(
-          old.copy(
-              phase = if (phase in setOf("PAUSED", "RESUME")) old.phase else phase,
-              paused = phase == "PAUSED",
-          )
-      )
-      dao.markDirty(workout)
-      check(live(session.tokens.userId, session.epoch))
       true
     }
   }
@@ -288,14 +274,24 @@ internal class CoachBehaviorClient(
     )
   }
 
-  private suspend fun message(id: String, owner: String, workout: String, text: String) {
+  private suspend fun message(
+      id: String,
+      owner: String,
+      workout: String,
+      text: String,
+      role: String = "assistant",
+  ) {
+    val stableId =
+        runCatching { UUID.fromString(id).toString() }
+            .getOrElse { UUID.nameUUIDFromBytes(id.toByteArray()).toString() }
+    if (db.coachDao().messages(workout).any { it.id == stableId }) return
     db.coachDao()
         .saveMessage(
             CoachMessageEntity(
-                id,
+                stableId,
                 owner,
                 workout,
-                "assistant",
+                role,
                 text,
                 System.currentTimeMillis(),
                 "DELIVERED",
@@ -304,13 +300,13 @@ internal class CoachBehaviorClient(
     db.coachDao()
         .saveJournal(
             CoachJournalEntity(
-                id,
+                stableId,
                 owner,
                 workout,
                 System.currentTimeMillis(),
                 buildJsonObject {
                       put("kind", "message")
-                      put("role", "assistant")
+                      put("role", role)
                       put("text", text)
                     }
                     .toString(),

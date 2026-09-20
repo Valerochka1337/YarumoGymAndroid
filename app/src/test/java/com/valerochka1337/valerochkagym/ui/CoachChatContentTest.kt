@@ -64,6 +64,10 @@ abstract class CoachChatSemanticsBase {
     var applied = false
     content(
         CoachChatUiState(
+            messages =
+                listOf(
+                    CoachChatMessage(id = "question", role = "assistant", text = "Что произошло?")
+                ),
             behavior =
                 listOf(
                     com.valerochka1337.valerochkagym.data.db.entity.CoachBehaviorEntity(
@@ -74,7 +78,7 @@ abstract class CoachChatSemanticsBase {
                         payload =
                             """{"text":"Что произошло?","question":{"options":[{"id":"hard","text":"Было тяжелее"}]}}""",
                     )
-                )
+                ),
         ),
         applied = { applied = true },
         answered = { id, value -> answer = "$id:$value" },

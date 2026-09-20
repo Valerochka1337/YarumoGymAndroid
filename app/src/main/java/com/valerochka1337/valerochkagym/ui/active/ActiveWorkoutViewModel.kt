@@ -147,7 +147,6 @@ constructor(
     private val permissionRecoveryController: PermissionRecoveryController? = null,
     private val coachDao: CoachDao? = null,
     private val settings: com.valerochka1337.valerochkagym.data.settings.SettingsRepository? = null,
-    private val updateCoachPhase: suspend (String, String) -> Boolean = { _, _ -> false },
 ) : ViewModel() {
 
   @Inject
@@ -164,7 +163,6 @@ constructor(
       permissionRecoveryController: PermissionRecoveryController? = null,
       coachDao: CoachDao,
       settings: com.valerochka1337.valerochkagym.data.settings.SettingsRepository,
-      coach: com.valerochka1337.valerochkagym.service.CoachConversationService,
   ) : this(
       repository,
       previousSetsUseCase,
@@ -178,7 +176,6 @@ constructor(
       permissionRecoveryController,
       coachDao,
       settings,
-      coach::setPhase,
   )
 
   val liveCoachEnabled =
@@ -364,20 +361,6 @@ constructor(
   fun setIncline(setId: Long, raw: String) = setMutator.setIncline(setId, raw)
 
   /** Отмечает подход выполненным и запускает отдых (та же операция, что кнопка в уведомлении). */
-  fun coachPhase(phase: String) {
-    val workoutId = uiState.value.workout?.workout?.id ?: return
-    viewModelScope.launch {
-      try {
-        if (!updateCoachPhase(workoutId, phase))
-            _events.send(
-                ActiveWorkoutEvent.ShowMessage("Тренер недоступен без подключённого аккаунта")
-            )
-      } catch (_: Exception) {
-        _events.send(ActiveWorkoutEvent.ShowMessage("Не удалось сохранить состояние тренера"))
-      }
-    }
-  }
-
   fun completeSet(setId: Long) {
     viewModelScope.launch { completeSetFromUser(setId) }
   }
