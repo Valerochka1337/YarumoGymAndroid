@@ -1,5 +1,6 @@
 package com.valerochka1337.valerochkagym.ui.settings
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -99,6 +100,7 @@ fun SettingsScreen(
   val state by viewModel.uiState.collectAsStateWithLifecycle()
   val snackbarHostState = remember { SnackbarHostState() }
   var selectedCategory by rememberSaveable { mutableStateOf<SettingsCategory?>(null) }
+  BackHandler(enabled = selectedCategory != null) { selectedCategory = null }
   LaunchedEffect(viewModel) { viewModel.messages.collect { snackbarHostState.showSnackbar(it) } }
 
   GlowBackground(modifier = modifier) {

@@ -227,6 +227,7 @@ fun GymNavGraph(
       WorkoutsScreen(
           onCreateRoutine = { navController.navigate(GymRoutes.routineEditor(null)) },
           onOpenRoutine = { id -> navController.navigate(GymRoutes.routineDetail(id)) },
+          onEditRoutine = { id -> navController.navigate(GymRoutes.routineEditor(id.toString())) },
           onShareRoutine = { id -> navController.navigate(GymRoutes.routineShares(id)) },
           onStartWorkout = { navController.navigate(GymRoutes.ACTIVE_WORKOUT) },
           onOpenSettings = { navController.navigate(GymRoutes.SETTINGS) },

@@ -20,19 +20,28 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 data class TrainingProposalUiState(
-    val items: List<TrainingProposal> = emptyList(),
-    val nextCursor: String? = null,
+    val inbox: ProposalInboxUiState = ProposalInboxUiState(),
     val editor: ProposalEditor? = null,
     val explanation: PlannerExplanation? = null,
     val loading: Boolean = false,
     val saving: Boolean = false,
     val refinement: String = "",
+    val copySaved: Boolean = false,
+    val copyScheduled: Boolean = false,
     val error: String? = null,
     val exerciseChoices: List<Pair<String, String>> = emptyList(),
     val exerciseTypes: Map<String, com.valerochka1337.valerochkagym.data.db.entity.ExerciseType> =
         emptyMap(),
     val availableExerciseIds: Set<String> = emptySet(),
     val gymChoices: List<Pair<String, String>> = emptyList(),
+)
+
+data class ProposalInboxUiState(
+    val items: List<TrainingProposal> = emptyList(),
+    val nextCursor: String? = null,
+    val loading: Boolean = true,
+    val error: String? = null,
+    val bindingGeneration: Long = 0,
 )
 
 @HiltViewModel
@@ -46,6 +55,7 @@ constructor(
     gyms: GymDao,
     private val savedState: SavedStateHandle,
     private val gymRepository: com.valerochka1337.valerochkagym.domain.GymRepository,
+    private val copies: ProposalCopyRepository,
 ) : ViewModel() {
   private val mutableState = MutableStateFlow(TrainingProposalUiState())
   private val edits = Mutex()
@@ -60,12 +70,15 @@ constructor(
           .flatMapLatest(gymRepository::observeAvailableExercises)
 
   val uiState =
-      combine(mutableState, exercises.getAll(), gyms.observeGyms(), availableExercises) {
-              state,
-              exerciseList,
-              gymList,
-              available ->
+      combine(
+              mutableState,
+              repository.inbox,
+              exercises.getAll(),
+              gyms.observeGyms(),
+              availableExercises,
+          ) { state, inbox, exerciseList, gymList, available ->
             state.copy(
+                inbox = inbox.toUiState(),
                 exerciseTypes = exerciseList.associate { it.syncId to it.type },
                 availableExerciseIds =
                     available.filterNot { it.archived }.map { it.syncId }.toSet(),
@@ -91,38 +104,11 @@ constructor(
     }
   }
 
-  fun refresh(more: Boolean = false) {
-    if (more && mutableState.value.loading) return
-    val cursor = if (more) mutableState.value.nextCursor ?: return else null
-    val token = ++generation
-    load?.cancel()
-    mutableState.update {
-      it.copy(loading = true, error = null, items = if (more) it.items else emptyList())
-    }
-    load =
-        viewModelScope.launch {
-          try {
-            val (session, result) = repository.list(cursor)
-            if (token != generation || !repository.isCurrent(session)) return@launch
-            bound = session
-            mutableState.update {
-              it.copy(
-                  loading = false,
-                  items =
-                      (if (more) it.items + result.items else result.items).distinctBy(
-                          TrainingProposal::proposalId
-                      ),
-                  nextCursor = result.nextCursor,
-              )
-            }
-          } catch (error: CancellationException) {
-            throw error
-          } catch (error: Exception) {
-            if (token == generation)
-                mutableState.update { it.copy(loading = false, error = message(error)) }
-          }
-        }
-  }
+  fun ensureInbox() = repository.ensureInitialLoad()
+
+  fun retryInbox() = repository.retryInitialLoad()
+
+  fun loadMore() = repository.loadMore()
 
   fun open(id: String) {
     savedState["proposalId"] = id
@@ -141,6 +127,8 @@ constructor(
               it.copy(
                   editor = editor,
                   loading = false,
+                  copySaved = savedState.get<Boolean>("${copyKey(editor)}.saved") == true,
+                  copyScheduled = savedState.get<Boolean>("${copyKey(editor)}.scheduled") == true,
                   refinement =
                       refinementKey(editor)?.let { key -> savedState.get<String>(key) }.orEmpty(),
               )
@@ -169,8 +157,21 @@ constructor(
   fun updateDraft(draft: ApprovalDraft) {
     val editor = mutableState.value.editor ?: return
     if (mutableState.value.saving) return
+    if (draft == editor.draft) return
     val token = generation
-    mutableState.update { it.copy(editor = editor.copy(draft = draft), error = null) }
+    if (draft != editor.draft) {
+      savedState.remove<String>("${copyKey(editor)}.operation")
+      savedState.remove<Boolean>("${copyKey(editor)}.saved")
+      savedState.remove<Boolean>("${copyKey(editor)}.scheduled")
+    }
+    mutableState.update {
+      it.copy(
+          editor = editor.copy(draft = draft),
+          error = null,
+          copySaved = false,
+          copyScheduled = false,
+      )
+    }
     viewModelScope.launch {
       edits.withLock {
         if (token != generation || !repository.isCurrent(editor.session)) return@withLock
@@ -188,6 +189,45 @@ constructor(
   fun approve() = decision(true)
 
   fun reject() = decision(false)
+
+  fun saveCopy() = copyPlan()
+
+  fun scheduleCopy(startsAtMillis: Long, timeZoneId: String) = copyPlan(startsAtMillis, timeZoneId)
+
+  private fun copyKey(editor: ProposalEditor) =
+      "proposal_copy.${editor.session.tokens.userId}.${editor.session.epoch}.${editor.proposal.proposalId}.${editor.proposal.currentVersion}"
+
+  private fun copyPlan(startsAtMillis: Long? = null, timeZoneId: String? = null) {
+    val editor = mutableState.value.editor ?: return
+    if (mutableState.value.saving) return
+    val key = copyKey(editor)
+    val operation =
+        savedState.get<String>("$key.operation") ?: java.util.UUID.randomUUID().toString()
+    savedState["$key.operation"] = operation
+    val token = generation
+    mutableState.update { it.copy(saving = true, error = null) }
+    viewModelScope.launch {
+      edits.withLock {
+        try {
+          if (token != generation || !repository.isCurrent(editor.session)) return@withLock
+          copies.save(editor, operation, startsAtMillis, timeZoneId ?: editor.draft.timeZoneId)
+          if (token == generation && repository.isCurrent(editor.session)) {
+            savedState["$key.saved"] = true
+            if (startsAtMillis != null) savedState["$key.scheduled"] = true
+            mutableState.update {
+              it.copy(copySaved = true, copyScheduled = it.copyScheduled || startsAtMillis != null)
+            }
+          }
+        } catch (error: CancellationException) {
+          throw error
+        } catch (error: Exception) {
+          if (token == generation) mutableState.update { it.copy(error = message(error)) }
+        } finally {
+          if (token == generation) mutableState.update { it.copy(saving = false) }
+        }
+      }
+    }
+  }
 
   fun setRefinement(value: String) {
     if (!mutableState.value.saving) {
@@ -215,7 +255,9 @@ constructor(
         if (token == generation && repository.isCurrent(next.session)) {
           savedState.remove<String>("$key.requestId")
           savedState.remove<String>(key)
-          mutableState.update { it.copy(editor = next, refinement = "") }
+          mutableState.update {
+            it.copy(editor = next, refinement = "", copySaved = false, copyScheduled = false)
+          }
         }
       } catch (error: CancellationException) {
         throw error
@@ -270,6 +312,10 @@ constructor(
 
   private fun message(error: Exception): String =
       when ((error as? BackendException)?.code) {
+        "proposal_copy_unavailable" -> "Упражнения или залы этого плана больше недоступны"
+        "proposal_copy_date" -> "Выберите будущее время тренировки"
+        "proposal_copy_calendar" -> error.message
+        "proposal_copy_failed" -> "Не удалось сохранить тренировку. Повторите попытку"
         "active_workout",
         "workout_active" -> "Завершите тренировку перед применением"
         "proposal_expired",
@@ -282,5 +328,26 @@ constructor(
         "proposal_revoked" -> "Автор отозвал предложение"
         "proposal_rejected" -> "Предложение отклонено"
         else -> "Не удалось завершить действие. Повторите попытку"
+      }
+
+  private fun ProposalInboxState.toUiState(): ProposalInboxUiState =
+      when (this) {
+        is ProposalInboxState.NotLoaded ->
+            ProposalInboxUiState(
+                items = content?.items.orEmpty(),
+                nextCursor = content?.nextCursor,
+                bindingGeneration = bindingGeneration,
+            )
+        is ProposalInboxState.Loading ->
+            ProposalInboxUiState(content?.items.orEmpty(), content?.nextCursor, loading = true)
+        is ProposalInboxState.Content ->
+            ProposalInboxUiState(content.items, content.nextCursor, loading = false)
+        is ProposalInboxState.Error ->
+            ProposalInboxUiState(
+                content?.items.orEmpty(),
+                content?.nextCursor,
+                loading = false,
+                error = message(cause),
+            )
       }
 }

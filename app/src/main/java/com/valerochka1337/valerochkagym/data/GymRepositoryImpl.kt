@@ -841,6 +841,12 @@ constructor(
                       updatedAt = deletedAt,
                   ),
               )
+          val calendarDao = database.calendarPlanDao()
+          calendarDao.rulesForRoutine(routineId).forEach { rule ->
+            calendarDao.deleteExceptions(rule.id)
+            calendarDao.deleteRule(rule.id)
+          }
+          calendarDao.plansForRoutine(routineId).forEach { plan -> calendarDao.deletePlan(plan.id) }
           routineDao.deleteRoutine(routineId)
           RoutineDeletion(routine.syncId, deletedAt)
         }

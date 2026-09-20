@@ -5,20 +5,38 @@ import com.valerochka1337.valerochkagym.data.backend.*
 import com.valerochka1337.valerochkagym.data.db.entity.*
 import com.valerochka1337.valerochkagym.service.WallClock
 import java.io.IOException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.*
+import org.junit.After
 import org.junit.Assert.*
 import org.junit.Test
 
 class TrainingProposalRepositoryTest : RoomDaoTest() {
+  private val repositoryScopes = mutableListOf<CoroutineScope>()
+
+  @After
+  fun cancelRepositoryScopes() {
+    repositoryScopes.forEach(CoroutineScope::cancel)
+  }
+
   private class Store : BackendSessionStore {
     override val session = MutableStateFlow<BackendTokens?>(BackendTokens(OWNER, "a@b", "a", "r"))
     override var sessionEpoch = 1L
+    override val sessionEpochs = MutableStateFlow(sessionEpoch)
 
     override fun save(tokens: BackendTokens?) {
       sessionEpoch++
       session.value = tokens
+      sessionEpochs.value = sessionEpoch
     }
   }
 
@@ -29,6 +47,12 @@ class TrainingProposalRepositoryTest : RoomDaoTest() {
     var rejectApproval = false
     var beforeSync: (suspend () -> Unit)? = null
     var beforeDetail: (() -> Unit)? = null
+    var listFailure: Exception? = null
+    var listGate: CompletableDeferred<Unit>? = null
+    var listStarted: CompletableDeferred<Unit>? = null
+    var listFinished: CompletableDeferred<Unit>? = null
+    var listCalls = 0
+    val listResponses = ArrayDeque<ProposalListResponse>()
     var snapshot = CloudSnapshot(12, emptyList())
     val posts = mutableListOf<ByteArray>()
 
@@ -51,6 +75,19 @@ class TrainingProposalRepositoryTest : RoomDaoTest() {
       val owner = store.session.value!!.userId
       val body: JsonElement =
           when {
+            path.startsWith("/training-proposals?") -> {
+              listCalls++
+              listStarted?.complete(Unit)
+              listGate?.await()
+              listFailure?.let {
+                listFinished?.complete(Unit)
+                throw it
+              }
+              json.encodeToJsonElement(
+                  if (listResponses.isEmpty()) ProposalListResponse(listOf(proposal()), null)
+                  else listResponses.removeFirst()
+              )
+            }
             path == "/sync" -> {
               beforeSync?.invoke()
               json.encodeToJsonElement(snapshot)
@@ -71,11 +108,16 @@ class TrainingProposalRepositoryTest : RoomDaoTest() {
               }
               json.encodeToJsonElement(result())
             }
+            path.endsWith("/reject") ->
+                json.encodeToJsonElement(
+                    ProposalDecision(PROPOSAL, 1, ProposalStatus.REJECTED, updatedAt = 2)
+                )
             else -> {
               beforeDetail?.invoke()
               json.encodeToJsonElement(proposal())
             }
           }
+      listFinished?.complete(Unit)
       return BackendResponse(
           body,
           body.toString().encodeToByteArray(),
@@ -113,9 +155,12 @@ class TrainingProposalRepositoryTest : RoomDaoTest() {
       val server: Server,
       val sync: BackendSync,
       val repository: TrainingProposalRepository,
+      val scope: CoroutineScope,
   )
 
-  private suspend fun fixture(): Fixture {
+  private suspend fun fixture(
+      readyBeforeRepository: ((Server) -> TrainingProposal)? = null,
+  ): Fixture {
     val store = Store()
     val draft =
         ApprovalDraft(
@@ -192,6 +237,19 @@ class TrainingProposalRepositoryTest : RoomDaoTest() {
                 ),
             ),
         )
+    readyBeforeRepository?.invoke(server)?.let { proposal ->
+      db.preparationDao()
+          .save(
+              com.valerochka1337.valerochkagym.data.ai.PreparationEntity(
+                  OWNER,
+                  "00000000-0000-4000-8000-000000000076",
+                  "{}",
+                  "[]",
+                  state = "READY",
+                  proposalJson = ProposalWire.json.encodeToString(proposal),
+              )
+          )
+    }
     val repo =
         TrainingProposalRepository(
             db,
@@ -199,8 +257,211 @@ class TrainingProposalRepositoryTest : RoomDaoTest() {
             store,
             sync,
             WallClock { 1000 },
+            CoroutineScope(SupervisorJob() + Dispatchers.Unconfined).also(repositoryScopes::add),
         )
-    return Fixture(store, server, sync, repo)
+    return Fixture(store, server, sync, repo, repositoryScopes.last())
+  }
+
+  @Test
+  fun `empty inbox is loaded once and reused by repeated observers`() = runTest {
+    val f = fixture()
+    f.server.listResponses += ProposalListResponse(emptyList(), null)
+
+    f.repository.ensureInitialLoad()
+    awaitInbox(f.repository) { it is ProposalInboxState.Content }
+    f.repository.ensureInitialLoad()
+
+    assertEquals(1, f.server.listCalls)
+    assertEquals(
+        emptyList<TrainingProposal>(),
+        (f.repository.inbox.value as ProposalInboxState.Content).content.items,
+    )
+  }
+
+  @Test
+  fun `ready retained before initial ensure still fetches and merges the inbox`() = runTest {
+    val retainedId = "66666666-6666-4666-8666-666666666666"
+    val f = fixture { server -> server.proposal().copy(proposalId = retainedId) }
+    awaitInbox(f.repository) {
+      it is ProposalInboxState.NotLoaded &&
+          it.content?.items?.singleOrNull()?.proposalId == retainedId
+    }
+    f.server.listGate = CompletableDeferred()
+    f.server.listStarted = CompletableDeferred()
+    f.repository.ensureInitialLoad()
+    awaitServer(f.server.listStarted!!)
+    assertEquals(1, f.server.listCalls)
+    f.server.listGate?.complete(Unit)
+    val content =
+        awaitInbox(f.repository) { it is ProposalInboxState.Content && it.content.items.size == 2 }
+            as ProposalInboxState.Content
+
+    assertEquals(setOf(PROPOSAL, retainedId), content.content.items.map { it.proposalId }.toSet())
+  }
+
+  @Test
+  fun `concurrent initial ensures and a new collector share one request`() = runTest {
+    val f = fixture()
+    f.server.listGate = CompletableDeferred()
+    f.server.listStarted = CompletableDeferred()
+    f.repository.ensureInitialLoad()
+    f.repository.ensureInitialLoad()
+    awaitServer(f.server.listStarted!!)
+    withContext(Dispatchers.Default) {
+      withTimeout(5_000) { f.repository.inbox.first { it is ProposalInboxState.Loading } }
+    }
+    assertEquals(1, f.server.listCalls)
+
+    f.server.listGate?.complete(Unit)
+    awaitInbox(f.repository) { it is ProposalInboxState.Content }
+    withContext(Dispatchers.Default) {
+      withTimeout(5_000) { f.repository.inbox.first { it is ProposalInboxState.Content } }
+    }
+    f.repository.ensureInitialLoad()
+    assertEquals(1, f.server.listCalls)
+  }
+
+  @Test
+  fun `late list from an old A B A epoch cannot publish into the current inbox`() = runTest {
+    val f = fixture()
+    f.server.listGate = CompletableDeferred()
+    f.server.listStarted = CompletableDeferred()
+    f.server.listFinished = CompletableDeferred()
+    f.repository.ensureInitialLoad()
+    awaitServer(f.server.listStarted!!)
+
+    val original = requireNotNull(f.store.session.value)
+    f.store.save(original.copy(userId = OTHER))
+    f.store.save(original)
+    awaitInbox(f.repository) { it is ProposalInboxState.NotLoaded }
+    f.server.listGate?.complete(Unit)
+    awaitServer(f.server.listFinished!!)
+
+    assertTrue(f.repository.inbox.value is ProposalInboxState.NotLoaded)
+    assertEquals(1, f.server.listCalls)
+  }
+
+  @Test
+  fun `failed next page retries its cursor without discarding loaded proposals`() = runTest {
+    val f = fixture()
+    val next = f.server.proposal().copy(proposalId = "66666666-6666-4666-8666-666666666666")
+    f.server.listResponses += ProposalListResponse(listOf(f.server.proposal()), "cursor-2")
+
+    f.repository.ensureInitialLoad()
+    awaitInbox(f.repository) {
+      it is ProposalInboxState.Content && it.content.nextCursor == "cursor-2"
+    }
+    f.server.listFailure = IOException("offline")
+    f.repository.loadMore()
+    awaitInbox(f.repository) { it is ProposalInboxState.Error }
+    f.server.listFailure = null
+    f.server.listResponses += ProposalListResponse(listOf(next), null)
+    f.repository.retryInitialLoad()
+    val content =
+        awaitInbox(f.repository) { it is ProposalInboxState.Content && it.content.items.size == 2 }
+            as ProposalInboxState.Content
+
+    assertEquals(listOf(PROPOSAL, next.proposalId), content.content.items.map { it.proposalId })
+    assertEquals(3, f.server.listCalls)
+  }
+
+  @Test
+  fun `ready and terminal overlays survive older list publications`() = runTest {
+    val f = fixture()
+    f.server.listResponses += ProposalListResponse(listOf(f.server.proposal()), "cursor-2")
+    f.repository.ensureInitialLoad()
+    awaitInbox(f.repository) { it is ProposalInboxState.Content }
+
+    val newerReady =
+        f.server
+            .proposal()
+            .copy(
+                currentVersion = 2,
+                snapshot = f.server.proposal().snapshot.copy(version = 2),
+            )
+    f.server.listGate = CompletableDeferred()
+    f.repository.loadMore()
+    db.preparationDao()
+        .save(
+            com.valerochka1337.valerochkagym.data.ai.PreparationEntity(
+                OWNER,
+                "00000000-0000-4000-8000-000000000077",
+                "{}",
+                "[]",
+                state = "READY",
+                proposalJson = ProposalWire.json.encodeToString(newerReady),
+            )
+        )
+    awaitInbox(f.repository) {
+      it.contentOrNullForTest()?.items?.singleOrNull()?.currentVersion == 2
+    }
+    f.server.listResponses += ProposalListResponse(listOf(f.server.proposal()), null)
+    f.server.listGate?.complete(Unit)
+    awaitInbox(f.repository) {
+      it is ProposalInboxState.Content && it.content.items.single().currentVersion == 2
+    }
+
+    assertEquals(2, f.server.listCalls)
+  }
+
+  @Test
+  fun `ready proposal stays visible when the first list request fails`() = runTest {
+    val f = fixture()
+    f.server.listGate = CompletableDeferred()
+    f.server.listStarted = CompletableDeferred()
+    f.server.listFinished = CompletableDeferred()
+    f.server.listFailure = IOException("offline")
+    f.repository.ensureInitialLoad()
+    awaitServer(f.server.listStarted!!)
+    db.preparationDao()
+        .save(
+            com.valerochka1337.valerochkagym.data.ai.PreparationEntity(
+                OWNER,
+                "00000000-0000-4000-8000-000000000079",
+                "{}",
+                "[]",
+                state = "READY",
+                proposalJson = ProposalWire.json.encodeToString(f.server.proposal()),
+            )
+        )
+    awaitInbox(f.repository) {
+      it is ProposalInboxState.Loading && it.content?.items?.singleOrNull()?.proposalId == PROPOSAL
+    }
+    f.server.listGate?.complete(Unit)
+    awaitServer(f.server.listFinished!!)
+    awaitInbox(f.repository) {
+      it is ProposalInboxState.Error && it.content?.items?.singleOrNull()?.proposalId == PROPOSAL
+    }
+  }
+
+  @Test
+  fun `terminal decision survives ready replay and stale next page`() = runTest {
+    val f = fixture()
+    f.server.listResponses += ProposalListResponse(listOf(f.server.proposal()), "cursor-2")
+    f.repository.ensureInitialLoad()
+    awaitInbox(f.repository) {
+      it is ProposalInboxState.Content && it.content.items.single().status == ProposalStatus.PENDING
+    }
+    f.repository.reject(f.repository.open(PROPOSAL))
+    db.preparationDao()
+        .save(
+            com.valerochka1337.valerochkagym.data.ai.PreparationEntity(
+                OWNER,
+                "00000000-0000-4000-8000-000000000078",
+                "{}",
+                "[]",
+                state = "READY",
+                proposalJson = ProposalWire.json.encodeToString(f.server.proposal()),
+            )
+        )
+    f.server.listResponses += ProposalListResponse(listOf(f.server.proposal()), null)
+    f.repository.loadMore()
+    awaitInbox(f.repository) {
+      it is ProposalInboxState.Content &&
+          it.content.nextCursor == null &&
+          it.content.items.single().status == ProposalStatus.REJECTED
+    }
+    assertEquals(2, f.server.listCalls)
   }
 
   @Test
@@ -267,6 +528,7 @@ class TrainingProposalRepositoryTest : RoomDaoTest() {
                 f.store,
                 f.sync,
                 WallClock { 1000 },
+                f.scope,
             )
         val restored = recreated.open(PROPOSAL)
         assertEquals("Мой план", restored.draft.name)
@@ -484,6 +746,85 @@ class TrainingProposalRepositoryTest : RoomDaoTest() {
         assertEquals(1, f.server.posts.size)
       }
 
+  private fun copies(f: Fixture, calendarReady: Boolean = true) =
+      ProposalCopyRepository(
+          db,
+          f.store,
+          f.sync,
+          com.valerochka1337.valerochkagym.data.GymRepositoryImpl(
+              db,
+              db.gymDao(),
+              db.exerciseDao(),
+              db.exerciseMuscleDao(),
+              db.routineDao(),
+              db.workoutDao(),
+          ),
+          object : com.valerochka1337.valerochkagym.data.calendar.CalendarMigrationGate {
+            override suspend fun ensureReady() = calendarReady
+          },
+          com.valerochka1337.valerochkagym.worker.NoOpRoutineUploadScheduler,
+          WallClock { 1000 },
+      )
+
+  @Test
+  fun `expired proposal saves a personal copy and replays without duplicates or approval`() =
+      runTest {
+        val f = fixture()
+        val editor =
+            f.repository.open(PROPOSAL).let {
+              it.copy(
+                  proposal = it.proposal.copy(status = ProposalStatus.STALE, expiresAt = 2),
+                  draft = it.draft.copy(startsAtMillis = 0),
+              )
+            }
+        val copies = copies(f)
+        val operation = java.util.UUID.randomUUID().toString()
+        val first = copies.save(editor, operation)
+        val second = copies.save(editor, operation)
+
+        assertEquals(first.id, second.id)
+        assertEquals("PERSONAL", first.origin)
+        val routine = db.routineDao().getRoutineWithExercises(first.id)!!
+        assertEquals(10, routine.exercises.single().routineExercise.plannedSets.single().reps)
+        assertEquals(20.0, routine.exercises.single().routineExercise.plannedSets.single().weightKg)
+        assertEquals(1, db.routineDao().observeRoutinesFull().first().size)
+        assertTrue(db.calendarPlanDao().plansWithRoutines().isEmpty())
+        assertTrue(f.server.posts.isEmpty())
+      }
+
+  @Test
+  fun `previous proposal schedules its saved copy at a new date without duplicating the program`() =
+      runTest {
+        val f = fixture()
+        val editor = f.repository.open(PROPOSAL)
+        val copies = copies(f)
+        val operation = java.util.UUID.randomUUID().toString()
+        val routine = copies.save(editor, operation)
+        copies.save(editor, operation, editor.draft.startsAtMillis, "UTC")
+        copies.save(editor, operation, editor.draft.startsAtMillis, "UTC")
+
+        assertEquals(1, db.routineDao().observeRoutinesFull().first().size)
+        assertEquals(routine.id, db.calendarPlanDao().plansWithRoutines().single().plan.routineId)
+        assertTrue(f.server.posts.isEmpty())
+      }
+
+  @Test
+  fun `calendar copy failure rolls back the new program and an account change blocks copying`() =
+      runTest {
+        val f = fixture()
+        val editor = f.repository.open(PROPOSAL)
+        val failed = runCatching {
+          copies(f).save(editor, java.util.UUID.randomUUID().toString(), startsAtMillis = 999)
+        }
+        assertTrue(failed.isFailure)
+        assertTrue(db.routineDao().observeRoutinesFull().first().isEmpty())
+        f.store.save(null)
+        assertTrue(
+            runCatching { copies(f).save(editor, java.util.UUID.randomUUID().toString()) }.isFailure
+        )
+        assertTrue(db.routineDao().observeRoutinesFull().first().isEmpty())
+      }
+
   companion object {
     const val OWNER = "11111111-1111-4111-8111-111111111111"
     const val OTHER = "99999999-9999-4999-8999-999999999999"
@@ -492,4 +833,22 @@ class TrainingProposalRepositoryTest : RoomDaoTest() {
     const val PLAN = "44444444-4444-4444-8444-444444444444"
     const val EXERCISE = "55555555-5555-4555-8555-555555555555"
   }
+}
+
+private fun ProposalInboxState.contentOrNullForTest(): ProposalInboxContent? =
+    when (this) {
+      is ProposalInboxState.Content -> content
+      is ProposalInboxState.Error -> content
+      is ProposalInboxState.Loading -> content
+      is ProposalInboxState.NotLoaded -> null
+    }
+
+private suspend fun awaitInbox(
+    repository: TrainingProposalRepository,
+    predicate: (ProposalInboxState) -> Boolean,
+): ProposalInboxState =
+    withContext(Dispatchers.Default) { withTimeout(5_000) { repository.inbox.first(predicate) } }
+
+private suspend fun awaitServer(signal: CompletableDeferred<Unit>) {
+  withContext(Dispatchers.Default) { withTimeout(5_000) { signal.await() } }
 }

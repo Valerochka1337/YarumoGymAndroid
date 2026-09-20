@@ -5,10 +5,14 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.*
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewModelScope
 import com.valerochka1337.valerochkagym.data.ai.*
 import com.valerochka1337.valerochkagym.data.backend.BackendException
@@ -55,13 +59,25 @@ constructor(private val repository: WorkoutPreparationRepository) : ViewModel() 
     }
   }
 
-  suspend fun refreshWhileVisible() {
-    // Bounded foreground refresh. Background uses WorkManager's exponential backoff.
-    repeat(12) {
-      if (!repository.step()) return
-      delay(10_000)
-    }
-  }
+  suspend fun refreshWhileVisible(requestId: String) =
+      pollWorkoutPreparation(requestId) { repository.step(it) }
+}
+
+private const val PREPARATION_POLL_INTERVAL_MILLIS = 10_000L
+
+internal suspend fun pollWorkoutPreparation(
+    requestId: String,
+    step: suspend (String) -> Boolean,
+) {
+  while (step(requestId)) delay(PREPARATION_POLL_INTERVAL_MILLIS)
+}
+
+internal suspend fun pollWorkoutPreparationWhileResumed(
+    lifecycle: Lifecycle,
+    requestId: String,
+    refreshWhileVisible: suspend (String) -> Unit,
+) {
+  lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) { refreshWhileVisible(requestId) }
 }
 
 @Composable
@@ -73,8 +89,12 @@ fun WorkoutPreparationCard(
   val row by viewModel.current.collectAsStateWithLifecycle()
   val retrying by viewModel.retrying.collectAsStateWithLifecycle()
   val error by viewModel.error.collectAsStateWithLifecycle()
-  LaunchedEffect(row?.requestId, row?.state in WorkoutPreparationRepository.activeStates) {
-    if (row?.state in WorkoutPreparationRepository.activeStates) viewModel.refreshWhileVisible()
+  val lifecycle = LocalLifecycleOwner.current.lifecycle
+  val requestId = row?.requestId
+  LaunchedEffect(lifecycle, requestId, row?.state in WorkoutPreparationRepository.activeStates) {
+    if (requestId != null && row?.state in WorkoutPreparationRepository.activeStates) {
+      pollWorkoutPreparationWhileResumed(lifecycle, requestId, viewModel::refreshWhileVisible)
+    }
   }
   if (row != null)
       WorkoutPreparationCardContent(
@@ -151,10 +171,24 @@ internal fun WorkoutPreparationCardContent(
     retryError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
     val canRetry =
         displayState in setOf("STALE", "SUPERSEDED", "FAILED", "PAUSED_WAITING", "PAUSED_STATUS")
-    Row(
+    val actionLabel =
+        when (displayState) {
+          null -> "Подготовить тренировку"
+          "WAITING",
+          "QUEUED",
+          "RUNNING" -> "Изменить условия"
+          "PAUSED_WAITING",
+          "PAUSED_STATUS",
+          "FAILED" -> if (retrying) "Повторяем…" else "Повторить"
+          "STALE",
+          "SUPERSEDED" -> if (retrying) "Повторяем…" else "Повторить расчёт"
+          "EXPIRED" -> "Выбрать новую дату"
+          else -> "Пересчитать"
+        }
+    FlowRow(
         modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
       if (proposal != null) {
         PillButton(
@@ -163,11 +197,11 @@ internal fun WorkoutPreparationCardContent(
               haptics.tap()
               onOpen(proposal.proposalId)
             },
-            modifier = Modifier.weight(1f),
         )
       }
       OutlinedButton(
-          modifier = Modifier.weight(1f).heightIn(min = 56.dp),
+          modifier = Modifier.heightIn(min = 56.dp),
+          contentPadding = PaddingValues(horizontal = 16.dp),
           enabled = !retrying,
           onClick = {
             haptics.tap()
@@ -175,19 +209,10 @@ internal fun WorkoutPreparationCardContent(
           },
       ) {
         Text(
-            when (displayState) {
-              null -> "Подготовить тренировку"
-              "WAITING",
-              "QUEUED",
-              "RUNNING" -> "Изменить условия"
-              "PAUSED_WAITING",
-              "PAUSED_STATUS",
-              "FAILED" -> if (retrying) "Повторяем…" else "Повторить"
-              "STALE",
-              "SUPERSEDED" -> if (retrying) "Повторяем…" else "Повторить расчёт"
-              "EXPIRED" -> "Выбрать новую дату"
-              else -> "Пересчитать"
-            }
+            text = actionLabel,
+            style = MaterialTheme.typography.labelLarge,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
       }
     }
