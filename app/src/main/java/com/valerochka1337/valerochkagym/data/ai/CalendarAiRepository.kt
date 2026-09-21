@@ -260,14 +260,25 @@ constructor(
   ) {
     val projection = result.agenticProjection
     val never =
-        db.plannerExercisePreferenceDao()
-            .get(ready.owner)
-            .filter {
-              it.preference ==
-                  com.valerochka1337.valerochkagym.data.db.entity.PlannerExercisePreference.NEVER
-            }
-            .map { it.exerciseSyncId }
-            .toSet()
+        if (db.plannerExerciseAccentV2Dao().hasMarker(ready.owner))
+            db.plannerExerciseAccentV2Dao()
+                .get(ready.owner)
+                .filter {
+                  it.preference ==
+                      com.valerochka1337.valerochkagym.data.db.entity.PlannerExerciseAccent.NEVER
+                }
+                .map { it.exerciseSyncId }
+                .toSet()
+        else
+            db.plannerExercisePreferenceDao()
+                .get(ready.owner)
+                .filter {
+                  it.preference ==
+                      com.valerochka1337.valerochkagym.data.db.entity.PlannerExercisePreference
+                          .NEVER
+                }
+                .map { it.exerciseSyncId }
+                .toSet()
     val allowed = locallyAllowed - never
     val proposalExercises = result.proposal.snapshot.draft.exercises
     fun duration(

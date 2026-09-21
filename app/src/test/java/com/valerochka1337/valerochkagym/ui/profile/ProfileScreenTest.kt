@@ -4,26 +4,32 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.unit.Density
 import com.valerochka1337.valerochkagym.data.db.entity.KeyExercisePriority
-import com.valerochka1337.valerochkagym.data.db.entity.PlannerExercisePreference
+import com.valerochka1337.valerochkagym.data.db.entity.PlannerExerciseAccent
 import com.valerochka1337.valerochkagym.domain.KeyExerciseChoice
-import com.valerochka1337.valerochkagym.domain.PlannerExerciseChoice
+import com.valerochka1337.valerochkagym.domain.PlannerExerciseAccentChoice
 import com.valerochka1337.valerochkagym.domain.ProfileEditTarget
 import com.valerochka1337.valerochkagym.domain.StrengthExerciseCandidate
 import com.valerochka1337.valerochkagym.domain.TrainingGoal
 import com.valerochka1337.valerochkagym.ui.theme.GymTheme
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -177,12 +183,12 @@ class ProfileScreenTest {
                           ),
                       keyExercises =
                           listOf(KeyExerciseChoice(1, "press", KeyExercisePriority.HIGH)),
-                      plannerPreferences =
+                      plannerAccents =
                           listOf(
-                              PlannerExerciseChoice(
+                              PlannerExerciseAccentChoice(
                                   2,
                                   "run",
-                                  PlannerExercisePreference.LESS,
+                                  PlannerExerciseAccent.LESS,
                               )
                           ),
                   ),
@@ -203,5 +209,133 @@ class ProfileScreenTest {
     compose.onAllNodesWithText("Акценты упражнений")[0].assertIsDisplayed()
     compose.onNodeWithContentDescription("Бег: Исключить").performClick()
     compose.runOnIdle { org.junit.Assert.assertEquals(2L to ExerciseAccent.EXCLUDE, selected) }
+  }
+
+  @Test
+  fun `accent picker waits for a state choice and default removes an explicit normal at font scale two`() {
+    var accents by mutableStateOf(emptyList<PlannerExerciseAccentChoice>())
+    var selected: Pair<Long, ExerciseAccent>? = null
+    var removed: String? = null
+    val initial =
+        ProfileEditorUiState(
+            isLoading = false,
+            target = ProfileEditTarget("owner", "owner", 1),
+            showPlannerPreferences = true,
+            plannerExercises =
+                listOf(
+                    StrengthExerciseCandidate(1, "press", "Жим"),
+                    StrengthExerciseCandidate(2, "run", "Бег"),
+                ),
+        )
+    compose.setContent {
+      val density = LocalDensity.current
+      CompositionLocalProvider(LocalDensity provides Density(density.density, fontScale = 2f)) {
+        GymTheme {
+          ProfileScreenContent(
+              state = initial.copy(plannerAccents = accents),
+              onBack = {},
+              onGoal = {},
+              onExperience = {},
+              onSex = {},
+              onBirthDate = {},
+              onSessions = {},
+              onDuration = {},
+              onConstraints = {},
+              onEquipment = {},
+              onExerciseAccent = { id, accent ->
+                selected = id to accent
+                val candidate = initial.plannerExercises.first { it.id == id }
+                accents =
+                    listOf(
+                        PlannerExerciseAccentChoice(
+                            id,
+                            candidate.syncId,
+                            when (accent) {
+                              ExerciseAccent.ACCENT -> PlannerExerciseAccent.MORE
+                              ExerciseAccent.NORMAL -> PlannerExerciseAccent.NORMAL
+                              ExerciseAccent.LESS -> PlannerExerciseAccent.LESS
+                              ExerciseAccent.EXCLUDE -> PlannerExerciseAccent.NEVER
+                            },
+                        )
+                    )
+              },
+              onRemoveExerciseAccent = { syncId ->
+                removed = syncId
+                accents = accents.filterNot { it.exerciseSyncId == syncId }
+              },
+          )
+        }
+      }
+    }
+
+    compose.onNodeWithText("Добавить упражнение").performClick()
+    compose.onNodeWithText("Отмена").performClick()
+    compose.runOnIdle {
+      assertNull(selected)
+      assertTrue(accents.isEmpty())
+    }
+    compose.onNodeWithText("Добавить упражнение").performClick()
+    compose.onNodeWithText("Поиск упражнений").performClick().performTextInput("Бег")
+    compose.onNodeWithContentDescription("Выбрать упражнение: Бег").performClick()
+    compose.runOnIdle {
+      assertNull(selected)
+      assertTrue(accents.isEmpty())
+    }
+    compose.onNodeWithContentDescription("Бег: Обычный").performClick()
+    compose.runOnIdle {
+      org.junit.Assert.assertEquals(2L to ExerciseAccent.NORMAL, selected)
+      org.junit.Assert.assertEquals(PlannerExerciseAccent.NORMAL, accents.single().preference)
+    }
+    compose.onNodeWithContentDescription("По умолчанию: Бег").performClick()
+    compose.runOnIdle {
+      org.junit.Assert.assertEquals("run", removed)
+      assertTrue(accents.isEmpty())
+    }
+  }
+
+  @Test
+  fun `accent picker restores search add mode and pending exercise without mutating`() {
+    var chosen: Pair<Long, ExerciseAccent>? = null
+    val state =
+        ProfileEditorUiState(
+            isLoading = false,
+            target = ProfileEditTarget("owner", "owner", 1),
+            showPlannerPreferences = true,
+            plannerExercises =
+                listOf(
+                    StrengthExerciseCandidate(1, "press", "Жим"),
+                    StrengthExerciseCandidate(2, "run", "Бег"),
+                ),
+        )
+    val restoration = StateRestorationTester(compose)
+    restoration.setContent {
+      GymTheme {
+        ProfileScreenContent(
+            state = state,
+            onBack = {},
+            onGoal = {},
+            onExperience = {},
+            onSex = {},
+            onBirthDate = {},
+            onSessions = {},
+            onDuration = {},
+            onConstraints = {},
+            onEquipment = {},
+            onExerciseAccent = { id, accent -> chosen = id to accent },
+        )
+      }
+    }
+
+    compose.onNodeWithText("Добавить упражнение").performClick()
+    compose.onNodeWithText("Поиск упражнений").performClick().performTextInput("Бег")
+    restoration.emulateSavedInstanceStateRestore()
+    compose.onNodeWithContentDescription("Выбрать упражнение: Бег").assertIsDisplayed()
+    compose.onNodeWithContentDescription("Выбрать упражнение: Жим").assertDoesNotExist()
+
+    compose.onNodeWithContentDescription("Выбрать упражнение: Бег").performClick()
+    restoration.emulateSavedInstanceStateRestore()
+    compose.onNodeWithText("Бег: выберите состояние").assertIsDisplayed()
+    compose.onNodeWithContentDescription("Выбрать упражнение: Жим").assertIsDisplayed()
+    compose.runOnIdle { assertNull(chosen) }
   }
 }

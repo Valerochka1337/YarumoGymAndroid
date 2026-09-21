@@ -14,6 +14,9 @@ import com.valerochka1337.valerochkagym.data.db.entity.ExerciseEntity
 import com.valerochka1337.valerochkagym.data.db.entity.ExerciseType
 import com.valerochka1337.valerochkagym.data.db.entity.GymEntity
 import com.valerochka1337.valerochkagym.data.db.entity.MuscleGroup
+import com.valerochka1337.valerochkagym.data.db.entity.PlannerExerciseAccent
+import com.valerochka1337.valerochkagym.data.db.entity.PlannerExerciseAccentMarkerEntity
+import com.valerochka1337.valerochkagym.data.db.entity.PlannerExerciseAccentV2Entity
 import com.valerochka1337.valerochkagym.data.db.entity.WorkoutEntity
 import java.io.File
 import kotlinx.coroutines.test.runTest
@@ -115,6 +118,37 @@ class DatabaseExporterTest {
           .use { cursor ->
             cursor.moveToFirst()
             assertEquals("KNOWN", cursor.getString(0))
+          }
+    }
+  }
+
+  @Test
+  fun `exported copy retains empty and populated v2 planner accent aggregates`() = runTest {
+    db.plannerExerciseAccentV2Dao().upsertMarker(PlannerExerciseAccentMarkerEntity("empty"))
+    db.plannerExerciseAccentV2Dao().upsertMarker(PlannerExerciseAccentMarkerEntity("owner"))
+    db.plannerExerciseAccentV2Dao()
+        .upsertRows(
+            listOf(
+                PlannerExerciseAccentV2Entity(
+                    "owner",
+                    "11111111-1111-1111-1111-111111111111",
+                    PlannerExerciseAccent.NORMAL,
+                )
+            )
+        )
+    val target = File(context.cacheDir, "backup-accents.db")
+
+    assertEquals(ExportResult.Success, exporter.export(Uri.fromFile(target)))
+    SQLiteDatabase.openDatabase(target.path, null, SQLiteDatabase.OPEN_READONLY).use { copy ->
+      copy.rawQuery("SELECT COUNT(*) FROM planner_exercise_accent_markers", null).use {
+        it.moveToFirst()
+        assertEquals(2, it.getInt(0))
+      }
+      copy
+          .rawQuery("SELECT preference FROM planner_exercise_accents_v2 WHERE scope='owner'", null)
+          .use {
+            it.moveToFirst()
+            assertEquals("NORMAL", it.getString(0))
           }
     }
   }

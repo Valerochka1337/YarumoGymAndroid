@@ -80,5 +80,6 @@ interface ProfileRepository {
       profile: BasicProfile,
       keyExercises: List<KeyExerciseChoice>,
       plannerPreferences: List<PlannerExerciseChoice>? = null,
+      plannerAccentEdits: List<PlannerExerciseAccentEdit>? = null,
   ): ProfileSaveResult = save(target, profile)
 }

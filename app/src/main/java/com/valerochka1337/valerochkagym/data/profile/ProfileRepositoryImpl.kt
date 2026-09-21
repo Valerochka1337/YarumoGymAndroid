@@ -6,6 +6,9 @@ import com.valerochka1337.valerochkagym.data.backend.BackendSync
 import com.valerochka1337.valerochkagym.data.db.GymDatabase
 import com.valerochka1337.valerochkagym.data.db.dao.ProfileDao
 import com.valerochka1337.valerochkagym.data.db.entity.ExerciseType
+import com.valerochka1337.valerochkagym.data.db.entity.PlannerExerciseAccent
+import com.valerochka1337.valerochkagym.data.db.entity.PlannerExerciseAccentMarkerEntity
+import com.valerochka1337.valerochkagym.data.db.entity.PlannerExerciseAccentV2Entity
 import com.valerochka1337.valerochkagym.data.db.entity.PlannerExercisePreference
 import com.valerochka1337.valerochkagym.data.db.entity.PlannerExercisePreferenceEntity
 import com.valerochka1337.valerochkagym.data.db.entity.ProfileEntity
@@ -15,6 +18,7 @@ import com.valerochka1337.valerochkagym.data.db.entity.StrengthPlannerProfileEnt
 import com.valerochka1337.valerochkagym.domain.BasicProfile
 import com.valerochka1337.valerochkagym.domain.ExperienceLevel
 import com.valerochka1337.valerochkagym.domain.KeyExerciseChoice
+import com.valerochka1337.valerochkagym.domain.PlannerExerciseAccentEdit
 import com.valerochka1337.valerochkagym.domain.PlannerExerciseChoice
 import com.valerochka1337.valerochkagym.domain.ProfileEditTarget
 import com.valerochka1337.valerochkagym.domain.ProfileEditorSnapshot
@@ -81,13 +85,23 @@ constructor(
       profile: BasicProfile,
       keyExercises: List<KeyExerciseChoice>,
       plannerPreferences: List<PlannerExerciseChoice>?,
-  ): ProfileSaveResult = saveInternal(target, profile, keyExercises, plannerPreferences)
+      plannerAccentEdits: List<PlannerExerciseAccentEdit>?,
+  ): ProfileSaveResult =
+      saveInternal(target, profile, keyExercises, plannerPreferences, plannerAccentEdits)
+
+  suspend fun saveWithStrength(
+      target: ProfileEditTarget,
+      profile: BasicProfile,
+      keyExercises: List<KeyExerciseChoice>,
+      plannerPreferences: List<PlannerExerciseChoice>?,
+  ): ProfileSaveResult = saveInternal(target, profile, keyExercises, plannerPreferences, null)
 
   private suspend fun saveInternal(
       target: ProfileEditTarget,
       profile: BasicProfile,
       keyExercises: List<KeyExerciseChoice>?,
       plannerPreferences: List<PlannerExerciseChoice>? = null,
+      plannerAccentEdits: List<PlannerExerciseAccentEdit>? = null,
   ): ProfileSaveResult {
     val normalized =
         ProfileValidator.normalize(profile, clock.nowMillis()) ?: return ProfileSaveResult.Invalid
@@ -96,6 +110,12 @@ constructor(
             (keyExercises.size > 5 ||
                 keyExercises.map(KeyExerciseChoice::exerciseSyncId).distinct().size !=
                     keyExercises.size)
+    )
+        return ProfileSaveResult.Invalid
+    if (
+        plannerAccentEdits != null &&
+            plannerAccentEdits.map(PlannerExerciseAccentEdit::exerciseSyncId).distinct().size !=
+                plannerAccentEdits.size
     )
         return ProfileSaveResult.Invalid
     if (
@@ -116,6 +136,59 @@ constructor(
       try {
         database.withTransaction {
           if (!targetStillCurrent(target)) return@withTransaction ProfileSaveResult.StaleTarget
+          // Capture before this profile save replaces the key list. First v2 adoption must not
+          // silently lose a legacy HIGH/NORMAL key that this same autosave happens to change.
+          val legacyKeyExerciseIds =
+              database.strengthPlannerProfileDao().keyExercises(target.scope).map {
+                it.exerciseSyncId
+              }
+          val accents = database.plannerExerciseAccentV2Dao()
+          val preparedAccents =
+              plannerAccentEdits?.let { edits ->
+                if (
+                    edits.any { edit ->
+                      runCatching { UUID.fromString(edit.exerciseSyncId).toString() }.getOrNull() !=
+                          edit.exerciseSyncId
+                    }
+                )
+                    return@withTransaction ProfileSaveResult.Invalid
+                val catalog = database.exerciseDao().getAllOnce().associateBy { it.syncId }
+                val current =
+                    if (accents.hasMarker(target.scope))
+                        accents.get(target.scope).associate { it.exerciseSyncId to it.preference }
+                    else
+                        buildMap {
+                          legacyKeyExerciseIds.forEach { put(it, PlannerExerciseAccent.MORE) }
+                          database.plannerExercisePreferenceDao().get(target.scope).forEach {
+                            put(
+                                it.exerciseSyncId,
+                                when (it.preference) {
+                                  PlannerExercisePreference.MORE -> PlannerExerciseAccent.MORE
+                                  PlannerExercisePreference.LESS -> PlannerExerciseAccent.LESS
+                                  PlannerExercisePreference.NEVER -> PlannerExerciseAccent.NEVER
+                                },
+                            )
+                          }
+                        }
+                val final = current.toMutableMap()
+                edits.forEach { edit ->
+                  if (edit.preference == null) final.remove(edit.exerciseSyncId)
+                  else final[edit.exerciseSyncId] = edit.preference
+                }
+                if (
+                    final.size > 1000 ||
+                        final.any { (exerciseSyncId, _) ->
+                          runCatching { UUID.fromString(exerciseSyncId).toString() }.getOrNull() !=
+                              exerciseSyncId ||
+                              (exerciseSyncId !in current &&
+                                  catalog[exerciseSyncId]?.archived != false)
+                        }
+                )
+                    return@withTransaction ProfileSaveResult.Invalid
+                final.entries
+                    .sortedBy { it.key }
+                    .map { PlannerExerciseAccentV2Entity(target.scope, it.key, it.value) }
+              }
           val selectedExercises =
               keyExercises?.let { choices ->
                 val catalog = database.exerciseDao().getAllOnce().associateBy { it.syncId }
@@ -218,6 +291,13 @@ constructor(
                       )
                     }
             )
+          }
+          if (plannerAccentEdits != null) {
+            // Materialize the current database aggregate then apply only explicit user actions.
+            // A concurrent legacy/v2 import is therefore retained unless this edit targets it.
+            accents.upsertMarker(PlannerExerciseAccentMarkerEntity(target.scope))
+            accents.deleteRows(target.scope)
+            accents.upsertRows(requireNotNull(preparedAccents))
           }
           if (!targetStillCurrent(target)) throw StaleProfileTargetException()
           database.workoutDao().getActiveWorkoutId()?.let { database.coachRunDao().markDirty(it) }

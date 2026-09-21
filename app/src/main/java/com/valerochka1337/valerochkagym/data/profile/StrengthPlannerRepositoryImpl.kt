@@ -7,11 +7,13 @@ import com.valerochka1337.valerochkagym.data.db.GymDatabase
 import com.valerochka1337.valerochkagym.data.db.dao.ExerciseDao
 import com.valerochka1337.valerochkagym.data.db.dao.StrengthPlannerProfileDao
 import com.valerochka1337.valerochkagym.data.db.entity.ExerciseType
+import com.valerochka1337.valerochkagym.data.db.entity.PlannerExerciseAccent
 import com.valerochka1337.valerochkagym.data.db.entity.PlannerExercisePreference
 import com.valerochka1337.valerochkagym.data.db.entity.PlannerExercisePreferenceEntity
 import com.valerochka1337.valerochkagym.data.db.entity.StrengthPlannerKeyExerciseEntity
 import com.valerochka1337.valerochkagym.data.db.entity.StrengthPlannerProfileEntity
 import com.valerochka1337.valerochkagym.domain.KeyExerciseChoice
+import com.valerochka1337.valerochkagym.domain.PlannerExerciseAccentChoice
 import com.valerochka1337.valerochkagym.domain.PlannerExerciseChoice
 import com.valerochka1337.valerochkagym.domain.ProfileEditTarget
 import com.valerochka1337.valerochkagym.domain.StrengthExerciseCandidate
@@ -95,6 +97,38 @@ constructor(
           choices.map {
             PlannerExerciseChoice(ids[it.exerciseSyncId]?.id, it.exerciseSyncId, it.preference)
           }
+        }
+      }
+
+  override fun observePlannerAccents(
+      target: ProfileEditTarget,
+  ): Flow<List<PlannerExerciseAccentChoice>?> =
+      combine(
+          combine(
+              database.plannerExerciseAccentV2Dao().observe(target.scope),
+              database.plannerExerciseAccentV2Dao().observeMarker(target.scope),
+              profileDao.observeKeyExercises(target.scope),
+              database.plannerExercisePreferenceDao().observe(target.scope),
+              exerciseDao.getAll(),
+          ) { v2, marker, keys, legacy, exercises ->
+            PlannerAccentSnapshot(v2, marker, keys.map { it.exerciseSyncId }, legacy, exercises)
+          },
+          sync.transfer,
+          sessions.session,
+      ) { snapshot, _, _ ->
+        if (!targetStillCurrent(target)) null
+        else {
+          val ids = snapshot.exercises.associateBy { it.syncId }
+          val effective =
+              if (snapshot.marker) snapshot.v2.associate { it.exerciseSyncId to it.preference }
+              else
+                  buildMap {
+                    snapshot.keys.forEach { put(it, PlannerExerciseAccent.MORE) }
+                    snapshot.legacy.forEach { put(it.exerciseSyncId, it.preference.toV2Accent()) }
+                  }
+          effective.entries
+              .sortedBy { it.key }
+              .map { PlannerExerciseAccentChoice(ids[it.key]?.id, it.key, it.value) }
         }
       }
 
@@ -200,6 +234,13 @@ constructor(
       UUID.nameUUIDFromBytes("ValerochkaGym.strength-planner-profile.v1:$owner".toByteArray(UTF_8))
           .toString()
 
+  private fun PlannerExercisePreference.toV2Accent(): PlannerExerciseAccent =
+      when (this) {
+        PlannerExercisePreference.MORE -> PlannerExerciseAccent.MORE
+        PlannerExercisePreference.LESS -> PlannerExerciseAccent.LESS
+        PlannerExercisePreference.NEVER -> PlannerExerciseAccent.NEVER
+      }
+
   private companion object {
     val choiceComparator =
         compareBy<KeyExerciseChoice>(
@@ -208,3 +249,11 @@ constructor(
         )
   }
 }
+
+private data class PlannerAccentSnapshot(
+    val v2: List<com.valerochka1337.valerochkagym.data.db.entity.PlannerExerciseAccentV2Entity>,
+    val marker: Boolean,
+    val keys: List<String>,
+    val legacy: List<PlannerExercisePreferenceEntity>,
+    val exercises: List<com.valerochka1337.valerochkagym.data.db.entity.ExerciseEntity>,
+)

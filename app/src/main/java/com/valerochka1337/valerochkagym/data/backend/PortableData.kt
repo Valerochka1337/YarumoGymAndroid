@@ -178,6 +178,39 @@ class PortableData(private val db: SupportSQLiteDatabase) {
             }
           }
         }
+    profileScope()
+        .takeIf { it != "GUEST" }
+        ?.let { owner ->
+          val accents =
+              rows(
+                  "planner_exercise_accents_v2",
+                  "WHERE scope=? ORDER BY exerciseSyncId",
+                  arrayOf(owner),
+              )
+          val marked =
+              rows("planner_exercise_accent_markers", "WHERE scope=?", arrayOf(owner)).isNotEmpty()
+          if (marked) {
+            val id =
+                UUID.nameUUIDFromBytes(
+                        "ValerochkaGym.planner-default-accents.v2:$owner".toByteArray(UTF_8)
+                    )
+                    .toString()
+            result["planner_exercise_accents:$id"] = buildJsonObject {
+              put("schemaVersion", 1)
+              put(
+                  "preferences",
+                  JsonArray(
+                      accents.map { row ->
+                        buildJsonObject {
+                          put("exerciseId", row.getValue("exerciseSyncId"))
+                          put("preference", row.getValue("preference"))
+                        }
+                      }
+                  ),
+              )
+            }
+          }
+        }
     fun links(
         table: String,
         ownerColumn: String,
@@ -514,11 +547,17 @@ class PortableData(private val db: SupportSQLiteDatabase) {
 
   /** Caller owns a Room transaction. Updates preserve local parent IDs and active section IDs. */
   fun apply(upserts: List<CloudRecord>, deletes: List<CloudRecord>) {
+    // Reject before sorting or applying any unrelated record. Direct import callers do not go
+    // through BackendSync's preflight guard.
+    if (deletes.any { it.kind == "planner_exercise_accents" })
+        error("Planner accent tombstones are a protocol violation")
     val order =
         listOf(
             "profile",
             "exercise",
             "strength_planner_profile",
+            "planner_exercise_preferences",
+            "planner_exercise_accents",
             "exercise_hint",
             "gym",
             "routine",
@@ -681,6 +720,63 @@ class PortableData(private val db: SupportSQLiteDatabase) {
               mapped.forEach { (exerciseId, preference) ->
                 insert(
                     "planner_exercise_preferences",
+                    mapOf(
+                        "scope" to JsonPrimitive(scope),
+                        "exerciseSyncId" to JsonPrimitive(exerciseId),
+                        "preference" to JsonPrimitive(preference),
+                    ),
+                )
+              }
+            }
+            "planner_exercise_accents" -> {
+              val scope = profileScope()
+              if (scope == "GUEST") error("Remote planner accents require an authenticated owner")
+              val expectedId =
+                  UUID.nameUUIDFromBytes(
+                          "ValerochkaGym.planner-default-accents.v2:$scope".toByteArray(UTF_8)
+                      )
+                      .toString()
+              if (
+                  r.id != expectedId ||
+                      n.keys != setOf("schemaVersion", "preferences") ||
+                      n["schemaVersion"]?.jsonPrimitive?.let { it.isString || it.content != "1" } !=
+                          false
+              )
+                  error("Invalid planner accents payload")
+              val preferences = n["preferences"]?.jsonArray ?: error("Invalid planner accents")
+              if (preferences.size > 1000) error("Too many planner accents")
+              val mapped =
+                  preferences.map { element ->
+                    val item = element.jsonObject
+                    if (item.keys != setOf("exerciseId", "preference"))
+                        error("Invalid planner accent")
+                    val exerciseId =
+                        item["exerciseId"]?.jsonPrimitive?.content
+                            ?: error("Invalid planner exercise")
+                    val preference =
+                        item["preference"]?.jsonPrimitive?.content
+                            ?: error("Invalid planner accent")
+                    if (preference !in setOf("MORE", "NORMAL", "LESS", "NEVER"))
+                        error("Invalid planner accent")
+                    if (
+                        runCatching { UUID.fromString(exerciseId).toString() == exerciseId }
+                            .getOrDefault(false)
+                            .not()
+                    )
+                        error("Invalid planner exercise")
+                    exerciseId to preference
+                  }
+              if (
+                  mapped.map { it.first }.distinct().size != mapped.size ||
+                      mapped != mapped.sortedBy { it.first }
+              )
+                  error("Noncanonical planner accent order")
+              db.delete("planner_exercise_accents_v2", "scope=?", arrayOf(scope))
+              db.delete("planner_exercise_accent_markers", "scope=?", arrayOf(scope))
+              insert("planner_exercise_accent_markers", mapOf("scope" to JsonPrimitive(scope)))
+              mapped.forEach { (exerciseId, preference) ->
+                insert(
+                    "planner_exercise_accents_v2",
                     mapOf(
                         "scope" to JsonPrimitive(scope),
                         "exerciseSyncId" to JsonPrimitive(exerciseId),
@@ -987,6 +1083,8 @@ class PortableData(private val db: SupportSQLiteDatabase) {
     deletes
         .sortedByDescending { order.indexOf(it.kind) }
         .forEach { r ->
+          if (r.kind == "planner_exercise_accents")
+              error("Planner accent tombstones are a protocol violation")
           if (r.kind in setOf("profile", "strength_planner_profile"))
               error("Profile tombstones are a protocol violation")
           val table =
@@ -997,6 +1095,7 @@ class PortableData(private val db: SupportSQLiteDatabase) {
                 "workout" -> "workouts"
                 "workout_effort" -> "workout_efforts"
                 "planner_exercise_preferences" -> "planner_exercise_preferences"
+                "planner_exercise_accents" -> "planner_exercise_accents_v2"
                 "measurement" -> "body_measurements"
                 "exercise_hint" -> "exercise_personal_hints"
                 "calendar_plan" -> "calendar_plans"

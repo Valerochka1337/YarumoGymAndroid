@@ -95,6 +95,8 @@ constructor(
 
   private fun supportsAgenticPlanner(): Boolean = supports("ai-planner-agentic-v1")
 
+  private fun supportsPlannerDefaultAccents(): Boolean = supports("planner-default-accents-v2")
+
   /** Owner-bound negotiated feature capability; optional transports must not probe when absent. */
   fun supportsHealthLedger(): Boolean = supports("health-ledger-v1")
 
@@ -166,6 +168,7 @@ constructor(
                 it.kind !in setOf("strength_planner_profile", "workout_effort")
           }
           .filter { supportsAgenticPlanner() || it.kind != "planner_exercise_preferences" }
+          .filter { supportsPlannerDefaultAccents() || it.kind != "planner_exercise_accents" }
           .mapNotNull { record ->
             if (supportsAnnotatedWorkoutWrites() || record.kind != "workout") record
             else {
@@ -203,6 +206,8 @@ constructor(
     }
     if (!supportsAgenticPlanner())
         result = result.filterKeys { !it.startsWith("planner_exercise_preferences:") }
+    if (!supportsPlannerDefaultAccents())
+        result = result.filterKeys { !it.startsWith("planner_exercise_accents:") }
     if (!supportsAnnotatedWorkoutWrites()) {
       result =
           result
@@ -348,6 +353,7 @@ constructor(
           (change.kind in setOf("strength_planner_profile", "workout_effort") &&
               !supportsStrengthPlannerPersonalization()) ||
           (change.kind == "planner_exercise_preferences" && !supportsAgenticPlanner()) ||
+          (change.kind == "planner_exercise_accents" && !supportsPlannerDefaultAccents()) ||
           (change.kind == "workout" &&
               !supportsAnnotatedWorkoutWrites() &&
               (change.payload?.let(::hasSetNote) == true ||
@@ -362,6 +368,16 @@ constructor(
             409,
             "profile_tombstone_invalid",
             "Сервер вернул недопустимое удаление профиля",
+        )
+  }
+
+  /** A v2 empty payload is a durable state; a tombstone would erase its marker semantics. */
+  private fun rejectPlannerAccentTombstone(snapshot: CloudSnapshot) {
+    if (snapshot.records.any { it.kind == "planner_exercise_accents" && it.deleted })
+        throw BackendException(
+            409,
+            "planner_accent_tombstone_invalid",
+            "Сервер вернул недопустимое удаление акцентов упражнений",
         )
   }
 
@@ -496,6 +512,8 @@ constructor(
     profileScope?.let { db.execSQL("DELETE FROM workout_efforts WHERE scope=?", arrayOf(it)) }
     profileScope?.let {
       db.execSQL("DELETE FROM planner_exercise_preferences WHERE scope=?", arrayOf(it))
+      db.execSQL("DELETE FROM planner_exercise_accents_v2 WHERE scope=?", arrayOf(it))
+      db.execSQL("DELETE FROM planner_exercise_accent_markers WHERE scope=?", arrayOf(it))
     }
     profileScope?.let { owner ->
       db.execSQL("DELETE FROM workout_preparations WHERE owner=?", arrayOf(owner))
@@ -569,6 +587,14 @@ constructor(
     // deterministic record on the next snapshot.
     db.execSQL(
         "UPDATE planner_exercise_preferences SET scope=? WHERE scope='GUEST'",
+        arrayOf(owner),
+    )
+    db.execSQL(
+        "UPDATE planner_exercise_accents_v2 SET scope=? WHERE scope='GUEST'",
+        arrayOf(owner),
+    )
+    db.execSQL(
+        "UPDATE planner_exercise_accent_markers SET scope=? WHERE scope='GUEST'",
         arrayOf(owner),
     )
   }
@@ -1018,6 +1044,7 @@ constructor(
           lastAcceptedCapabilities = response.acceptedCapabilities
           val remote = api.json.decodeFromJsonElement<CloudSnapshot>(response.body)
           rejectProfileTombstone(remote)
+          rejectPlannerAccentTombstone(remote)
           rejectInvalidProfile(remote, expected.tokens.userId)
           cacheAcceptedCapabilities(expected.tokens.userId)
           require(
@@ -1096,6 +1123,7 @@ constructor(
               )
           require(remote.records.any { it.kind == "routine" && it.id == routineId && !it.deleted })
           rejectProfileTombstone(remote)
+          rejectPlannerAccentTombstone(remote)
           rejectInvalidProfile(remote, expected.tokens.userId)
           lastAcceptedCapabilities = response.acceptedCapabilities
           cacheAcceptedCapabilities(expected.tokens.userId)
@@ -1126,6 +1154,9 @@ constructor(
               "workout_active",
               "Завершите тренировку перед синхронизацией",
           )
+      // Validate before reading/replacing a baseline, acknowledging a retained request, or making
+      // any PortableData mutation. This keeps a malicious v2 tombstone observationally inert.
+      rejectPlannerAccentTombstone(remoteSnapshot)
       val rawCurrent = PortableData(db).snapshot()
       val rawBase = baseline()
       val remote =
@@ -1277,6 +1308,7 @@ constructor(
             val capabilitySnapshot =
                 api.json.decodeFromJsonElement<CloudSnapshot>(authorized(user, "GET", "/sync"))
             rejectProfileTombstone(capabilitySnapshot)
+            rejectPlannerAccentTombstone(capabilitySnapshot)
             rejectInvalidProfile(capabilitySnapshot, user)
             cacheAcceptedCapabilities(user)
             var rejectedByRevisionConflict = false
@@ -1317,6 +1349,7 @@ constructor(
             val remoteSnapshot =
                 api.json.decodeFromJsonElement<CloudSnapshot>(authorized(user, "GET", "/sync"))
             rejectProfileTombstone(remoteSnapshot)
+            rejectPlannerAccentTombstone(remoteSnapshot)
             rejectInvalidProfile(remoteSnapshot, user)
             cacheAcceptedCapabilities(user)
             applyRemoteSnapshot(user, remoteSnapshot, personalResolve, rejectedByRevisionConflict)
@@ -1382,6 +1415,13 @@ constructor(
                           )
                         }
                   }
+              // A newly captured optional record must take the same durable path as a retained
+              // request. Its exact bytes remain in the outbox until capability negotiation allows
+              // dispatch; sending here would bypass [isUnsupportedChange].
+              if (batch?.changes?.any(::isUnsupportedChange) == true) {
+                mutableStatus.value = "Часть данных ожидает поддержку сервера"
+                return@withLock
+              }
               if (batch == null) {
                 val acknowledged =
                     api.json.decodeFromJsonElement<CloudSnapshot>(authorized(user, "GET", "/sync"))

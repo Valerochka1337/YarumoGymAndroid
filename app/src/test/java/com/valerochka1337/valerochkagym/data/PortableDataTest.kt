@@ -41,6 +41,95 @@ import org.junit.Test
 
 class PortableDataTest : RoomDaoTest() {
   @Test
+  fun `v2 planner accents retain explicit normal and an authoritative empty aggregate`() = runTest {
+    val owner = "11111111-1111-1111-1111-111111111111"
+    val exercise = "22222222-2222-2222-2222-222222222222"
+    val id =
+        UUID.nameUUIDFromBytes("ValerochkaGym.planner-default-accents.v2:$owner".toByteArray(UTF_8))
+            .toString()
+    val sql = db.openHelper.writableDatabase
+    SyncSchema.install(sql)
+    sql.execSQL("UPDATE backend_state SET owner=?,phase='OWNED' WHERE id=1", arrayOf(owner))
+    val payload = buildJsonObject {
+      put("schemaVersion", 1)
+      put(
+          "preferences",
+          JsonArray(
+              listOf(
+                  buildJsonObject {
+                    put("exerciseId", exercise)
+                    put("preference", "NORMAL")
+                  }
+              )
+          ),
+      )
+    }
+    db.withTransaction {
+      PortableData(sql)
+          .apply(
+              listOf(CloudRecord("planner_exercise_accents", id, 1, false, payload)),
+              emptyList(),
+          )
+    }
+    assertEquals(
+        "NORMAL",
+        requireNotNull(PortableData(sql).snapshot()["planner_exercise_accents:$id"])["preferences"]
+            ?.jsonArray
+            ?.single()
+            ?.jsonObject
+            ?.get("preference")
+            ?.jsonPrimitive
+            ?.content,
+    )
+    db.withTransaction {
+      PortableData(sql)
+          .apply(
+              listOf(
+                  CloudRecord(
+                      "planner_exercise_accents",
+                      id,
+                      2,
+                      false,
+                      buildJsonObject {
+                        put("schemaVersion", 1)
+                        put("preferences", JsonArray(emptyList()))
+                      },
+                  )
+              ),
+              emptyList(),
+          )
+    }
+    assertTrue(PortableData(sql).snapshot().containsKey("planner_exercise_accents:$id"))
+    assertTrue(db.plannerExerciseAccentV2Dao().get(owner).isEmpty())
+  }
+
+  @Test
+  fun `v2 planner accent tombstone leaves the local marker and rows untouched`() = runTest {
+    val owner = "11111111-1111-1111-1111-111111111111"
+    val exercise = "22222222-2222-2222-2222-222222222222"
+    val sql = db.openHelper.writableDatabase
+    SyncSchema.install(sql)
+    sql.execSQL("UPDATE backend_state SET owner=?,phase='OWNED' WHERE id=1", arrayOf(owner))
+    sql.execSQL("INSERT INTO planner_exercise_accent_markers(scope) VALUES(?)", arrayOf(owner))
+    sql.execSQL(
+        "INSERT INTO planner_exercise_accents_v2(scope,exerciseSyncId,preference) VALUES(?,?,?)",
+        arrayOf(owner, exercise, "NEVER"),
+    )
+    try {
+      db.withTransaction {
+        PortableData(sql)
+            .apply(
+                emptyList(),
+                listOf(CloudRecord("planner_exercise_accents", "foreign", 1, deleted = true)),
+            )
+      }
+      throw AssertionError("A v2 tombstone must be rejected")
+    } catch (_: IllegalStateException) {}
+    assertTrue(db.plannerExerciseAccentV2Dao().hasMarker(owner))
+    assertEquals("NEVER", db.plannerExerciseAccentV2Dao().get(owner).single().preference.name)
+  }
+
+  @Test
   fun `planner preference tombstones require the current owner aggregate identity`() = runTest {
     val owner = "10000000-0000-4000-8000-000000000001"
     val formerOwner = "20000000-0000-4000-8000-000000000002"
