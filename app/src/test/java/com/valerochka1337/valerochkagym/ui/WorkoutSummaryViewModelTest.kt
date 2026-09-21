@@ -42,6 +42,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -768,6 +769,9 @@ class WorkoutSummaryViewModelTest {
     override fun observeRoutinesWithCount(): Flow<List<RoutineWithCount>> = flowOf(emptyList())
 
     override fun observeRoutinesFull(): Flow<List<RoutineWithExercises>> = flowOf(emptyList())
+
+    override suspend fun routinesFullOnce(): List<RoutineWithExercises> =
+        observeRoutinesFull().first()
 
     override suspend fun getRoutineName(id: Long): String? = routine?.routine?.name
 

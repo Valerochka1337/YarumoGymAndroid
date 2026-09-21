@@ -677,6 +677,9 @@ class CalendarViewModelTest {
 
     override fun observeRoutinesFull(): Flow<List<RoutineWithExercises>> = flowOf(emptyList())
 
+    override suspend fun routinesFullOnce(): List<RoutineWithExercises> =
+        observeRoutinesFull().first()
+
     override suspend fun getRoutineWithExercises(id: Long): RoutineWithExercises? = null
 
     override suspend fun getRoutineBySyncId(syncId: String): RoutineEntity? = null

@@ -20,6 +20,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
@@ -245,6 +246,9 @@ class RoutineShareViewModelTest {
     override fun observeRoutinesWithCount(): Flow<List<RoutineWithCount>> = flowOf(emptyList())
 
     override fun observeRoutinesFull(): Flow<List<RoutineWithExercises>> = flowOf(emptyList())
+
+    override suspend fun routinesFullOnce(): List<RoutineWithExercises> =
+        observeRoutinesFull().first()
 
     override suspend fun getRoutineWithExercises(id: Long): RoutineWithExercises? =
         ownerId

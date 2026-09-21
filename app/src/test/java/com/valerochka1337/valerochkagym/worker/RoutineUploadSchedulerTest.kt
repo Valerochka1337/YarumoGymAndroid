@@ -11,6 +11,7 @@ import com.valerochka1337.valerochkagym.data.db.entity.RoutineExerciseEntity
 import com.valerochka1337.valerochkagym.data.db.relation.RoutineWithCount
 import com.valerochka1337.valerochkagym.data.db.relation.RoutineWithExercises
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -75,6 +76,9 @@ class RoutineUploadSchedulerTest {
     override fun observeRoutinesWithCount(): Flow<List<RoutineWithCount>> = flowOf(emptyList())
 
     override fun observeRoutinesFull(): Flow<List<RoutineWithExercises>> = flowOf(routines)
+
+    override suspend fun routinesFullOnce(): List<RoutineWithExercises> =
+        observeRoutinesFull().first()
 
     override suspend fun getRoutineWithExercises(id: Long): RoutineWithExercises? = null
 

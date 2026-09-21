@@ -34,6 +34,10 @@ interface RoutineDao {
   fun observeRoutinesFull(): Flow<List<RoutineWithExercises>>
 
   @Transaction
+  @Query("SELECT * FROM routines WHERE archived=0 ORDER BY name COLLATE NOCASE ASC")
+  suspend fun routinesFullOnce(): List<RoutineWithExercises>
+
+  @Transaction
   @Query("SELECT * FROM routines WHERE id = :id")
   suspend fun getRoutineWithExercises(id: Long): RoutineWithExercises?
 

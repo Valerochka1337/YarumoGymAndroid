@@ -1,6 +1,7 @@
 package com.valerochka1337.valerochkagym.ui.components
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
@@ -31,6 +32,7 @@ fun PillButton(
     enabled: Boolean = true,
     leadingIcon: ImageVector? = null,
     compact: Boolean = false,
+    supportingText: String? = null,
 ) {
   Button(
       onClick = onClick,
@@ -55,13 +57,16 @@ fun PillButton(
             modifier = Modifier.size(20.dp),
         )
       }
-      Text(
-          text = text,
-          style =
-              if (compact) MaterialTheme.typography.labelLarge
-              else MaterialTheme.typography.titleMedium,
-          fontWeight = FontWeight.Bold,
-      )
+      Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            text = text,
+            style =
+                if (compact) MaterialTheme.typography.labelLarge
+                else MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+        )
+        supportingText?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+      }
     }
   }
 }

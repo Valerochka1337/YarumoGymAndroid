@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -256,11 +257,14 @@ class AccountViewModelTest : RoomDaoTest() {
                 sync,
                 BackendSyncScheduler(ApplicationProvider.getApplicationContext(), db),
             )
-        vm.revoke("a-session")
-        db.openHelper.writableDatabase.execSQL(
-            "UPDATE backend_state SET owner='b',phase='CLAIMED',mergeId='b' WHERE id=1"
-        )
-        store.save(BackendTokens("b", "b@e", "b", "b"))
+        // Keep the IO action queued until the replacement account is installed.
+        sync.mutex.withLock {
+          vm.revoke("a-session")
+          db.openHelper.writableDatabase.execSQL(
+              "UPDATE backend_state SET owner='b',phase='CLAIMED',mergeId='b' WHERE id=1"
+          )
+          store.save(BackendTokens("b", "b@e", "b", "b"))
+        }
         advanceUntilIdle()
         vm.busy.first { !it }
         assertTrue(calls.isEmpty())

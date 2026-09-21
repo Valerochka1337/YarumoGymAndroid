@@ -1,5 +1,9 @@
 package com.valerochka1337.valerochkagym.data.trainingproposal
 
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.room.withTransaction
 import com.valerochka1337.valerochkagym.data.backend.*
 import com.valerochka1337.valerochkagym.data.db.GymDatabase
@@ -17,6 +21,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -62,6 +67,7 @@ constructor(
     private val sessions: BackendSessionStore,
     private val sync: BackendSync,
     private val clock: WallClock,
+    private val dataStore: DataStore<Preferences>,
     @param:ApplicationScope private val inboxScope: CoroutineScope,
 ) {
   private val dao
@@ -78,6 +84,8 @@ constructor(
   private var inboxBindingGeneration = 0L
   private var preparationObservation: Job? = null
   private val overlays = mutableMapOf<String, TrainingProposal>()
+  private var deletedProposalIds: Set<String> = emptySet()
+  private var tombstoneOwner: String? = null
 
   init {
     inboxScope.launch {
@@ -90,7 +98,41 @@ constructor(
             }
           }
     }
+    inboxScope.launch {
+      try {
+        dataStore.data.collect {
+          inboxMutex.withLock {
+            val current = sessions.snapshot() ?: return@withLock
+            deletedProposalIds = it[tombstoneKey(current.tokens.userId)].orEmpty()
+            tombstoneOwner = current.tokens.userId
+            filterDeletedLocked()
+          }
+        }
+      } catch (cancelled: kotlinx.coroutines.CancellationException) {
+        throw cancelled
+      } catch (error: Exception) {
+        sessions.snapshot()?.let { publishTombstoneError(it, error) }
+      }
+    }
   }
+
+  /** Device-local removal only. The backend proposal and its status are intentionally unchanged. */
+  suspend fun delete(proposal: TrainingProposal) =
+      withContext(Dispatchers.IO) {
+        val session = session()
+        guard(session)
+        require(proposal.recipientId == session.tokens.userId)
+        dataStore.edit { preferences ->
+          val key = tombstoneKey(session.tokens.userId)
+          preferences[key] = preferences[key].orEmpty() + proposal.proposalId
+        }
+        inboxMutex.withLock {
+          if (!isCurrent(session)) return@withLock
+          deletedProposalIds = deletedProposalIds + proposal.proposalId
+          overlays.remove(proposal.proposalId)
+          filterDeletedLocked()
+        }
+      }
 
   fun session(): BackendSessionSnapshot =
       sessions.snapshot() ?: throw BackendException(401, "unauthorized", "Войдите в аккаунт")
@@ -133,6 +175,14 @@ constructor(
           return
         }
     val key = session.inboxKey()
+    try {
+      refreshTombstones(session)
+    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+      throw cancelled
+    } catch (error: Exception) {
+      publishTombstoneError(session, error)
+      return
+    }
     var retryCursor: String? = null
     val shouldLoad =
         inboxMutex.withLock {
@@ -178,6 +228,14 @@ constructor(
           return
         }
     val key = session.inboxKey()
+    try {
+      refreshTombstones(session)
+    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+      throw cancelled
+    } catch (error: Exception) {
+      publishTombstoneError(session, error)
+      return
+    }
     val content =
         inboxMutex.withLock {
           if (!isSessionKeyCurrent(key)) return@withLock null
@@ -204,6 +262,13 @@ constructor(
       withContext(Dispatchers.IO) {
         val session = session()
         guard(session)
+        refreshTombstones(session)
+        if (id in deletedProposalIds)
+            throw BackendException(
+                404,
+                "proposal_deleted",
+                "Предложение удалено на этом устройстве",
+            )
         val proposal =
             try {
               api.detail(session, id)
@@ -292,9 +357,6 @@ constructor(
                     "approval_pending",
                     "Подтверждение уже отправлено. Сначала проверьте его результат",
                 )
-            require(
-                proposal.status == ProposalStatus.PENDING && proposal.expiresAt > clock.nowMillis()
-            )
             // An editor draft can be temporarily incomplete (for example after a type change).
             // Only approval canonicalizes and validates a request for the server.
             val draftJson = ProposalWire.json.encodeToString(draft)
@@ -525,6 +587,7 @@ constructor(
     val key = session.inboxKey()
     if (inboxKey == key) return
     inboxKey = key
+    if (tombstoneOwner != key.owner) deletedProposalIds = emptySet()
     overlays.clear()
     _inbox.value = ProposalInboxState.NotLoaded(++inboxBindingGeneration)
     preparationObservation?.cancel()
@@ -548,6 +611,8 @@ constructor(
   private fun clearInboxLocked() {
     inboxKey = null
     overlays.clear()
+    deletedProposalIds = emptySet()
+    tombstoneOwner = null
     preparationObservation?.cancel()
     preparationObservation = null
     _inbox.value = ProposalInboxState.NotLoaded(++inboxBindingGeneration)
@@ -580,8 +645,46 @@ constructor(
     localOverlays.forEach { overlay ->
       merged[overlay.proposalId] = merged[overlay.proposalId]?.let { newer(it, overlay) } ?: overlay
     }
-    return merged.values.toList()
+    return merged.values.filterNot { it.proposalId in deletedProposalIds }
   }
+
+  private suspend fun refreshTombstones(session: BackendSessionSnapshot) {
+    val deleted = dataStore.data.first()[tombstoneKey(session.tokens.userId)].orEmpty()
+    inboxMutex.withLock {
+      if (!isCurrent(session)) return@withLock
+      deletedProposalIds = deleted
+      tombstoneOwner = session.tokens.userId
+      filterDeletedLocked()
+    }
+  }
+
+  private suspend fun publishTombstoneError(session: BackendSessionSnapshot, error: Exception) {
+    inboxMutex.withLock {
+      if (!isCurrent(session)) return
+      bindInboxLocked(session)
+      _inbox.value =
+          ProposalInboxState.Error(
+              _inbox.value.contentOrNull(),
+              error,
+              _inbox.value.contentOrNull()?.nextCursor,
+          )
+    }
+  }
+
+  private fun filterDeletedLocked() {
+    if (deletedProposalIds.isEmpty()) return
+    overlays.keys.removeAll(deletedProposalIds)
+    val content = _inbox.value.contentOrNull() ?: return
+    _inbox.value =
+        _inbox.value.withContent(
+            content.copy(items = content.items.filterNot { it.proposalId in deletedProposalIds })
+        )
+  }
+
+  private fun tombstoneKey(owner: String) =
+      stringSetPreferencesKey(
+          "training_proposal_deleted_${sha256(owner.encodeToByteArray()).take(32)}"
+      )
 
   private fun newer(current: TrainingProposal, incoming: TrainingProposal): TrainingProposal =
       when {
