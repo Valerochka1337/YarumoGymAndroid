@@ -36,6 +36,8 @@ class WorkoutPreparationViewModel
 constructor(private val repository: WorkoutPreparationRepository) : ViewModel() {
   val current =
       repository.current.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+  val all =
+      repository.all.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
   private val _retrying = MutableStateFlow(false)
   val retrying = _retrying.asStateFlow()
@@ -118,8 +120,10 @@ fun WorkoutPreparationPolling(
 
 @Composable
 fun WorkoutPreparationPolling(viewModel: WorkoutPreparationViewModel = hiltViewModel()) {
-  val row by viewModel.current.collectAsStateWithLifecycle()
-  WorkoutPreparationPolling(row, viewModel::refreshWhileVisible)
+  val rows by viewModel.all.collectAsStateWithLifecycle()
+  rows
+      .filter { it.state in WorkoutPreparationRepository.activeStates }
+      .forEach { row -> WorkoutPreparationPolling(row, viewModel::refreshWhileVisible) }
 }
 
 @Composable

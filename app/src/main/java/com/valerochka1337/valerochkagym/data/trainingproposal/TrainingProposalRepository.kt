@@ -275,10 +275,18 @@ constructor(
             } catch (error: java.io.IOException) {
               guard(session)
               val cached =
-                  database.preparationDao().get(session.tokens.userId)?.proposalJson?.let {
-                    ProposalWire.json.decodeFromString<TrainingProposal>(it)
-                  }
-              cached?.takeIf { it.proposalId == id } ?: throw error
+                  database
+                      .preparationDao()
+                      .observeAll(session.tokens.userId)
+                      .first()
+                      .asSequence()
+                      .mapNotNull { it.proposalJson }
+                      .mapNotNull {
+                        runCatching { ProposalWire.json.decodeFromString<TrainingProposal>(it) }
+                            .getOrNull()
+                      }
+                      .firstOrNull { it.proposalId == id }
+              cached ?: throw error
             }
         val editor =
             database.withTransaction {
@@ -393,7 +401,16 @@ constructor(
                       )
                   dao.operation(owner, proposal.proposalId, proposal.currentVersion)
                       ?: run {
-                        val preparation = database.preparationDao().get(owner)
+                        val preparation =
+                            database.preparationDao().observeAll(owner).first().firstOrNull {
+                              it.proposalJson?.let { json ->
+                                runCatching {
+                                      ProposalWire.json.decodeFromString<TrainingProposal>(json)
+                                    }
+                                    .getOrNull()
+                                    ?.proposalId == proposal.proposalId
+                              } == true
+                            }
                         val preparedProposal =
                             preparation?.proposalJson?.let {
                               ProposalWire.json.decodeFromString<TrainingProposal>(it)
@@ -593,17 +610,21 @@ constructor(
     preparationObservation?.cancel()
     preparationObservation =
         inboxScope.launch {
-          database.preparationDao().observe(key.owner).collect { preparation ->
-            val proposal =
-                preparation
-                    ?.takeIf { it.state == "READY" }
-                    ?.proposalJson
-                    ?.let { json ->
-                      runCatching { ProposalWire.json.decodeFromString<TrainingProposal>(json) }
-                          .getOrNull()
-                    }
-                    ?.takeIf { ProposalWire.valid(it) && it.recipientId == key.owner }
-            if (proposal != null) publishReady(key, proposal)
+          // The cached journal must never transiently republish a locally deleted proposal.
+          refreshTombstones(session)
+          database.preparationDao().observeAll(key.owner).collect { preparations ->
+            preparations
+                .asSequence()
+                .filter { it.state == "READY" }
+                .mapNotNull { preparation ->
+                  preparation.proposalJson
+                      ?.let { json ->
+                        runCatching { ProposalWire.json.decodeFromString<TrainingProposal>(json) }
+                            .getOrNull()
+                      }
+                      ?.takeIf { ProposalWire.valid(it) && it.recipientId == key.owner }
+                }
+                .forEach { publishReady(key, it) }
           }
         }
   }

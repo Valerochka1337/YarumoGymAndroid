@@ -75,6 +75,7 @@ class CalendarAiViewModelTest : RoomDaoTest() {
         viewModel.generate()
         advanceUntilIdle()
         saved.await()
+        viewModel.uiState.first { !it.generating && it.error == null }
         assertTrue(saved.isCompleted)
         assertNotNull(db.preparationDao().get("owner"))
         assertEquals("WAITING", db.preparationDao().get("owner")!!.state)
@@ -203,6 +204,7 @@ class CalendarAiViewModelTest : RoomDaoTest() {
           viewModel.generate()
           advanceUntilIdle()
           savedEvent.await()
+          viewModel.uiState.first { !it.generating && it.error == null }
 
           val saved = checkNotNull(db.preparationDao().get("owner"))
           val intent = ProposalWire.json.decodeFromString<CalendarAiIntent>(saved.intentJson)

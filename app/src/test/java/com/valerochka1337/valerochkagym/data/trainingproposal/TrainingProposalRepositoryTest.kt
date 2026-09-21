@@ -287,27 +287,54 @@ class TrainingProposalRepositoryTest : RoomDaoTest() {
   }
 
   @Test
-  fun `deleted proposal stays absent after recreation and ready overlay`() = runTest {
-    val f = fixture(readyBeforeRepository = Server::proposal)
-    val proposal = f.server.proposal()
-    f.repository.delete(proposal)
-    val recreated =
-        TrainingProposalRepository(
-            db,
-            TrainingProposalApi(f.server, f.store),
-            f.store,
-            f.sync,
-            WallClock { 1000 },
-            proposalStore,
-            f.scope,
+  fun `nonlatest ready proposal opens offline and stays deleted after recreation with another ready row`() =
+      runTest {
+        val f = fixture(readyBeforeRepository = Server::proposal)
+        val proposal = f.server.proposal()
+        val olderPreparation = db.preparationDao().get(OWNER)!!
+        db.preparationDao().save(olderPreparation.copy(state = "RUNNING", proposalJson = null))
+        val other = proposal.copy(proposalId = "66666666-6666-4666-8666-666666666666")
+        db.preparationDao()
+            .save(
+                com.valerochka1337.valerochkagym.data.ai.PreparationEntity(
+                    OWNER,
+                    "00000000-0000-4000-8000-000000000077",
+                    "{}",
+                    "[]",
+                    state = "READY",
+                    proposalJson = ProposalWire.json.encodeToString(other),
+                    createdAtMillis = 1,
+                )
+            )
+        // The older request finishes after the newer request without replacing its result.
+        db.preparationDao().save(olderPreparation)
+        awaitInbox(f.repository) {
+          it is ProposalInboxState.NotLoaded && it.content?.items?.size == 2
+        }
+        f.server.beforeDetail = { throw IOException("offline") }
+        assertEquals(PROPOSAL, f.repository.open(PROPOSAL).proposal.proposalId)
+        f.repository.delete(proposal)
+        val recreated =
+            TrainingProposalRepository(
+                db,
+                TrainingProposalApi(f.server, f.store),
+                f.store,
+                f.sync,
+                WallClock { 1000 },
+                proposalStore,
+                f.scope,
+            )
+
+        recreated.ensureInitialLoad()
+        val inbox =
+            awaitInbox(recreated) { it is ProposalInboxState.Content && it.content.items.size == 1 }
+
+        assertEquals(
+            listOf(other.proposalId),
+            (inbox as ProposalInboxState.Content).content.items.map { it.proposalId },
         )
-
-    recreated.ensureInitialLoad()
-    val inbox = awaitInbox(recreated) { it is ProposalInboxState.Content }
-
-    assertTrue((inbox as ProposalInboxState.Content).content.items.isEmpty())
-    assertTrue(runCatching { recreated.open(PROPOSAL) }.isFailure)
-  }
+        assertTrue(runCatching { recreated.open(PROPOSAL) }.isFailure)
+      }
 
   @Test
   fun `ready retained before initial ensure still fetches and merges the inbox`() = runTest {
@@ -512,6 +539,24 @@ class TrainingProposalRepositoryTest : RoomDaoTest() {
                     state = "READY",
                     proposalJson =
                         ProposalWire.json.encodeToJsonElement(editor.proposal).toString(),
+                )
+            )
+        db.preparationDao()
+            .save(
+                com.valerochka1337.valerochkagym.data.ai.PreparationEntity(
+                    OWNER,
+                    "00000000-0000-4000-8000-000000000078",
+                    "{}",
+                    "[]",
+                    generation = generation,
+                    state = "READY",
+                    proposalJson =
+                        ProposalWire.json.encodeToString(
+                            editor.proposal.copy(
+                                proposalId = "66666666-6666-4666-8666-666666666666"
+                            )
+                        ),
+                    createdAtMillis = 1,
                 )
             )
         db.openHelper.writableDatabase.execSQL(

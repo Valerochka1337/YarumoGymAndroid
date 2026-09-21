@@ -16,9 +16,14 @@ fun TrainingProposalInboxScreen(
     preparationViewModel: WorkoutPreparationViewModel = hiltViewModel(),
 ) {
   val state by viewModel.uiState.collectAsStateWithLifecycle()
-  val preparation by preparationViewModel.current.collectAsStateWithLifecycle()
+  val preparations by preparationViewModel.all.collectAsStateWithLifecycle()
   LaunchedEffect(viewModel, state.inbox.bindingGeneration) { viewModel.ensureInbox() }
-  WorkoutPreparationPolling(preparation, preparationViewModel::refreshWhileVisible)
+  preparations
+      .filter {
+        it.state in
+            com.valerochka1337.valerochkagym.data.ai.WorkoutPreparationRepository.activeStates
+      }
+      .forEach { WorkoutPreparationPolling(it, preparationViewModel::refreshWhileVisible) }
   GlowBackground {
     TrainingProposalInboxContent(
         state.inbox.items,
@@ -31,7 +36,7 @@ fun TrainingProposalInboxScreen(
         onBack,
         onCreateAi = onCreateAi,
         onDelete = viewModel::delete,
-        preparation = preparation,
+        preparations = preparations,
     )
   }
 }
