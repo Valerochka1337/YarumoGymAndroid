@@ -2,7 +2,14 @@ package com.valerochka1337.valerochkagym.ui.trainingproposal
 
 import android.app.Application
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.v2.createComposeRule
@@ -11,6 +18,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.unit.Density
+import com.valerochka1337.valerochkagym.data.ai.PreparationEntity
 import com.valerochka1337.valerochkagym.data.trainingproposal.*
 import com.valerochka1337.valerochkagym.ui.theme.GymTheme
 import org.junit.Assert.assertEquals
@@ -24,6 +32,101 @@ import org.robolectric.annotation.Config
 @Config(application = Application::class, qualifiers = "w360dp-h900dp-xhdpi")
 class TrainingProposalComposeTest {
   @get:Rule val compose = createComposeRule()
+
+  @Test
+  fun `calculation is disabled and becomes an openable proposal when ready`() {
+    val preparation = mutableStateOf(PreparationEntity("owner", "request", "{}", "[]"))
+    val ready = proposal()
+    var opened: String? = null
+    compose.setContent {
+      GymTheme {
+        TrainingProposalInboxContent(
+            if (preparation.value.state == "READY") listOf(ready) else emptyList(),
+            false,
+            null,
+            false,
+            {},
+            {},
+            { opened = it },
+            {},
+            onCreateAi = {},
+            preparation = preparation.value,
+        )
+      }
+    }
+    compose
+        .onNodeWithContentDescription("Расчёт предложения")
+        .assertIsDisplayed()
+        .assertIsNotEnabled()
+        .assert(SemanticsMatcher.keyNotDefined(SemanticsActions.OnClick))
+    compose.onNodeWithText("Пока нет предложений").assertDoesNotExist()
+    compose.onNodeWithText("Ожидаем отправки и синхронизации…").assertIsDisplayed()
+    compose.runOnIdle { preparation.value = preparation.value.copy(state = "RUNNING") }
+    compose.onNodeWithText("Составляем тренировку…").assertIsDisplayed()
+    compose
+        .onAllNodes(
+            SemanticsMatcher.expectValue(
+                SemanticsProperties.ProgressBarRangeInfo,
+                ProgressBarRangeInfo.Indeterminate,
+            )
+        )
+        .assertCountEquals(1)
+    compose.runOnIdle { preparation.value = preparation.value.copy(state = "READY") }
+    compose.onNodeWithContentDescription("Расчёт предложения").assertDoesNotExist()
+    compose.onNodeWithText(ready.snapshot.draft.name).performClick()
+    compose.runOnIdle { assertEquals(ready.proposalId, opened) }
+  }
+
+  @Test
+  fun `stopped calculation leaves AI action reachable without progress at large font`() {
+    var create = 0
+    val preparation =
+        mutableStateOf(PreparationEntity("owner", "request", "{}", "[]", state = "FAILED"))
+    compose.setContent {
+      val density = LocalDensity.current
+      CompositionLocalProvider(LocalDensity provides Density(density.density, 2f)) {
+        GymTheme {
+          TrainingProposalInboxContent(
+              emptyList(),
+              false,
+              null,
+              false,
+              {},
+              {},
+              {},
+              {},
+              onCreateAi = { create++ },
+              preparation = preparation.value,
+          )
+        }
+      }
+    }
+    compose.onNodeWithContentDescription("Расчёт предложения").assertIsNotEnabled()
+    compose
+        .onAllNodes(
+            SemanticsMatcher.expectValue(
+                SemanticsProperties.ProgressBarRangeInfo,
+                ProgressBarRangeInfo.Indeterminate,
+            )
+        )
+        .assertCountEquals(0)
+    compose.onNodeWithText("Пока нет предложений").assertDoesNotExist()
+    compose.onNodeWithText("Составить с ИИ").performClick()
+    compose.runOnIdle { assertEquals(1, create) }
+    compose.runOnIdle { preparation.value = preparation.value.copy(state = "SUPERSEDED") }
+    compose.onNodeWithContentDescription("Расчёт предложения").assertIsNotEnabled()
+    compose
+        .onNodeWithText("Расчёт заменён другим запросом. При необходимости составьте план ещё раз.")
+        .assertIsDisplayed()
+    compose
+        .onAllNodes(
+            SemanticsMatcher.expectValue(
+                SemanticsProperties.ProgressBarRangeInfo,
+                ProgressBarRangeInfo.Indeterminate,
+            )
+        )
+        .assertCountEquals(0)
+  }
 
   @Test
   fun `inbox has fixed AI action and confirms proposal deletion`() {
