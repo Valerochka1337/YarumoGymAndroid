@@ -18,6 +18,7 @@ import java.io.IOException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
@@ -133,6 +134,9 @@ class RoutineDetailViewModelTest {
         MutableStateFlow(emptyList())
 
     override fun observeRoutinesFull(): Flow<List<RoutineWithExercises>> = routines
+
+    override suspend fun routinesFullOnce(): List<RoutineWithExercises> =
+        observeRoutinesFull().first()
 
     override suspend fun getRoutineWithExercises(id: Long): RoutineWithExercises? =
         routines.value.firstOrNull { it.routine.id == id }

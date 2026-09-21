@@ -3,17 +3,16 @@ package com.valerochka1337.valerochkagym.ui.trainingproposal
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.Undo
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.FitnessCenter
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -35,7 +34,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.valerochka1337.valerochkagym.data.db.PlannedSet
 import com.valerochka1337.valerochkagym.data.db.entity.ExerciseType
@@ -45,12 +43,10 @@ import com.valerochka1337.valerochkagym.data.trainingproposal.PlannerExplanation
 import com.valerochka1337.valerochkagym.data.trainingproposal.ProposalPlannedExercise
 import com.valerochka1337.valerochkagym.data.trainingproposal.ProposalPlannedSet
 import com.valerochka1337.valerochkagym.data.trainingproposal.ProposalSource
-import com.valerochka1337.valerochkagym.data.trainingproposal.ProposalStatus
 import com.valerochka1337.valerochkagym.data.trainingproposal.TrainingProposal
 import com.valerochka1337.valerochkagym.data.trainingproposal.estimatedSeconds
 import com.valerochka1337.valerochkagym.domain.PlannerDuration
 import com.valerochka1337.valerochkagym.domain.displayName
-import com.valerochka1337.valerochkagym.ui.components.ExerciseAvatar
 import com.valerochka1337.valerochkagym.ui.components.GymCard
 import com.valerochka1337.valerochkagym.ui.components.PillButton
 import com.valerochka1337.valerochkagym.ui.components.PlannedSetFields
@@ -62,8 +58,10 @@ import com.valerochka1337.valerochkagym.ui.components.displayPlanningDateTime
 import com.valerochka1337.valerochkagym.ui.components.rememberDeviceTimeZone
 import com.valerochka1337.valerochkagym.ui.components.resolvePlanningDateTime
 import com.valerochka1337.valerochkagym.ui.haptics.gymHaptics
-import com.valerochka1337.valerochkagym.ui.theme.proposalApproved
-import com.valerochka1337.valerochkagym.ui.theme.proposalPending
+import com.valerochka1337.valerochkagym.ui.routine.EditorExercise
+import com.valerochka1337.valerochkagym.ui.routine.ExerciseCard
+import com.valerochka1337.valerochkagym.ui.routine.RoutineDetailExercise
+import com.valerochka1337.valerochkagym.ui.routine.RoutineDetailExerciseCard
 import java.time.Instant
 import java.time.LocalDateTime
 import java.time.ZoneId
@@ -84,27 +82,27 @@ fun TrainingProposalInboxContent(
     onOpen: (String) -> Unit,
     onBack: () -> Unit,
     onCreateAi: (() -> Unit)? = null,
-    preparationContent: @Composable () -> Unit = {},
+    onDelete: (TrainingProposal) -> Unit = {},
 ) {
   val haptics = gymHaptics()
+  var deleteTarget by remember { mutableStateOf<TrainingProposal?>(null) }
   PlanningScreen(
-      "Планирование",
+      "Предложения",
       onBack,
+      bottomBar = {
+        if (onCreateAi != null) {
+          PillButton(
+              "Составить с ИИ",
+              onClick = {
+                haptics.confirm()
+                onCreateAi()
+              },
+              modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(16.dp),
+              leadingIcon = Icons.Rounded.AutoAwesome,
+          )
+        }
+      },
   ) {
-    if (onCreateAi != null) {
-      Text("Новая тренировка", style = MaterialTheme.typography.titleLarge)
-      Text(
-          "Составьте план с ИИ. Перед добавлением в календарь план можно проверить.",
-          style = MaterialTheme.typography.bodyMedium,
-          color = MaterialTheme.colorScheme.onSurfaceVariant,
-      )
-      FilledTonalButton(onClick = onCreateAi) {
-        Icon(Icons.Rounded.AutoAwesome, null)
-        Text("Составить с ИИ", Modifier.padding(start = 8.dp))
-      }
-    }
-    preparationContent()
-    Text("Предложения", style = MaterialTheme.typography.titleLarge)
     if (loading) {
       Text(
           "Загружаем предложения…",
@@ -126,7 +124,7 @@ fun TrainingProposalInboxContent(
       GymCard(Modifier.fillMaxWidth()) {
         Text("Пока нет предложений", style = MaterialTheme.typography.titleMedium)
         Text(
-            "Здесь появятся планы от ИИ и тренера. Готовый план можно изменить, принять или отклонить.",
+            "Здесь появятся планы от ИИ. Готовый план можно проверить и изменить.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -154,7 +152,7 @@ fun TrainingProposalInboxContent(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
           }
-          ProposalStatusBadge(proposal)
+          ProposalOverflowMenu(onDelete = { deleteTarget = proposal })
         }
       }
     }
@@ -166,6 +164,45 @@ fun TrainingProposalInboxContent(
             onMore()
           },
           modifier = Modifier.fillMaxWidth(),
+      )
+    }
+  }
+  deleteTarget?.let { proposal ->
+    AlertDialog(
+        onDismissRequest = { deleteTarget = null },
+        title = { Text("Удалить предложение?") },
+        text = { Text("Оно будет скрыто на этом устройстве.") },
+        confirmButton = {
+          TextButton(
+              onClick = {
+                haptics.reject()
+                onDelete(proposal)
+                deleteTarget = null
+              }
+          ) {
+            Text("Удалить", color = MaterialTheme.colorScheme.error)
+          }
+        },
+        dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("Отмена") } },
+    )
+  }
+}
+
+@Composable
+private fun ProposalOverflowMenu(onDelete: () -> Unit) {
+  var expanded by remember { mutableStateOf(false) }
+  Box {
+    IconButton(onClick = { expanded = true }) {
+      Icon(Icons.Rounded.MoreVert, contentDescription = "Меню предложения")
+    }
+    DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+      DropdownMenuItem(
+          text = { Text("Удалить") },
+          leadingIcon = { Icon(Icons.Rounded.Delete, contentDescription = null) },
+          onClick = {
+            expanded = false
+            onDelete()
+          },
       )
     }
   }
@@ -195,6 +232,7 @@ fun TrainingProposalDetailContent(
     copyScheduled: Boolean = false,
     onSaveCopy: (() -> Unit)? = null,
     onScheduleCopy: ((Long, String) -> Unit)? = null,
+    scheduleConflict: Boolean = false,
 ) {
   val haptics = gymHaptics()
   val invalidInputs =
@@ -216,7 +254,6 @@ fun TrainingProposalDetailContent(
   PlanningScreen(
       "Предложение",
       onBack,
-      actions = { proposal?.let { ProposalStatusBadge(it) } },
   ) {
     if (error != null) {
       Text(error, color = MaterialTheme.colorScheme.error)
@@ -237,15 +274,6 @@ fun TrainingProposalDetailContent(
       return@PlanningScreen
     }
 
-    Text(
-        inboxDescription(proposal),
-        style = MaterialTheme.typography.bodyMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-    if (applied) {
-      Text("Применено")
-    }
-
     if (!editing)
         Text(
             "План тренировки",
@@ -262,16 +290,13 @@ fun TrainingProposalDetailContent(
             },
         )
 
-    val canEdit = proposal.status == ProposalStatus.PENDING && !applied && !isExpired(proposal)
-    if (canEdit) {
-      TextButton(
-          onClick = { editing = !editing },
-          enabled = !saving && (!editing || (!transientInputInvalid && isDraftValid(draft))),
-      ) {
-        Text(if (editing) "Завершить редактирование" else "Изменить план")
-      }
+    TextButton(
+        onClick = { editing = !editing },
+        enabled = !saving && (!editing || (!transientInputInvalid && isDraftValid(draft))),
+    ) {
+      Text(if (editing) "Завершить редактирование" else "Изменить план")
     }
-    if (canEdit && editing) {
+    if (editing) {
       Column(modifier = Modifier.fillMaxWidth()) {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
           Text("Изменённый план", style = MaterialTheme.typography.titleMedium)
@@ -294,75 +319,47 @@ fun TrainingProposalDetailContent(
           }
         }
       }
-    } else if (!canEdit) {
-      Text("План можно сохранить как личную программу или запланировать на новую дату.")
     }
 
-    if (canEdit && (!isDraftValid(draft) || transientInputInvalid)) {
+    if (!isDraftValid(draft) || transientInputInvalid) {
       Text(
           "Проверьте план: нужны будущее время начала, уникальные упражнения и заполненные подходы. Исправьте значения через «Изменить план».",
           color = MaterialTheme.colorScheme.error,
       )
     }
-    when {
-      proposal.status == ProposalStatus.APPROVED && !applied -> {
-        PillButton(
-            "Загрузить результат",
-            {
-              haptics.confirm()
-              onApply()
-            },
-            enabled = !saving,
-            modifier =
-                Modifier.fillMaxWidth().semantics { contentDescription = "Загрузить результат" },
-        )
-      }
-      canEdit -> {
-        if (proposal.source == ProposalSource.AI) {
-          OutlinedTextField(
-              value = refinement,
-              onValueChange = onRefinementChange,
-              modifier = Modifier.fillMaxWidth(),
-              label = { Text("Что изменить в плане") },
-              minLines = 2,
-              enabled = !saving,
-          )
-          OutlinedButton(
-              onClick = onRefine,
-              enabled = !saving && refinement.trim().isNotEmpty() && refinement.length <= 2000,
-              modifier =
-                  Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics {
-                    contentDescription = "Уточнить предложение"
-                  },
-          ) {
-            Text("Уточнить с ИИ")
-          }
-        }
-        PillButton(
-            "Применить",
-            {
-              haptics.confirm()
-              onApply()
-            },
-            enabled = !saving && !transientInputInvalid && isDraftValid(draft),
-            modifier =
-                Modifier.fillMaxWidth().semantics { contentDescription = "Применить предложение" },
-        )
-        OutlinedButton(
-            onClick = {
-              haptics.reject()
-              onReject()
-            },
-            enabled = !saving,
-            modifier =
-                Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics {
-                  contentDescription = "Отклонить предложение"
-                },
-        ) {
-          Text("Отклонить")
-        }
+    if (proposal.source == ProposalSource.AI) {
+      OutlinedTextField(
+          value = refinement,
+          onValueChange = onRefinementChange,
+          modifier = Modifier.fillMaxWidth(),
+          label = { Text("Что изменить в плане") },
+          minLines = 2,
+          enabled = !saving,
+      )
+      OutlinedButton(
+          onClick = onRefine,
+          enabled = !saving && refinement.trim().isNotEmpty() && refinement.length <= 2000,
+          modifier =
+              Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics {
+                contentDescription = "Уточнить предложение"
+              },
+      ) {
+        Text("Уточнить с ИИ")
       }
     }
+    val canApply = !saving && !scheduleConflict && !transientInputInvalid && isDraftValid(draft)
+    PillButton(
+        "Применить",
+        {
+          haptics.confirm()
+          onApply()
+        },
+        enabled = canApply,
+        modifier =
+            Modifier.fillMaxWidth().semantics { contentDescription = "Применить предложение" },
+        supportingText =
+            if (scheduleConflict) "Тренировка на это время уже запланирована" else null,
+    )
     val canCopy =
         !saving && !transientInputInvalid && isDraftValid(draft, requireFutureStart = false)
     if (onSaveCopy != null) {
@@ -371,57 +368,17 @@ fun TrainingProposalDetailContent(
             haptics.confirm()
             onSaveCopy()
           },
-          enabled = canCopy && !copySaved,
+          enabled = canCopy,
           modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
       ) {
-        Text(if (copySaved) "Сохранено в тренировках" else "Сохранить в тренировки")
+        Text("Сохранить в тренировки")
       }
-    }
-    if (onScheduleCopy != null) {
-      var scheduling by
-          rememberSaveable(proposal.proposalId, proposal.currentVersion) { mutableStateOf(false) }
-      if (copyScheduled) {
-        Text("Добавлено в календарь")
-      } else {
-        OutlinedButton(
-            onClick = {
-              haptics.tap()
-              scheduling = !scheduling
-            },
-            enabled = canCopy,
-            modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
-        ) {
-          Text(if (scheduling) "Отмена" else "Запланировать на другую дату")
-        }
-        if (scheduling) {
-          val deviceZone = rememberDeviceTimeZone()
-          val initial =
-              remember(proposal.proposalId) {
-                java.time.ZonedDateTime.now(deviceZone).plusHours(1).withSecond(0).withNano(0)
-              }
-          var date by
-              rememberSaveable(proposal.proposalId) {
-                mutableStateOf(initial.toLocalDate().toString())
-              }
-          var time by
-              rememberSaveable(proposal.proposalId) {
-                mutableStateOf(initial.toLocalTime().toString())
-              }
-          PlanningDateTimeFields(date, time, deviceZone.id, { date = it }, { time = it }, {})
-          val start = resolvePlanningDateTime(date, time, deviceZone)
-          val instant = (start as? PlanningDateTimeResolution.Resolved)?.instantMillis
-          PillButton(
-              "Добавить в календарь",
-              {
-                if (instant != null) {
-                  haptics.confirm()
-                  onScheduleCopy(instant, deviceZone.id)
-                }
-              },
-              enabled = canCopy && instant != null && instant > System.currentTimeMillis(),
-              modifier = Modifier.fillMaxWidth(),
-          )
-        }
+      if (copySaved) {
+        Text(
+            "Сохранено в тренировках",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
       }
     }
   }
@@ -458,38 +415,23 @@ private fun ProposalDraftSummary(
   )
   explanationContent()
   Text("Упражнения", style = MaterialTheme.typography.titleMedium)
-  draft.exercises.forEach { exercise ->
+  draft.exercises.forEachIndexed { index, exercise ->
     val exerciseName = exerciseChoices.nameFor(exercise.exerciseId) ?: "Упражнение недоступно"
-    GymCard(
-        Modifier.fillMaxWidth(),
-        contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp),
-    ) {
-      Row(
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(12.dp),
-      ) {
-        ExerciseAvatar(name = exerciseName)
-        Text(
-            exerciseName,
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.weight(1f),
-        )
-      }
-      Spacer(Modifier.height(8.dp))
-      exercise.plannedSets.forEachIndexed { setIndex, set ->
-        Text(
-            "${setIndex + 1} · ${setSummary(set)}",
-            modifier = Modifier.padding(vertical = 2.dp),
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-      }
-      exercise.restSeconds?.let {
-        Spacer(Modifier.height(8.dp))
-        ProposalMetaRow(Icons.Rounded.Timer, "Отдых · $it сек")
-      }
-    }
+    val type = exercise.inferredType()
+    RoutineDetailExerciseCard(
+        exercise =
+            RoutineDetailExercise(
+                id = index.toLong(),
+                name = exerciseName,
+                type = type,
+                restSeconds = exercise.restSeconds,
+                plannedSets =
+                    exercise.plannedSets.map {
+                      PlannedSet(it.weightKg, it.reps, it.durationSec, it.speedKmh, it.inclinePct)
+                    },
+            ),
+        onClick = null,
+    )
   }
 }
 
@@ -505,62 +447,6 @@ private fun ProposalMetaRow(icon: androidx.compose.ui.graphics.vector.ImageVecto
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.weight(1f),
-    )
-  }
-}
-
-@Composable
-private fun ProposalStatusBadge(proposal: TrainingProposal) {
-  var showExplanation by rememberSaveable(proposal.proposalId) { mutableStateOf(false) }
-  val haptics = gymHaptics()
-  val expired = proposal.status == ProposalStatus.PENDING && isExpired(proposal)
-  val label = if (expired) "Срок действия истёк" else statusLabel(proposal.status)
-  val icon =
-      when {
-        expired -> Icons.Rounded.EventBusy
-        proposal.status == ProposalStatus.PENDING -> Icons.Rounded.HourglassTop
-        proposal.status == ProposalStatus.APPROVED -> Icons.Rounded.CheckCircle
-        proposal.status == ProposalStatus.REJECTED -> Icons.Rounded.Cancel
-        proposal.status == ProposalStatus.REVOKED -> Icons.AutoMirrored.Rounded.Undo
-        else -> Icons.Rounded.Update
-      }
-  val color =
-      when {
-        expired -> MaterialTheme.colorScheme.onSurfaceVariant
-        proposal.status == ProposalStatus.PENDING -> MaterialTheme.colorScheme.proposalPending
-        proposal.status == ProposalStatus.APPROVED -> MaterialTheme.colorScheme.proposalApproved
-        proposal.status == ProposalStatus.REJECTED -> MaterialTheme.colorScheme.error
-        else -> MaterialTheme.colorScheme.onSurfaceVariant
-      }
-  IconButton(
-      onClick = {
-        haptics.tap()
-        showExplanation = true
-      }
-  ) {
-    Icon(icon, "Статус: $label", modifier = Modifier.size(28.dp), tint = color)
-  }
-  if (showExplanation) {
-    AlertDialog(
-        onDismissRequest = { showExplanation = false },
-        icon = { Icon(icon, null, tint = color) },
-        title = { Text(label) },
-        text = {
-          Text(
-              when {
-                expired -> "Время на решение истекло. Подготовьте новое предложение."
-                proposal.status == ProposalStatus.PENDING ->
-                    "Проверьте план, затем примите или отклоните его."
-                proposal.status == ProposalStatus.APPROVED ->
-                    "Предложение принято. План добавлен в календарь."
-                proposal.status == ProposalStatus.REJECTED ->
-                    "Предложение отклонено и не будет добавлено в календарь."
-                proposal.status == ProposalStatus.REVOKED -> "Автор отозвал предложение."
-                else -> "Данные изменились. Для актуального плана нужен новый расчёт."
-              }
-          )
-        },
-        confirmButton = { TextButton(onClick = { showExplanation = false }) { Text("Понятно") } },
     )
   }
 }
@@ -736,86 +622,30 @@ private fun ExerciseEditor(
     onSetRemoved: () -> Unit,
     onExerciseRemoved: () -> Unit,
 ) {
-  GymCard(modifier = Modifier.fillMaxWidth()) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-      Row(verticalAlignment = Alignment.CenterVertically) {
-        ExerciseAvatar(
-            name = exerciseChoices.nameFor(exercise.exerciseId) ?: "Недоступное упражнение",
-            type = exerciseType,
-        )
-        Text(
-            exerciseChoices.nameFor(exercise.exerciseId) ?: "Недоступное упражнение",
-            Modifier.weight(1f).padding(start = 12.dp),
-            style = MaterialTheme.typography.titleMedium,
-        )
-      }
-      if (exercise.exerciseId !in availableExerciseIds)
-          Text(
-              "Упражнение недоступно в выбранных залах. Замените его или измените залы.",
-              color = MaterialTheme.colorScheme.error,
-          )
-      var replacing by rememberSaveable { mutableStateOf(false) }
-      TextButton(onClick = { replacing = true }) { Text("Заменить") }
-      if (replacing)
-          PlanningChoiceSheet(
-              "Заменить упражнение",
-              exerciseChoices.filter { (id, _) ->
-                id in availableExerciseIds && allExercises.none { it.exerciseId == id }
+  val editorExercise =
+      EditorExercise(
+          editorId = exercise.exerciseId,
+          exerciseId = exerciseIndex.toLong(),
+          exerciseName = exerciseChoices.nameFor(exercise.exerciseId) ?: "Недоступное упражнение",
+          exerciseType = exerciseType,
+          restSeconds = exercise.restSeconds,
+          plannedSets =
+              exercise.plannedSets.map {
+                PlannedSet(it.weightKg, it.reps, it.durationSec, it.speedKmh, it.inclinePct)
               },
-              emptySet(),
-              { id ->
-                val type = exerciseTypes[id] ?: exerciseType
-                onSetRemoved()
-                onChange(
-                    allExercises.replaceAt(exerciseIndex, exercise.replacingExercise(id, type))
-                )
-              },
-              { replacing = false },
-              singleChoice = true,
-          )
-
-      com.valerochka1337.valerochkagym.ui.components.NumberField(
-          value = exercise.restSeconds?.toString().orEmpty(),
-          label = "Отдых, сек",
-          modifier = Modifier.fillMaxWidth(),
-          onValueChange = { value ->
-            onChange(
-                allExercises.replaceAt(
-                    exerciseIndex,
-                    exercise.copy(restSeconds = value.toIntOrNull()),
-                )
-            )
-          },
       )
-      exercise.plannedSets.forEachIndexed { setIndex, plannedSet ->
-        SetEditor(
-            exerciseType = exerciseType,
-            exerciseIndex = exerciseIndex,
-            setIndex = setIndex,
-            plannedSet = plannedSet,
-            onInvalid = onInvalid,
-            validationEpoch = validationEpoch,
-            onChange = { changedSet ->
-              val sets = exercise.plannedSets.replaceAt(setIndex, changedSet)
-              onChange(allExercises.replaceAt(exerciseIndex, exercise.copy(plannedSets = sets)))
-            },
-            onRemove = {
-              onSetRemoved()
-              onChange(
-                  allExercises.replaceAt(
-                      exerciseIndex,
-                      exercise.copy(
-                          plannedSets =
-                              exercise.plannedSets.toMutableList().also { it.removeAt(setIndex) }
-                      ),
-                  )
-              )
-            },
-        )
-      }
-      TextButton(
-          enabled = exercise.plannedSets.size < 20,
-          onClick = {
+  ExerciseCard(
+      exercise = editorExercise,
+      dragHandle = {},
+      onRemove = {
+        onExerciseRemoved()
+        onChange(allExercises.toMutableList().also { it.removeAt(exerciseIndex) })
+      },
+      onRestChange = { rest ->
+        onChange(allExercises.replaceAt(exerciseIndex, exercise.copy(restSeconds = rest)))
+      },
+      onAddSet = {
+        if (exercise.plannedSets.size < 20)
             onChange(
                 allExercises.replaceAt(
                     exerciseIndex,
@@ -826,38 +656,66 @@ private fun ExerciseEditor(
                     ),
                 )
             )
+      },
+      onRemoveSet = { setIndex ->
+        onSetRemoved()
+        onChange(
+            allExercises.replaceAt(
+                exerciseIndex,
+                exercise.copy(
+                    plannedSets =
+                        exercise.plannedSets.toMutableList().also { it.removeAt(setIndex) }
+                ),
+            )
+        )
+      },
+      onSetChange = { setIndex, set ->
+        onChange(
+            allExercises.replaceAt(
+                exerciseIndex,
+                exercise.copy(
+                    plannedSets =
+                        exercise.plannedSets.replaceAt(
+                            setIndex,
+                            ProposalPlannedSet(
+                                set.weightKg,
+                                set.reps,
+                                set.durationSec,
+                                set.speedKmh,
+                                set.inclinePct,
+                            ),
+                        ),
+                ),
+            )
+        )
+      },
+  )
+  if (exercise.exerciseId !in availableExerciseIds)
+      Text(
+          "Упражнение недоступно в выбранных залах. Замените его или измените залы.",
+          color = MaterialTheme.colorScheme.error,
+      )
+  var replacing by rememberSaveable(exercise.exerciseId) { mutableStateOf(false) }
+  TextButton(onClick = { replacing = true }) { Text("Заменить") }
+  if (replacing)
+      PlanningChoiceSheet(
+          "Заменить упражнение",
+          exerciseChoices.filter { (id, _) ->
+            id in availableExerciseIds && allExercises.none { it.exerciseId == id }
           },
-          modifier = Modifier.heightIn(min = 48.dp),
-      ) {
-        Text("Добавить подход")
-      }
-      FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        TextButton(
-            onClick = { onChange(allExercises.move(exerciseIndex, exerciseIndex - 1)) },
-            enabled = exerciseIndex > 0,
-            modifier = Modifier.heightIn(min = 48.dp),
-        ) {
-          Text("Выше")
-        }
-        TextButton(
-            onClick = { onChange(allExercises.move(exerciseIndex, exerciseIndex + 1)) },
-            enabled = exerciseIndex < allExercises.lastIndex,
-            modifier = Modifier.heightIn(min = 48.dp),
-        ) {
-          Text("Ниже")
-        }
-        TextButton(
-            onClick = {
-              onExerciseRemoved()
-              onChange(allExercises.toMutableList().also { it.removeAt(exerciseIndex) })
-            },
-            modifier = Modifier.heightIn(min = 48.dp),
-        ) {
-          Text("Удалить упражнение")
-        }
-      }
-    }
-  }
+          emptySet(),
+          { id ->
+            onSetRemoved()
+            onChange(
+                allExercises.replaceAt(
+                    exerciseIndex,
+                    exercise.replacingExercise(id, exerciseTypes[id] ?: exerciseType),
+                )
+            )
+          },
+          { replacing = false },
+          singleChoice = true,
+      )
 }
 
 @Composable
@@ -935,20 +793,9 @@ private fun isPlannedSetValid(plannedSet: ProposalPlannedSet): Boolean {
       (plannedSet.durationSec == null || plannedSet.durationSec in 1..1_000_000)
 }
 
+@Composable
 private fun inboxDescription(proposal: TrainingProposal): String =
-    "Версия ${proposal.currentVersion}"
-
-private fun statusLabel(status: ProposalStatus): String =
-    when (status) {
-      ProposalStatus.PENDING -> "Ожидает решения"
-      ProposalStatus.APPROVED -> "Принято"
-      ProposalStatus.REJECTED -> "Отклонено"
-      ProposalStatus.REVOKED -> "Отозвано"
-      ProposalStatus.STALE -> "Устарело"
-    }
-
-private fun isExpired(proposal: TrainingProposal): Boolean =
-    proposal.expiresAt <= System.currentTimeMillis()
+    "Начало: ${formatStart(proposal.snapshot.draft.startsAtMillis, proposal.snapshot.draft.timeZoneId)}"
 
 @Composable
 private fun formatStart(startsAtMillis: Long, timeZoneId: String): String {

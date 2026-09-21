@@ -281,7 +281,7 @@ internal fun RoutineDetailContent(
 }
 
 @Composable
-private fun RoutineDetailExerciseCard(
+internal fun RoutineDetailExerciseCard(
     exercise: RoutineDetailExercise,
     onClick: ((Long) -> Unit)?,
 ) {

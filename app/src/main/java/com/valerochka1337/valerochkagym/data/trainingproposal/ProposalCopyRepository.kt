@@ -6,12 +6,14 @@ import com.valerochka1337.valerochkagym.data.backend.BackendSessionStore
 import com.valerochka1337.valerochkagym.data.backend.BackendSync
 import com.valerochka1337.valerochkagym.data.calendar.CalendarMigrationGate
 import com.valerochka1337.valerochkagym.data.calendar.CalendarTimeResolver
+import com.valerochka1337.valerochkagym.data.calendar.ProposalScheduleConflict
 import com.valerochka1337.valerochkagym.data.db.GymDatabase
 import com.valerochka1337.valerochkagym.data.db.PlannedSet
 import com.valerochka1337.valerochkagym.data.db.entity.CalendarPlanEntity
 import com.valerochka1337.valerochkagym.data.db.entity.ExerciseType
 import com.valerochka1337.valerochkagym.data.db.entity.RoutineEntity
 import com.valerochka1337.valerochkagym.data.db.entity.RoutineExerciseEntity
+import com.valerochka1337.valerochkagym.di.ComputeDispatcher
 import com.valerochka1337.valerochkagym.domain.GymRepository
 import com.valerochka1337.valerochkagym.domain.RoutineConfigurationDraft
 import com.valerochka1337.valerochkagym.domain.SaveRoutineConfigurationResult
@@ -21,6 +23,10 @@ import java.time.ZoneId
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.sync.withLock
 
 /** A personal copy is independent of the proposal's expired approval and server receipt. */
@@ -35,7 +41,19 @@ constructor(
     private val calendarMigration: CalendarMigrationGate,
     private val uploads: RoutineUploadScheduler,
     private val clock: WallClock,
+    @param:ComputeDispatcher private val computeDispatcher: CoroutineDispatcher,
 ) {
+  fun observeScheduleConflict(draft: ApprovalDraft): Flow<Boolean> =
+      combine(
+              database.calendarPlanDao().observePlansWithRoutines(),
+              database.calendarPlanDao().observeRulesWithRoutines(),
+              database.calendarPlanDao().observeExceptions(),
+              database.routineDao().observeRoutinesFull(),
+          ) { plans, rules, exceptions, routines ->
+            ProposalScheduleConflict.hasConflict(draft, plans, rules, exceptions, routines)
+          }
+          .flowOn(computeDispatcher)
+
   suspend fun save(
       editor: ProposalEditor,
       operationId: String,
@@ -96,6 +114,33 @@ constructor(
                           },
                   )
                 }
+            val planId =
+                startsAtMillis?.let {
+                  if (it <= clock.nowMillis())
+                      throw BackendException(
+                          400,
+                          "proposal_copy_date",
+                          "Выберите будущее время тренировки",
+                      )
+                  CalendarTimeResolver.requirePlanInstant(it, ZoneId.of(timeZoneId))
+                  UUID.nameUUIDFromBytes("proposal-copy-plan:$operationId".toByteArray()).toString()
+                }
+            if (
+                startsAtMillis != null &&
+                    ProposalScheduleConflict.hasConflict(
+                        draft.copy(startsAtMillis = startsAtMillis, timeZoneId = timeZoneId),
+                        database.calendarPlanDao().plansWithRoutines(),
+                        database.calendarPlanDao().rulesWithRoutines(),
+                        database.calendarPlanDao().allExceptions(),
+                        database.routineDao().routinesFullOnce(),
+                        excludedPlanId = planId,
+                    )
+            )
+                throw BackendException(
+                    409,
+                    "proposal_copy_conflict",
+                    "В это время уже запланирована тренировка",
+                )
             val result =
                 routines.saveRoutineConfiguration(
                     RoutineConfigurationDraft(
@@ -121,17 +166,9 @@ constructor(
                       )
                 }
             if (startsAtMillis != null) {
-              if (startsAtMillis <= clock.nowMillis())
-                  throw BackendException(
-                      400,
-                      "proposal_copy_date",
-                      "Выберите будущее время тренировки",
-                  )
-              CalendarTimeResolver.requirePlanInstant(startsAtMillis, ZoneId.of(timeZoneId))
-              val planId =
-                  UUID.nameUUIDFromBytes("proposal-copy-plan:$operationId".toByteArray()).toString()
-              val plan = CalendarPlanEntity(planId, routine.id, startsAtMillis, timeZoneId)
-              val existing = database.calendarPlanDao().plan(planId)
+              val nonNullPlanId = requireNotNull(planId)
+              val plan = CalendarPlanEntity(nonNullPlanId, routine.id, startsAtMillis, timeZoneId)
+              val existing = database.calendarPlanDao().plan(nonNullPlanId)
               if (existing != null && existing != plan)
                   throw BackendException(
                       409,

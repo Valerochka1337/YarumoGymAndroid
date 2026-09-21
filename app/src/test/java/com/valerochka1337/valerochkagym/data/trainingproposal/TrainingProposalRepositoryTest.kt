@@ -1,10 +1,16 @@
 package com.valerochka1337.valerochkagym.data.trainingproposal
 
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.emptyPreferences
 import com.valerochka1337.valerochkagym.data.RoomDaoTest
 import com.valerochka1337.valerochkagym.data.backend.*
+import com.valerochka1337.valerochkagym.data.calendar.ProposalScheduleConflict
 import com.valerochka1337.valerochkagym.data.db.entity.*
 import com.valerochka1337.valerochkagym.service.WallClock
 import java.io.IOException
+import java.time.LocalDate
+import java.time.ZoneOffset
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -22,6 +28,7 @@ import org.junit.Test
 
 class TrainingProposalRepositoryTest : RoomDaoTest() {
   private val repositoryScopes = mutableListOf<CoroutineScope>()
+  private val proposalStore = FakeDataStore()
 
   @After
   fun cancelRepositoryScopes() {
@@ -257,6 +264,7 @@ class TrainingProposalRepositoryTest : RoomDaoTest() {
             store,
             sync,
             WallClock { 1000 },
+            proposalStore,
             CoroutineScope(SupervisorJob() + Dispatchers.Unconfined).also(repositoryScopes::add),
         )
     return Fixture(store, server, sync, repo, repositoryScopes.last())
@@ -276,6 +284,29 @@ class TrainingProposalRepositoryTest : RoomDaoTest() {
         emptyList<TrainingProposal>(),
         (f.repository.inbox.value as ProposalInboxState.Content).content.items,
     )
+  }
+
+  @Test
+  fun `deleted proposal stays absent after recreation and ready overlay`() = runTest {
+    val f = fixture(readyBeforeRepository = Server::proposal)
+    val proposal = f.server.proposal()
+    f.repository.delete(proposal)
+    val recreated =
+        TrainingProposalRepository(
+            db,
+            TrainingProposalApi(f.server, f.store),
+            f.store,
+            f.sync,
+            WallClock { 1000 },
+            proposalStore,
+            f.scope,
+        )
+
+    recreated.ensureInitialLoad()
+    val inbox = awaitInbox(recreated) { it is ProposalInboxState.Content }
+
+    assertTrue((inbox as ProposalInboxState.Content).content.items.isEmpty())
+    assertTrue(runCatching { recreated.open(PROPOSAL) }.isFailure)
   }
 
   @Test
@@ -528,6 +559,7 @@ class TrainingProposalRepositoryTest : RoomDaoTest() {
                 f.store,
                 f.sync,
                 WallClock { 1000 },
+                proposalStore,
                 f.scope,
             )
         val restored = recreated.open(PROPOSAL)
@@ -764,6 +796,7 @@ class TrainingProposalRepositoryTest : RoomDaoTest() {
           },
           com.valerochka1337.valerochkagym.worker.NoOpRoutineUploadScheduler,
           WallClock { 1000 },
+          Dispatchers.Unconfined,
       )
 
   @Test
@@ -809,6 +842,95 @@ class TrainingProposalRepositoryTest : RoomDaoTest() {
       }
 
   @Test
+  fun `overlapping scheduled copy rolls back while an unscheduled second copy remains valid`() =
+      runTest {
+        val f = fixture()
+        val editor = f.repository.open(PROPOSAL)
+        val copies = copies(f)
+        copies.save(editor, "66666666-6666-4666-8666-666666666666", editor.draft.startsAtMillis)
+
+        assertTrue(
+            runCatching {
+                  copies.save(
+                      editor,
+                      "77777777-7777-4777-8777-777777777777",
+                      editor.draft.startsAtMillis,
+                  )
+                }
+                .isFailure
+        )
+        assertEquals(1, db.routineDao().observeRoutinesFull().first().size)
+        assertEquals(1, db.calendarPlanDao().planCount())
+
+        copies.save(editor, "77777777-7777-4777-8777-777777777777")
+        assertEquals(2, db.routineDao().observeRoutinesFull().first().size)
+        assertEquals(1, db.calendarPlanDao().planCount())
+      }
+
+  @Test
+  fun `same start conflicts with an empty routine plan`() = runTest {
+    val f = fixture()
+    val editor = f.repository.open(PROPOSAL)
+    val emptyRoutineId = db.routineDao().upsertRoutine(RoutineEntity(name = "Пустая программа"))
+    db.calendarPlanDao()
+        .insertPlan(
+            CalendarPlanEntity(
+                "88888888-8888-4888-8888-888888888888",
+                emptyRoutineId,
+                editor.draft.startsAtMillis,
+                "UTC",
+            )
+        )
+
+    assertTrue(
+        runCatching {
+              copies(f)
+                  .save(
+                      editor,
+                      "99999999-9999-4999-8999-999999999999",
+                      editor.draft.startsAtMillis,
+                  )
+            }
+            .isFailure
+    )
+    assertEquals(1, db.routineDao().observeRoutinesFull().first().size)
+    assertEquals(1, db.calendarPlanDao().planCount())
+  }
+
+  @Test
+  fun `recurring plan conflicts with a candidate when no operation plan is excluded`() = runTest {
+    val f = fixture()
+    val date = LocalDate.of(2030, 1, 7)
+    val start = date.atStartOfDay().toInstant(ZoneOffset.UTC).toEpochMilli()
+    val editor =
+        f.repository
+            .open(PROPOSAL)
+            .copy(draft = f.repository.open(PROPOSAL).draft.copy(startsAtMillis = start))
+    val routine = copies(f).save(editor, java.util.UUID.randomUUID().toString())
+    db.calendarPlanDao()
+        .insertRule(
+            CalendarRuleEntity(
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                routine.id,
+                date.dayOfWeek.value,
+                "00:00",
+                "UTC",
+                date.toString(),
+            )
+        )
+
+    assertTrue(
+        ProposalScheduleConflict.hasConflict(
+            editor.draft,
+            db.calendarPlanDao().plansWithRoutines(),
+            db.calendarPlanDao().rulesWithRoutines(),
+            db.calendarPlanDao().allExceptions(),
+            db.routineDao().routinesFullOnce(),
+        )
+    )
+  }
+
+  @Test
   fun `calendar copy failure rolls back the new program and an account change blocks copying`() =
       runTest {
         val f = fixture()
@@ -832,6 +954,14 @@ class TrainingProposalRepositoryTest : RoomDaoTest() {
     const val ROUTINE = "33333333-3333-4333-8333-333333333333"
     const val PLAN = "44444444-4444-4444-8444-444444444444"
     const val EXERCISE = "55555555-5555-4555-8555-555555555555"
+  }
+
+  private class FakeDataStore(initial: Preferences = emptyPreferences()) : DataStore<Preferences> {
+    private val state = MutableStateFlow(initial)
+    override val data = state
+
+    override suspend fun updateData(transform: suspend (Preferences) -> Preferences): Preferences =
+        transform(state.value).also { state.value = it }
   }
 }
 

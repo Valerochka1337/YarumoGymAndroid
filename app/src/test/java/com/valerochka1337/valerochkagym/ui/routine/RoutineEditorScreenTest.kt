@@ -25,6 +25,7 @@ import com.valerochka1337.valerochkagym.data.db.relation.RoutineWithExercises
 import com.valerochka1337.valerochkagym.ui.navigation.GymRoutes
 import com.valerochka1337.valerochkagym.ui.theme.GymTheme
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -163,6 +164,9 @@ class RoutineEditorScreenTest {
     override fun observeRoutinesWithCount(): Flow<List<RoutineWithCount>> = flowOf(emptyList())
 
     override fun observeRoutinesFull(): Flow<List<RoutineWithExercises>> = flowOf(listOf(routine))
+
+    override suspend fun routinesFullOnce(): List<RoutineWithExercises> =
+        observeRoutinesFull().first()
 
     override suspend fun getRoutineWithExercises(id: Long): RoutineWithExercises? =
         routine.takeIf { it.routine.id == id }

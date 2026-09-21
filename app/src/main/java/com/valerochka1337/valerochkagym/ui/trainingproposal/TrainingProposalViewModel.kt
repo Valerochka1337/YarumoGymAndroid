@@ -25,6 +25,7 @@ data class TrainingProposalUiState(
     val explanation: PlannerExplanation? = null,
     val loading: Boolean = false,
     val saving: Boolean = false,
+    val scheduleConflict: Boolean = false,
     val refinement: String = "",
     val copySaved: Boolean = false,
     val copyScheduled: Boolean = false,
@@ -69,6 +70,15 @@ constructor(
           .distinctUntilChanged()
           .flatMapLatest(gymRepository::observeAvailableExercises)
 
+  @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+  private val scheduleConflict =
+      mutableState
+          .map { it.editor?.draft }
+          .distinctUntilChanged()
+          .flatMapLatest { draft ->
+            if (draft == null) flowOf(false) else copies.observeScheduleConflict(draft)
+          }
+
   val uiState =
       combine(
               mutableState,
@@ -87,6 +97,7 @@ constructor(
                 gymChoices = gymList.filterNot { it.archived }.map { it.syncId to it.name },
             )
           }
+          .combine(scheduleConflict) { state, conflict -> state.copy(scheduleConflict = conflict) }
           .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), TrainingProposalUiState())
 
   init {
@@ -127,8 +138,8 @@ constructor(
               it.copy(
                   editor = editor,
                   loading = false,
-                  copySaved = savedState.get<Boolean>("${copyKey(editor)}.saved") == true,
-                  copyScheduled = savedState.get<Boolean>("${copyKey(editor)}.scheduled") == true,
+                  copySaved = false,
+                  copyScheduled = false,
                   refinement =
                       refinementKey(editor)?.let { key -> savedState.get<String>(key) }.orEmpty(),
               )
@@ -159,11 +170,7 @@ constructor(
     if (mutableState.value.saving) return
     if (draft == editor.draft) return
     val token = generation
-    if (draft != editor.draft) {
-      savedState.remove<String>("${copyKey(editor)}.operation")
-      savedState.remove<Boolean>("${copyKey(editor)}.saved")
-      savedState.remove<Boolean>("${copyKey(editor)}.scheduled")
-    }
+    if (draft != editor.draft) savedState.remove<String>("${copyKey(editor)}.operation")
     mutableState.update {
       it.copy(
           editor = editor.copy(draft = draft),
@@ -194,6 +201,24 @@ constructor(
 
   fun scheduleCopy(startsAtMillis: Long, timeZoneId: String) = copyPlan(startsAtMillis, timeZoneId)
 
+  fun applyCopy() {
+    val draft = mutableState.value.editor?.draft ?: return
+    copyPlan(draft.startsAtMillis, draft.timeZoneId)
+  }
+
+  fun delete(proposal: TrainingProposal) {
+    if (mutableState.value.saving) return
+    viewModelScope.launch {
+      try {
+        repository.delete(proposal)
+      } catch (error: CancellationException) {
+        throw error
+      } catch (error: Exception) {
+        mutableState.update { it.copy(error = message(error)) }
+      }
+    }
+  }
+
   private fun copyKey(editor: ProposalEditor) =
       "proposal_copy.${editor.session.tokens.userId}.${editor.session.epoch}.${editor.proposal.proposalId}.${editor.proposal.currentVersion}"
 
@@ -212,11 +237,8 @@ constructor(
           if (token != generation || !repository.isCurrent(editor.session)) return@withLock
           copies.save(editor, operation, startsAtMillis, timeZoneId ?: editor.draft.timeZoneId)
           if (token == generation && repository.isCurrent(editor.session)) {
-            savedState["$key.saved"] = true
-            if (startsAtMillis != null) savedState["$key.scheduled"] = true
-            mutableState.update {
-              it.copy(copySaved = true, copyScheduled = it.copyScheduled || startsAtMillis != null)
-            }
+            savedState.remove<String>("$key.operation")
+            mutableState.update { it.copy(copySaved = true) }
           }
         } catch (error: CancellationException) {
           throw error

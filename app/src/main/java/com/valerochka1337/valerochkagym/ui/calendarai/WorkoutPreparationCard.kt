@@ -89,13 +89,7 @@ fun WorkoutPreparationCard(
   val row by viewModel.current.collectAsStateWithLifecycle()
   val retrying by viewModel.retrying.collectAsStateWithLifecycle()
   val error by viewModel.error.collectAsStateWithLifecycle()
-  val lifecycle = LocalLifecycleOwner.current.lifecycle
-  val requestId = row?.requestId
-  LaunchedEffect(lifecycle, requestId, row?.state in WorkoutPreparationRepository.activeStates) {
-    if (requestId != null && row?.state in WorkoutPreparationRepository.activeStates) {
-      pollWorkoutPreparationWhileResumed(lifecycle, requestId, viewModel::refreshWhileVisible)
-    }
-  }
+  WorkoutPreparationPolling(row, viewModel::refreshWhileVisible)
   if (row != null)
       WorkoutPreparationCardContent(
           row,
@@ -105,6 +99,27 @@ fun WorkoutPreparationCard(
           retrying = retrying,
           retryError = error,
       )
+}
+
+/** Keeps an active AI preparation refreshing when its visible card is hosted elsewhere. */
+@Composable
+fun WorkoutPreparationPolling(
+    row: PreparationEntity?,
+    refreshWhileVisible: suspend (String) -> Unit,
+) {
+  val lifecycle = LocalLifecycleOwner.current.lifecycle
+  val requestId = row?.requestId
+  LaunchedEffect(lifecycle, requestId, row?.state in WorkoutPreparationRepository.activeStates) {
+    if (requestId != null && row?.state in WorkoutPreparationRepository.activeStates) {
+      pollWorkoutPreparationWhileResumed(lifecycle, requestId, refreshWhileVisible)
+    }
+  }
+}
+
+@Composable
+fun WorkoutPreparationPolling(viewModel: WorkoutPreparationViewModel = hiltViewModel()) {
+  val row by viewModel.current.collectAsStateWithLifecycle()
+  WorkoutPreparationPolling(row, viewModel::refreshWhileVisible)
 }
 
 @Composable
