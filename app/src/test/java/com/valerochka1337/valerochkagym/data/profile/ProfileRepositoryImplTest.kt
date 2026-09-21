@@ -10,12 +10,17 @@ import com.valerochka1337.valerochkagym.data.db.entity.ExerciseEntity
 import com.valerochka1337.valerochkagym.data.db.entity.ExerciseType
 import com.valerochka1337.valerochkagym.data.db.entity.KeyExercisePriority
 import com.valerochka1337.valerochkagym.data.db.entity.MuscleGroup
+import com.valerochka1337.valerochkagym.data.db.entity.PlannerExerciseAccent
+import com.valerochka1337.valerochkagym.data.db.entity.PlannerExerciseAccentMarkerEntity
+import com.valerochka1337.valerochkagym.data.db.entity.PlannerExerciseAccentV2Entity
 import com.valerochka1337.valerochkagym.data.db.entity.PlannerExercisePreference
+import com.valerochka1337.valerochkagym.data.db.entity.PlannerExercisePreferenceEntity
 import com.valerochka1337.valerochkagym.data.db.entity.ProfileEntity
 import com.valerochka1337.valerochkagym.data.db.entity.ProfileEquipmentPreferenceEntity
 import com.valerochka1337.valerochkagym.domain.BasicProfile
 import com.valerochka1337.valerochkagym.domain.ExperienceLevel
 import com.valerochka1337.valerochkagym.domain.KeyExerciseChoice
+import com.valerochka1337.valerochkagym.domain.PlannerExerciseAccentEdit
 import com.valerochka1337.valerochkagym.domain.PlannerExerciseChoice
 import com.valerochka1337.valerochkagym.domain.ProfileSaveResult
 import com.valerochka1337.valerochkagym.domain.ProfileSex
@@ -59,6 +64,169 @@ class ProfileRepositoryImplTest : RoomDaoTest() {
   ): Pair<ProfileRepositoryImpl, BackendSync> {
     val sync = BackendSync(db, Server, store)
     return ProfileRepositoryImpl(db, db.profileDao(), sync, store, WallClock { now }) to sync
+  }
+
+  @Test
+  fun `first v2 accent edit applies its deletion to current legacy choices and invalid new choice rolls back`() =
+      runTest {
+        val (repository, _) = repository(Store())
+        val target = requireNotNull(repository.openEditor()).target
+        val removed = "11111111-1111-1111-1111-111111111111"
+        val stale = "22222222-2222-2222-2222-222222222222"
+        val invalid = "33333333-3333-3333-3333-333333333333"
+        db.plannerExercisePreferenceDao()
+            .upsert(
+                listOf(
+                    PlannerExercisePreferenceEntity(
+                        "GUEST",
+                        removed,
+                        PlannerExercisePreference.LESS,
+                    ),
+                    PlannerExercisePreferenceEntity(
+                        "GUEST",
+                        stale,
+                        PlannerExercisePreference.NEVER,
+                    ),
+                )
+            )
+
+        assertEquals(
+            ProfileSaveResult.Saved,
+            repository.saveWithStrength(
+                target,
+                BasicProfile(trainingGoal = TrainingGoal.ENDURANCE),
+                emptyList(),
+                plannerPreferences = null,
+                plannerAccentEdits = listOf(PlannerExerciseAccentEdit(removed, null)),
+            ),
+        )
+        assertTrue(db.plannerExerciseAccentV2Dao().hasMarker("GUEST"))
+        assertEquals(
+            listOf(stale),
+            db.plannerExerciseAccentV2Dao().get("GUEST").map { it.exerciseSyncId },
+        )
+        assertEquals(TrainingGoal.ENDURANCE.name, db.profileDao().get("GUEST")?.trainingGoal)
+
+        assertEquals(
+            ProfileSaveResult.Invalid,
+            repository.saveWithStrength(
+                target,
+                BasicProfile(trainingGoal = TrainingGoal.STRENGTH),
+                emptyList(),
+                plannerPreferences = null,
+                plannerAccentEdits =
+                    listOf(PlannerExerciseAccentEdit(invalid, PlannerExerciseAccent.NORMAL)),
+            ),
+        )
+        assertEquals(TrainingGoal.ENDURANCE.name, db.profileDao().get("GUEST")?.trainingGoal)
+        assertEquals(
+            listOf(stale),
+            db.plannerExerciseAccentV2Dao().get("GUEST").map { it.exerciseSyncId },
+        )
+      }
+
+  @Test
+  fun `first accent edit retains a legacy choice imported after the editor snapshot`() = runTest {
+    val (repository, _) = repository(Store())
+    val target = requireNotNull(repository.openEditor()).target
+    val removed = "11111111-1111-1111-1111-111111111111"
+    val importedAfterSnapshot = "22222222-2222-2222-2222-222222222222"
+    db.plannerExercisePreferenceDao()
+        .upsert(
+            listOf(
+                PlannerExercisePreferenceEntity("GUEST", removed, PlannerExercisePreference.LESS)
+            )
+        )
+
+    // This emulates a sync import that completes after the UI projected the old legacy list.
+    db.plannerExercisePreferenceDao()
+        .upsert(
+            listOf(
+                PlannerExercisePreferenceEntity(
+                    "GUEST",
+                    importedAfterSnapshot,
+                    PlannerExercisePreference.NEVER,
+                )
+            )
+        )
+
+    assertEquals(
+        ProfileSaveResult.Saved,
+        repository.saveWithStrength(
+            target,
+            BasicProfile(),
+            emptyList(),
+            plannerAccentEdits = listOf(PlannerExerciseAccentEdit(removed, null)),
+        ),
+    )
+
+    assertEquals(
+        listOf(importedAfterSnapshot to PlannerExerciseAccent.NEVER),
+        db.plannerExerciseAccentV2Dao().get("GUEST").map { it.exerciseSyncId to it.preference },
+    )
+    assertTrue(db.plannerExerciseAccentV2Dao().hasMarker("GUEST"))
+  }
+
+  @Test
+  fun `local accent delta retains a concurrently imported v2 choice`() = runTest {
+    val (repository, _) = repository(Store())
+    val target = requireNotNull(repository.openEditor()).target
+    val imported = "11111111-1111-1111-1111-111111111111"
+    val local = "22222222-2222-2222-2222-222222222222"
+    db.exerciseDao()
+        .insert(
+            ExerciseEntity(
+                name = "Жим",
+                muscleGroup = MuscleGroup.CHEST,
+                type = ExerciseType.STRENGTH,
+                syncId = local,
+            )
+        )
+    val accents = db.plannerExerciseAccentV2Dao()
+    accents.upsertMarker(PlannerExerciseAccentMarkerEntity("GUEST"))
+    accents.upsertRows(
+        listOf(PlannerExerciseAccentV2Entity("GUEST", imported, PlannerExerciseAccent.LESS))
+    )
+
+    assertEquals(
+        ProfileSaveResult.Saved,
+        repository.saveWithStrength(
+            target,
+            BasicProfile(),
+            emptyList(),
+            plannerAccentEdits =
+                listOf(PlannerExerciseAccentEdit(local, PlannerExerciseAccent.NORMAL)),
+        ),
+    )
+
+    assertEquals(
+        listOf(imported to PlannerExerciseAccent.LESS, local to PlannerExerciseAccent.NORMAL),
+        accents.get("GUEST").map { it.exerciseSyncId to it.preference },
+    )
+  }
+
+  @Test
+  fun `unrelated profile save does not adopt legacy accents`() = runTest {
+    val (repository, _) = repository(Store())
+    val target = requireNotNull(repository.openEditor()).target
+    db.plannerExercisePreferenceDao()
+        .upsert(
+            listOf(
+                PlannerExercisePreferenceEntity(
+                    "GUEST",
+                    "11111111-1111-1111-1111-111111111111",
+                    PlannerExercisePreference.LESS,
+                )
+            )
+        )
+
+    assertEquals(
+        ProfileSaveResult.Saved,
+        repository.save(target, BasicProfile(trainingGoal = TrainingGoal.ENDURANCE)),
+    )
+
+    assertTrue(!db.plannerExerciseAccentV2Dao().hasMarker("GUEST"))
+    assertTrue(db.plannerExerciseAccentV2Dao().get("GUEST").isEmpty())
   }
 
   @Test
@@ -220,6 +388,22 @@ class ProfileRepositoryImplTest : RoomDaoTest() {
             BasicProfile(trainingGoal = TrainingGoal.STRENGTH, equipmentIds = equipment),
         ),
     )
+    db.plannerExerciseAccentV2Dao()
+        .upsertMarker(
+            com.valerochka1337.valerochkagym.data.db.entity.PlannerExerciseAccentMarkerEntity(
+                "GUEST"
+            )
+        )
+    db.plannerExerciseAccentV2Dao()
+        .upsertRows(
+            listOf(
+                com.valerochka1337.valerochkagym.data.db.entity.PlannerExerciseAccentV2Entity(
+                    "GUEST",
+                    "11111111-1111-1111-1111-111111111111",
+                    PlannerExerciseAccent.NORMAL,
+                )
+            )
+        )
 
     sync.claim("owner-7")
     store.save(BackendTokens("owner-7", "owner@example.com", "access", "refresh"))
@@ -229,6 +413,8 @@ class ProfileRepositoryImplTest : RoomDaoTest() {
     assertEquals(equipment.sorted(), db.profileDao().equipmentIds("owner-7"))
     assertNull(db.profileDao().get("GUEST"))
     assertEquals(emptyList<String>(), db.profileDao().equipmentIds("GUEST"))
+    assertTrue(db.plannerExerciseAccentV2Dao().hasMarker("owner-7"))
+    assertEquals(1, db.plannerExerciseAccentV2Dao().get("owner-7").size)
   }
 
   @Test

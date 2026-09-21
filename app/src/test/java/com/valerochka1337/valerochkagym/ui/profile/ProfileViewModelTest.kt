@@ -4,12 +4,14 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.lifecycle.SavedStateHandle
-import com.valerochka1337.valerochkagym.data.db.entity.KeyExercisePriority
-import com.valerochka1337.valerochkagym.data.db.entity.PlannerExercisePreference
+import androidx.lifecycle.ViewModelStore
+import com.valerochka1337.valerochkagym.data.db.entity.PlannerExerciseAccent
 import com.valerochka1337.valerochkagym.data.profile.AiProfilePromptGate
 import com.valerochka1337.valerochkagym.data.settings.SettingsRepository
 import com.valerochka1337.valerochkagym.domain.BasicProfile
 import com.valerochka1337.valerochkagym.domain.KeyExerciseChoice
+import com.valerochka1337.valerochkagym.domain.PlannerExerciseAccentEdit
+import com.valerochka1337.valerochkagym.domain.PlannerExerciseChoice
 import com.valerochka1337.valerochkagym.domain.ProfileEditTarget
 import com.valerochka1337.valerochkagym.domain.ProfileEditorSnapshot
 import com.valerochka1337.valerochkagym.domain.ProfileRepository
@@ -144,7 +146,7 @@ class ProfileViewModelTest {
       }
 
   @Test
-  fun `exercise accents use keys only for strength goal and remain mutually consistent`() =
+  fun `exercise accents are sparse v2 overrides for every goal`() =
       runTest(mainDispatcherRule.testDispatcher.scheduler) {
         val repository = FakeProfileRepository()
         val viewModel =
@@ -160,32 +162,35 @@ class ProfileViewModelTest {
         viewModel.setExerciseAccent(7, ExerciseAccent.ACCENT)
         assertTrue(viewModel.uiState.value.keyExercises.isEmpty())
         assertEquals(
-            PlannerExercisePreference.MORE,
-            viewModel.uiState.value.plannerPreferences.single().preference,
+            PlannerExerciseAccent.MORE,
+            viewModel.uiState.value.plannerAccents.single().preference,
         )
 
         viewModel.setExerciseAccent(7, ExerciseAccent.EXCLUDE)
         assertTrue(viewModel.uiState.value.keyExercises.isEmpty())
         assertEquals(
-            PlannerExercisePreference.NEVER,
-            viewModel.uiState.value.plannerPreferences.single().preference,
+            PlannerExerciseAccent.NEVER,
+            viewModel.uiState.value.plannerAccents.single().preference,
         )
 
         viewModel.setGoal(com.valerochka1337.valerochkagym.domain.TrainingGoal.STRENGTH)
         viewModel.setExerciseAccent(7, ExerciseAccent.ACCENT)
+        assertTrue(viewModel.uiState.value.keyExercises.isEmpty())
         assertEquals(
-            listOf("sync-7"),
-            viewModel.uiState.value.keyExercises.map { it.exerciseSyncId },
+            PlannerExerciseAccent.MORE,
+            viewModel.uiState.value.plannerAccents.single().preference,
         )
-        assertTrue(viewModel.uiState.value.plannerPreferences.isEmpty())
 
         viewModel.setExerciseAccent(8, ExerciseAccent.ACCENT)
         assertEquals(
-            PlannerExercisePreference.MORE,
-            viewModel.uiState.value.plannerPreferences.first { it.exerciseId == 8L }.preference,
+            PlannerExerciseAccent.MORE,
+            viewModel.uiState.value.plannerAccents.first { it.exerciseId == 8L }.preference,
         )
         viewModel.setExerciseAccent(8, ExerciseAccent.NORMAL)
-        assertTrue(viewModel.uiState.value.plannerPreferences.isEmpty())
+        assertEquals(
+            PlannerExerciseAccent.NORMAL,
+            viewModel.uiState.value.plannerAccents.first { it.exerciseId == 8L }.preference,
+        )
       }
 
   @Test
@@ -199,15 +204,129 @@ class ProfileViewModelTest {
                 SavedStateHandle(),
                 strengthPlannerRepository =
                     FakeStrengthPlannerRepository(
-                        keys = listOf(KeyExerciseChoice(null, "deleted", KeyExercisePriority.HIGH))
+                        accents =
+                            listOf(
+                                com.valerochka1337.valerochkagym.domain.PlannerExerciseAccentChoice(
+                                    null,
+                                    "11111111-1111-1111-1111-111111111111",
+                                    PlannerExerciseAccent.NEVER,
+                                )
+                            )
                     ),
             )
         advanceUntilIdle()
 
-        val unavailable = viewModel.uiState.value.plannerExercises.single { it.syncId == "deleted" }
+        val unavailable =
+            viewModel.uiState.value.plannerExercises.single {
+              it.syncId == "11111111-1111-1111-1111-111111111111"
+            }
         assertTrue(unavailable.id < 0)
-        viewModel.setExerciseAccent(unavailable.id, ExerciseAccent.NORMAL)
-        assertTrue(viewModel.uiState.value.keyExercises.isEmpty())
+        viewModel.removeExerciseAccent(unavailable.syncId)
+        assertTrue(viewModel.uiState.value.plannerAccents.isEmpty())
+      }
+
+  @Test
+  fun `recreated pending accent deletion saves once and clears its draft`() =
+      runTest(mainDispatcherRule.testDispatcher.scheduler) {
+        val repository = FakeProfileRepository().apply { saveDelayMillis = 100 }
+        val handle = SavedStateHandle()
+        val strength =
+            FakeStrengthPlannerRepository(
+                accents =
+                    listOf(
+                        com.valerochka1337.valerochkagym.domain.PlannerExerciseAccentChoice(
+                            7,
+                            "sync-7",
+                            PlannerExerciseAccent.MORE,
+                        )
+                    )
+            )
+        val first =
+            ProfileViewModel(
+                repository,
+                gate(repository),
+                handle,
+                strengthPlannerRepository = strength,
+            )
+        val store = ViewModelStore().apply { put("first", first) }
+        advanceUntilIdle()
+
+        first.removeExerciseAccent("sync-7")
+        runCurrent()
+        assertEquals(1, repository.saveCalls)
+        store.clear()
+        assertEquals(null, repository.saved)
+        val recreated =
+            ProfileViewModel(
+                repository,
+                gate(repository),
+                handle,
+                strengthPlannerRepository = strength,
+            )
+        advanceUntilIdle()
+
+        assertTrue(recreated.uiState.value.plannerAccents.isEmpty())
+        assertTrue(recreated.uiState.value.plannerAccentEdits.isEmpty())
+        assertTrue(!recreated.uiState.value.plannerAccentsDirty)
+        assertEquals(2, repository.saveCalls)
+        assertEquals(
+            listOf(PlannerExerciseAccentEdit("sync-7", null)),
+            repository.accentEditCalls[1],
+        )
+      }
+
+  @Test
+  fun `successful accent save adopts planner accents emitted during its transaction`() =
+      runTest(mainDispatcherRule.testDispatcher.scheduler) {
+        val repository = FakeProfileRepository().apply { saveDelayMillis = 100 }
+        val strength =
+            FakeStrengthPlannerRepository(
+                accents =
+                    listOf(
+                        com.valerochka1337.valerochkagym.domain.PlannerExerciseAccentChoice(
+                            7,
+                            "sync-7",
+                            PlannerExerciseAccent.MORE,
+                        )
+                    )
+            )
+        val viewModel =
+            ProfileViewModel(
+                repository,
+                gate(repository),
+                SavedStateHandle(),
+                strengthPlannerRepository = strength,
+            )
+        advanceUntilIdle()
+
+        viewModel.setExerciseAccent(7, ExerciseAccent.NORMAL)
+        runCurrent()
+        strength.emitAccents(
+            listOf(
+                com.valerochka1337.valerochkagym.domain.PlannerExerciseAccentChoice(
+                    7,
+                    "sync-7",
+                    PlannerExerciseAccent.NORMAL,
+                ),
+                com.valerochka1337.valerochkagym.domain.PlannerExerciseAccentChoice(
+                    8,
+                    "sync-8",
+                    PlannerExerciseAccent.LESS,
+                ),
+            )
+        )
+        runCurrent()
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf(
+                "sync-7" to PlannerExerciseAccent.NORMAL,
+                "sync-8" to PlannerExerciseAccent.LESS,
+            ),
+            viewModel.uiState.value.plannerAccents.map { it.exerciseSyncId to it.preference },
+        )
+        assertTrue(!viewModel.uiState.value.plannerAccentsDirty)
+        assertTrue(viewModel.uiState.value.plannerAccentEdits.isEmpty())
       }
 
   @Test
@@ -283,6 +402,28 @@ class ProfileViewModelTest {
         assertEquals(false, viewModel.uiState.value.isSaving)
       }
 
+  @Test
+  fun `explicit normal remains a personal accent and default removes it`() =
+      runTest(mainDispatcherRule.testDispatcher.scheduler) {
+        val repository = FakeProfileRepository()
+        val viewModel =
+            ProfileViewModel(
+                repository,
+                gate(repository),
+                SavedStateHandle(),
+                strengthPlannerRepository = FakeStrengthPlannerRepository(),
+            )
+        advanceUntilIdle()
+
+        viewModel.setExerciseAccent(7, ExerciseAccent.NORMAL)
+        assertEquals(
+            PlannerExerciseAccent.NORMAL,
+            viewModel.uiState.value.plannerAccents.single().preference,
+        )
+        viewModel.removeExerciseAccent("sync-7")
+        assertTrue(viewModel.uiState.value.plannerAccents.isEmpty())
+      }
+
   private fun gate(repository: ProfileRepository) =
       AiProfilePromptGate(SettingsRepository(FakeDataStore()), repository, WallClock { 1L })
 }
@@ -292,6 +433,8 @@ private class FakeProfileRepository : ProfileRepository {
   var saved: BasicProfile? = null
   var saveDelayMillis = 0L
   var failSave = false
+  var saveCalls = 0
+  val accentEditCalls = mutableListOf<List<PlannerExerciseAccentEdit>?>()
   private val profiles = mutableMapOf<ProfileEditTarget, MutableStateFlow<BasicProfile?>>()
 
   private fun profileFlow(target: ProfileEditTarget) =
@@ -306,7 +449,19 @@ private class FakeProfileRepository : ProfileRepository {
   override fun observe(target: ProfileEditTarget): Flow<BasicProfile?> =
       if (target == this.target) profileFlow(target) else flowOf(null)
 
+  override suspend fun saveWithStrength(
+      target: ProfileEditTarget,
+      profile: BasicProfile,
+      keyExercises: List<KeyExerciseChoice>,
+      plannerPreferences: List<PlannerExerciseChoice>?,
+      plannerAccentEdits: List<PlannerExerciseAccentEdit>?,
+  ): ProfileSaveResult {
+    accentEditCalls += plannerAccentEdits?.toList()
+    return save(target, profile)
+  }
+
   override suspend fun save(target: ProfileEditTarget, profile: BasicProfile): ProfileSaveResult {
+    saveCalls++
     delay(saveDelayMillis)
     if (failSave) error("Write failed")
     if (target != this.target) return ProfileSaveResult.StaleTarget
@@ -325,7 +480,17 @@ private class FakeDataStore : DataStore<Preferences> {
 
 private class FakeStrengthPlannerRepository(
     private val keys: List<KeyExerciseChoice> = emptyList(),
+    private val accents: List<com.valerochka1337.valerochkagym.domain.PlannerExerciseAccentChoice> =
+        emptyList(),
 ) : StrengthPlannerRepository {
+  private val accentFlow = MutableStateFlow(accents)
+
+  fun emitAccents(
+      value: List<com.valerochka1337.valerochkagym.domain.PlannerExerciseAccentChoice>
+  ) {
+    accentFlow.value = value
+  }
+
   override fun observeLiveStrengthExercises(): Flow<List<StrengthExerciseCandidate>> =
       flowOf(listOf(StrengthExerciseCandidate(7, "sync-7", "Жим")))
 
@@ -338,6 +503,10 @@ private class FakeStrengthPlannerRepository(
       )
 
   override fun observe(target: ProfileEditTarget): Flow<List<KeyExerciseChoice>?> = flowOf(keys)
+
+  override fun observePlannerAccents(
+      target: ProfileEditTarget,
+  ): Flow<List<com.valerochka1337.valerochkagym.domain.PlannerExerciseAccentChoice>?> = accentFlow
 
   override suspend fun save(
       target: ProfileEditTarget,

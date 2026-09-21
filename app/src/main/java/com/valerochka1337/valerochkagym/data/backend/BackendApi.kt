@@ -320,6 +320,7 @@ class BackendApi @Inject constructor(private val tokens: BackendSessionStore) : 
                 "health-ledger-v1",
                 "strength-planner-personalization",
                 "ai-planner-agentic-v1",
+                "planner-default-accents-v2",
                 "workout-rir-v1",
             ) +
                 headers["X-Gym-Capabilities"]

@@ -51,7 +51,6 @@ import com.valerochka1337.valerochkagym.domain.StrengthExerciseCandidate
 import com.valerochka1337.valerochkagym.domain.TrainingGoal
 import com.valerochka1337.valerochkagym.ui.components.GlowBackground
 import com.valerochka1337.valerochkagym.ui.components.GymCard
-import com.valerochka1337.valerochkagym.ui.components.GymFilterChip
 import com.valerochka1337.valerochkagym.ui.components.PillButton
 import com.valerochka1337.valerochkagym.ui.haptics.gymHaptics
 import java.time.Instant
@@ -107,6 +106,10 @@ fun ProfileScreen(
         haptics.tap()
         viewModel.setExerciseAccent(id, accent)
       },
+      onRemoveExerciseAccent = {
+        haptics.tap()
+        viewModel.removeExerciseAccent(it)
+      },
       modifier = modifier,
   )
 }
@@ -132,6 +135,7 @@ internal fun ProfileScreenContent(
     onPlannerPreference: (Long, PlannerExercisePreference?) -> Unit = { _, _ -> },
     onPlannerPreferenceSheet: (Boolean) -> Unit = {},
     onExerciseAccent: (Long, ExerciseAccent) -> Unit = { _, _ -> },
+    onRemoveExerciseAccent: (String) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
   GlowBackground(modifier = modifier) {
@@ -233,8 +237,7 @@ internal fun ProfileScreenContent(
             )
             Spacer(Modifier.height(8.dp))
             PillButton(
-                text =
-                    "Настроить (${state.plannerExercises.count { it.accent(state) != ExerciseAccent.NORMAL }})",
+                text = "Настроить (${state.plannerAccents.size})",
                 onClick = { onPlannerPreferenceSheet(true) },
                 compact = true,
             )
@@ -301,18 +304,18 @@ internal fun ProfileScreenContent(
     ExerciseAccentSheet(
         state = state,
         onAccent = onExerciseAccent,
+        onRemove = onRemoveExerciseAccent,
         onDismiss = { onPlannerPreferenceSheet(false) },
     )
   }
 }
 
 private fun StrengthExerciseCandidate.accent(state: ProfileEditorUiState): ExerciseAccent {
-  val preference = state.plannerPreferences.firstOrNull { it.exerciseSyncId == syncId }?.preference
+  val preference = state.plannerAccents.firstOrNull { it.exerciseSyncId == syncId }?.preference
   return when {
-    preference == PlannerExercisePreference.NEVER -> ExerciseAccent.EXCLUDE
-    preference == PlannerExercisePreference.LESS -> ExerciseAccent.LESS
-    preference == PlannerExercisePreference.MORE ||
-        state.keyExercises.any { it.exerciseSyncId == syncId } -> ExerciseAccent.ACCENT
+    preference?.name == "NEVER" -> ExerciseAccent.EXCLUDE
+    preference?.name == "LESS" -> ExerciseAccent.LESS
+    preference?.name == "MORE" -> ExerciseAccent.ACCENT
     else -> ExerciseAccent.NORMAL
   }
 }
@@ -321,28 +324,28 @@ private fun StrengthExerciseCandidate.accent(state: ProfileEditorUiState): Exerc
 private fun ExerciseAccentSheet(
     state: ProfileEditorUiState,
     onAccent: (Long, ExerciseAccent) -> Unit,
+    onRemove: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
   var query by rememberSaveable { mutableStateOf("") }
-  var selectedOnly by rememberSaveable { mutableStateOf(false) }
+  var adding by rememberSaveable { mutableStateOf(false) }
+  var pendingExerciseId by rememberSaveable { mutableStateOf<Long?>(null) }
+  val selectedIds =
+      remember(state.plannerAccents) { state.plannerAccents.map { it.exerciseSyncId }.toSet() }
   val visible =
       remember(
           state.plannerExercises,
-          state.plannerPreferences,
-          state.keyExercises,
+          state.plannerAccents,
+          adding,
           query,
-          selectedOnly,
       ) {
-        state.plannerExercises
+        val source =
+            if (adding) state.plannerExercises.filter { it.id >= 0 && it.syncId !in selectedIds }
+            else state.plannerExercises.filter { it.syncId in selectedIds }
+        source
             .map { it to it.accent(state) }
-            .filter { (_, accent) -> !selectedOnly || accent != ExerciseAccent.NORMAL }
             .filter { (exercise, _) -> exercise.name.contains(query.trim(), ignoreCase = true) }
-            .sortedWith(
-                compareBy<Pair<StrengthExerciseCandidate, ExerciseAccent>>(
-                    { if (it.second == ExerciseAccent.NORMAL) 1 else 0 },
-                    { it.first.name.lowercase() },
-                )
-            )
+            .sortedBy { it.first.name.lowercase() }
       }
   ModalBottomSheet(
       onDismissRequest = onDismiss,
@@ -354,7 +357,7 @@ private fun ExerciseAccentSheet(
     ) {
       Text("Акценты упражнений", style = MaterialTheme.typography.titleLarge)
       Text(
-          "Силовой акцент сохраняется как ключевое упражнение (до пяти). Для остальных упражнений он означает «чаще».",
+          "Личные настройки переопределяют общий режим. «По умолчанию» возвращает общий режим.",
           style = MaterialTheme.typography.bodySmall,
           color = MaterialTheme.colorScheme.onSurfaceVariant,
       )
@@ -365,18 +368,58 @@ private fun ExerciseAccentSheet(
           singleLine = true,
           label = { Text("Поиск упражнений") },
       )
-      GymFilterChip(
-          selected = selectedOnly,
-          onClick = { selectedOnly = !selectedOnly },
-          label =
-              "Выбрано: ${state.plannerExercises.count { it.accent(state) != ExerciseAccent.NORMAL }}",
-      )
+      if (!adding) {
+        PillButton(
+            text = "Добавить упражнение",
+            onClick = {
+              adding = true
+              pendingExerciseId = null
+              query = ""
+            },
+            compact = true,
+        )
+      } else {
+        TextButton(
+            onClick = {
+              adding = false
+              pendingExerciseId = null
+              query = ""
+            },
+            modifier = Modifier.sizeIn(minHeight = 48.dp),
+        ) {
+          Text("Отмена")
+        }
+      }
+      pendingExerciseId?.let { id ->
+        val exercise = state.plannerExercises.firstOrNull { it.id == id }
+        if (exercise != null) {
+          Text("${exercise.name}: выберите состояние", style = MaterialTheme.typography.titleSmall)
+          FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ExerciseAccent.entries.forEach { accent ->
+              FilterChip(
+                  selected = false,
+                  onClick = {
+                    onAccent(id, accent)
+                    pendingExerciseId = null
+                    adding = false
+                  },
+                  label = { Text(accent.label()) },
+                  modifier =
+                      Modifier.sizeIn(minHeight = 48.dp).semantics {
+                        contentDescription = "${exercise.name}: ${accent.label()}"
+                      },
+              )
+            }
+          }
+        }
+      }
       LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(bottom = 12.dp)) {
         if (visible.isEmpty()) {
           item {
             Text(
-                if (state.plannerExercises.isEmpty()) "Список пока пуст"
-                else "Ничего не найдено. Измените поиск или фильтр.",
+                if (adding) "Нет доступных упражнений для добавления."
+                else
+                    "Личных настроек пока нет. Добавьте упражнение, если хотите изменить общий режим.",
                 Modifier.padding(vertical = 24.dp),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -388,21 +431,45 @@ private fun ExerciseAccentSheet(
               verticalArrangement = Arrangement.spacedBy(4.dp),
           ) {
             Text(exercise.name, style = MaterialTheme.typography.titleSmall)
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-              ExerciseAccent.entries.forEach { accent ->
-                FilterChip(
-                    selected = selectedAccent == accent,
-                    onClick = { onAccent(exercise.id, accent) },
-                    enabled = exercise.id >= 0 || accent == ExerciseAccent.NORMAL,
-                    label = { Text(accent.label()) },
+            if (adding) {
+              TextButton(
+                  onClick = {
+                    pendingExerciseId = exercise.id
+                    query = ""
+                  },
+                  modifier =
+                      Modifier.sizeIn(minHeight = 48.dp).semantics {
+                        contentDescription = "Выбрать упражнение: ${exercise.name}"
+                      },
+              ) {
+                Text("Выбрать")
+              }
+            } else {
+              FlowRow(
+                  horizontalArrangement = Arrangement.spacedBy(8.dp),
+                  verticalArrangement = Arrangement.spacedBy(4.dp),
+              ) {
+                ExerciseAccent.entries.forEach { accent ->
+                  FilterChip(
+                      selected = selectedAccent == accent,
+                      onClick = { onAccent(exercise.id, accent) },
+                      enabled = exercise.id >= 0,
+                      label = { Text(accent.label()) },
+                      modifier =
+                          Modifier.sizeIn(minHeight = 48.dp).semantics {
+                            contentDescription = "${exercise.name}: ${accent.label()}"
+                          },
+                  )
+                }
+                TextButton(
+                    onClick = { onRemove(exercise.syncId) },
                     modifier =
                         Modifier.sizeIn(minHeight = 48.dp).semantics {
-                          contentDescription = "${exercise.name}: ${accent.label()}"
+                          contentDescription = "По умолчанию: ${exercise.name}"
                         },
-                )
+                ) {
+                  Text("По умолчанию")
+                }
               }
             }
           }

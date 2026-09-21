@@ -1,6 +1,7 @@
 package com.valerochka1337.valerochkagym.domain
 
 import com.valerochka1337.valerochkagym.data.db.entity.KeyExercisePriority
+import com.valerochka1337.valerochkagym.data.db.entity.PlannerExerciseAccent
 import com.valerochka1337.valerochkagym.data.db.entity.PlannerExercisePreference
 import kotlinx.coroutines.flow.Flow
 
@@ -20,6 +21,19 @@ data class PlannerExerciseChoice(
     val preference: PlannerExercisePreference,
 )
 
+/** A v2 override may explicitly be NORMAL; absence is represented by no choice at all. */
+data class PlannerExerciseAccentChoice(
+    val exerciseId: Long?,
+    val exerciseSyncId: String,
+    val preference: PlannerExerciseAccent,
+)
+
+/** A user action, not a replacement snapshot; null restores the inherited default. */
+data class PlannerExerciseAccentEdit(
+    val exerciseSyncId: String,
+    val preference: PlannerExerciseAccent?,
+)
+
 sealed interface StrengthPlannerSaveResult {
   data object Saved : StrengthPlannerSaveResult
 
@@ -35,6 +49,9 @@ interface StrengthPlannerRepository {
   fun observe(target: ProfileEditTarget): Flow<List<KeyExerciseChoice>?>
 
   fun observePlannerPreferences(target: ProfileEditTarget): Flow<List<PlannerExerciseChoice>?> =
+      kotlinx.coroutines.flow.flowOf(emptyList())
+
+  fun observePlannerAccents(target: ProfileEditTarget): Flow<List<PlannerExerciseAccentChoice>?> =
       kotlinx.coroutines.flow.flowOf(emptyList())
 
   fun observeLivePlannerExercises(): Flow<List<StrengthExerciseCandidate>> =

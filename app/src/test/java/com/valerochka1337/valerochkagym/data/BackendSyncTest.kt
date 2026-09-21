@@ -32,6 +32,140 @@ class BackendSyncTest : RoomDaoTest() {
       )
 
   @Test
+  fun `v2 accent tombstone preserves marker baseline and retained request`() = runTest {
+    val owner = "user-a"
+    val exerciseId = "11111111-1111-1111-1111-111111111111"
+    val recordId =
+        UUID.nameUUIDFromBytes(
+                "ValerochkaGym.planner-default-accents.v2:$owner".encodeToByteArray()
+            )
+            .toString()
+    val key = "planner_exercise_accents:$recordId"
+    SyncSchema.install(raw)
+    val server = Server().apply { accepted = setOf("planner-default-accents-v2") }
+    val sync = BackendSync(db, server, Store())
+    sync.claim(owner)
+    raw.execSQL("INSERT INTO planner_exercise_accent_markers(scope) VALUES(?)", arrayOf(owner))
+    raw.execSQL(
+        "INSERT INTO planner_exercise_accents_v2(scope,exerciseSyncId,preference) VALUES(?,?,?)",
+        arrayOf(owner, exerciseId, "NORMAL"),
+    )
+    sync.run()
+    raw.execSQL(
+        "UPDATE planner_exercise_accents_v2 SET preference='LESS' WHERE scope=?",
+        arrayOf(owner),
+    )
+    server.failBeforeCommit = true
+    try {
+      sync.run()
+      fail("The local v2 update must remain retained")
+    } catch (_: IOException) {}
+    val outbox =
+        raw.query("SELECT requestJson FROM backend_outbox WHERE id=1").use {
+          assertTrue(it.moveToFirst())
+          it.getString(0)
+        }
+    val baseline =
+        raw.query("SELECT recordJson FROM backend_baseline WHERE `key`=?", arrayOf(key)).use {
+          assertTrue(it.moveToFirst())
+          it.getString(0)
+        }
+    server.revision++
+    server.records[key] =
+        CloudRecord("planner_exercise_accents", recordId, server.revision, deleted = true)
+
+    val error = runCatching { sync.run() }.exceptionOrNull() as BackendException
+    assertEquals("planner_accent_tombstone_invalid", error.code)
+    assertTrue(db.plannerExerciseAccentV2Dao().hasMarker(owner))
+    assertEquals("LESS", db.plannerExerciseAccentV2Dao().get(owner).single().preference.name)
+    assertEquals(
+        baseline,
+        raw.query("SELECT recordJson FROM backend_baseline WHERE `key`=?", arrayOf(key)).use {
+          assertTrue(it.moveToFirst())
+          it.getString(0)
+        },
+    )
+    assertEquals(
+        outbox,
+        raw.query("SELECT requestJson FROM backend_outbox WHERE id=1").use {
+          assertTrue(it.moveToFirst())
+          it.getString(0)
+        },
+    )
+  }
+
+  @Test
+  fun `v2 accent request stays byte exact without capability and legacy import cannot change it`() =
+      runTest {
+        val owner = "user-a"
+        val exerciseId = "11111111-1111-1111-1111-111111111111"
+        val v2Id =
+            UUID.nameUUIDFromBytes(
+                    "ValerochkaGym.planner-default-accents.v2:$owner".encodeToByteArray()
+                )
+                .toString()
+        val legacyId =
+            UUID.nameUUIDFromBytes(
+                    "ValerochkaGym.planner-exercise-preferences.v1:$owner".encodeToByteArray()
+                )
+                .toString()
+        SyncSchema.install(raw)
+        val server = Server().apply { accepted = setOf("ai-planner-agentic-v1") }
+        server.records["planner_exercise_preferences:$legacyId"] =
+            CloudRecord(
+                "planner_exercise_preferences",
+                legacyId,
+                1,
+                false,
+                buildJsonObject {
+                  put("schemaVersion", 1)
+                  put(
+                      "preferences",
+                      JsonArray(
+                          listOf(
+                              buildJsonObject {
+                                put("exerciseId", exerciseId)
+                                put("preference", "NEVER")
+                              }
+                          )
+                      ),
+                  )
+                },
+            )
+        server.revision = 1
+        val sync = BackendSync(db, server, Store())
+        sync.claim(owner)
+        raw.execSQL("INSERT INTO planner_exercise_accent_markers(scope) VALUES(?)", arrayOf(owner))
+        raw.execSQL(
+            "INSERT INTO planner_exercise_accents_v2(scope,exerciseSyncId,preference) VALUES(?,?,?)",
+            arrayOf(owner, exerciseId, "NORMAL"),
+        )
+
+        sync.run()
+        val exact =
+            raw.query("SELECT requestJson FROM backend_outbox WHERE id=1").use {
+              assertTrue(it.moveToFirst())
+              it.getString(0)
+            }
+        sync.run()
+
+        assertEquals(
+            exact,
+            raw.query("SELECT requestJson FROM backend_outbox WHERE id=1").use {
+              assertTrue(it.moveToFirst())
+              it.getString(0)
+            },
+        )
+        assertEquals("NORMAL", db.plannerExerciseAccentV2Dao().get(owner).single().preference.name)
+        assertTrue(
+            db.plannerExercisePreferenceDao().get(owner).any {
+              it.preference == PlannerExercisePreference.NEVER
+            }
+        )
+        assertFalse(server.records.containsKey("planner_exercise_accents:$v2Id"))
+      }
+
+  @Test
   fun `clearing synced planner preferences sends their aggregate tombstone`() = runTest {
     val owner = "user-a"
     val exerciseId = "00000000-0000-4000-8000-000000000001"

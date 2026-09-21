@@ -5,11 +5,14 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.valerochka1337.valerochkagym.data.db.LocalEquipmentCatalog
 import com.valerochka1337.valerochkagym.data.db.entity.KeyExercisePriority
+import com.valerochka1337.valerochkagym.data.db.entity.PlannerExerciseAccent
 import com.valerochka1337.valerochkagym.data.db.entity.PlannerExercisePreference
 import com.valerochka1337.valerochkagym.data.profile.AiProfilePromptGate
 import com.valerochka1337.valerochkagym.domain.BasicProfile
 import com.valerochka1337.valerochkagym.domain.ExperienceLevel
 import com.valerochka1337.valerochkagym.domain.KeyExerciseChoice
+import com.valerochka1337.valerochkagym.domain.PlannerExerciseAccentChoice
+import com.valerochka1337.valerochkagym.domain.PlannerExerciseAccentEdit
 import com.valerochka1337.valerochkagym.domain.PlannerExerciseChoice
 import com.valerochka1337.valerochkagym.domain.ProfileEditTarget
 import com.valerochka1337.valerochkagym.domain.ProfileRepository
@@ -53,6 +56,10 @@ data class ProfileEditorUiState(
     val strengthExercises: List<StrengthExerciseCandidate> = emptyList(),
     val showKeyExercises: Boolean = false,
     val plannerPreferences: List<PlannerExerciseChoice> = emptyList(),
+    val plannerAccents: List<PlannerExerciseAccentChoice> = emptyList(),
+    val plannerAccentEdits: List<PlannerExerciseAccentEdit> = emptyList(),
+    /** Prevents unrelated profile autosaves from adopting or replacing legacy accent state. */
+    val plannerAccentsDirty: Boolean = false,
     val plannerExercises: List<StrengthExerciseCandidate> = emptyList(),
     val showPlannerPreferences: Boolean = false,
     val preferredRepMin: String = "",
@@ -82,6 +89,8 @@ constructor(
 
   private val saveMutex = Mutex()
   private var editRevision = 0L
+  private var accentsObservedDuringSave: List<PlannerExerciseAccentChoice>? = null
+  private var restoredAccentAutosaveAttempted = false
 
   init {
     viewModelScope.launch {
@@ -96,10 +105,10 @@ constructor(
               profileRepository.observe(snapshot.target),
               strengthPlannerRepository?.observe(snapshot.target) ?: flowOf(emptyList()),
               strengthPlannerRepository?.observeLiveStrengthExercises() ?: flowOf(emptyList()),
-              strengthPlannerRepository?.observePlannerPreferences(snapshot.target)
+              strengthPlannerRepository?.observePlannerAccents(snapshot.target)
                   ?: flowOf(emptyList()),
               strengthPlannerRepository?.observeLivePlannerExercises() ?: flowOf(emptyList()),
-          ) { profile, choices, candidates, preferences, plannerCandidates ->
+          ) { profile, choices, candidates, accents, plannerCandidates ->
             if (profile == null || choices == null) {
               ProfileEditorUiState(isLoading = false, error = "Профиль больше недоступен")
             } else {
@@ -109,11 +118,31 @@ constructor(
                   (draft?.keyExercises ?: choices).map {
                     it.copy(exerciseId = ids[it.exerciseSyncId]?.id)
                   }
-              val preferenceChoices = draft?.plannerPreferences ?: preferences.orEmpty()
+              // A saved profile draft must not pin a stale accent projection. Only an unsaved
+              // accent edit owns this portion of the screen state; otherwise Room remains SSOT.
+              val pendingAccentEdits = draft?.plannerAccentEdits.orEmpty()
+              val accentChoices =
+                  accents
+                      .orEmpty()
+                      .associateBy { it.exerciseSyncId }
+                      .toMutableMap()
+                      .also { current ->
+                        pendingAccentEdits.forEach { edit ->
+                          if (edit.preference == null) current.remove(edit.exerciseSyncId)
+                          else
+                              current[edit.exerciseSyncId] =
+                                  PlannerExerciseAccentChoice(
+                                      current[edit.exerciseSyncId]?.exerciseId,
+                                      edit.exerciseSyncId,
+                                      edit.preference,
+                                  )
+                        }
+                      }
+                      .values
+                      .sortedBy { it.exerciseSyncId }
               val livePlannerIds = plannerCandidates.map { it.syncId }.toSet()
               val unavailableChoices =
-                  (keyChoices.map { it.exerciseSyncId } +
-                          preferenceChoices.map { it.exerciseSyncId })
+                  (keyChoices.map { it.exerciseSyncId } + accentChoices.map { it.exerciseSyncId })
                       .distinct()
                       .filterNot { it in livePlannerIds }
                       .mapIndexed { index, syncId ->
@@ -128,7 +157,8 @@ constructor(
                   .copy(
                       keyExercises = keyChoices,
                       strengthExercises = candidates,
-                      plannerPreferences = preferenceChoices,
+                      plannerAccents = accentChoices,
+                      plannerAccentEdits = pendingAccentEdits,
                       plannerExercises = plannerCandidates + unavailableChoices,
                   )
             }
@@ -138,6 +168,18 @@ constructor(
               _uiState.value = next
             } else if (!_uiState.value.isSaving) {
               _uiState.value = next.copy(error = _uiState.value.error)
+              if (
+                  next.plannerAccentsDirty &&
+                      next.plannerAccentEdits.isNotEmpty() &&
+                      !restoredAccentAutosaveAttempted
+              ) {
+                restoredAccentAutosaveAttempted = true
+                save()
+              }
+            } else {
+              // Room can merge a concurrent import while the local transaction is in flight.
+              // Keep the latest projection for success instead of waiting for another emission.
+              accentsObservedDuringSave = next.plannerAccents
             }
           }
     }
@@ -234,58 +276,40 @@ constructor(
 
   fun setExerciseAccent(exerciseId: Long, accent: ExerciseAccent) = update {
     val candidate = plannerExercises.firstOrNull { it.id == exerciseId } ?: return@update this
-    val preferences = plannerPreferences.associateBy { it.exerciseSyncId }.toMutableMap()
-    var keys = keyExercises.filterNot { it.exerciseSyncId == candidate.syncId }
-    if (candidate.id < 0 && accent != ExerciseAccent.NORMAL)
-        return@update copy(error = "Недоступное упражнение можно только вернуть в обычный режим")
-    val usesStrengthKey =
-        trainingGoal == TrainingGoal.STRENGTH &&
-            strengthExercises.any { it.syncId == candidate.syncId }
-    when (accent) {
-      ExerciseAccent.ACCENT -> {
-        if (usesStrengthKey) {
-          val existingKey = keyExercises.firstOrNull { it.exerciseSyncId == candidate.syncId }
-          if (existingKey == null && keys.size >= 5)
-              return@update copy(error = "Можно выбрать до пяти силовых акцентов")
-          preferences.remove(candidate.syncId)
-          keys =
-              (keys +
-                      (existingKey
-                          ?: KeyExerciseChoice(
-                              exerciseId = candidate.id,
-                              exerciseSyncId = candidate.syncId,
-                              priority = KeyExercisePriority.NORMAL,
-                          )))
-                  .sortedWith(keyExerciseComparator)
-        } else {
-          preferences[candidate.syncId] =
-              PlannerExerciseChoice(
-                  exerciseId = candidate.id,
-                  exerciseSyncId = candidate.syncId,
-                  preference = PlannerExercisePreference.MORE,
-              )
+    if (candidate.id < 0) return@update this
+    val accents = plannerAccents.associateBy { it.exerciseSyncId }.toMutableMap()
+    val preference =
+        when (accent) {
+          ExerciseAccent.ACCENT -> PlannerExerciseAccent.MORE
+          ExerciseAccent.NORMAL -> PlannerExerciseAccent.NORMAL
+          ExerciseAccent.LESS -> PlannerExerciseAccent.LESS
+          ExerciseAccent.EXCLUDE -> PlannerExerciseAccent.NEVER
         }
-      }
-      ExerciseAccent.NORMAL -> preferences.remove(candidate.syncId)
-      ExerciseAccent.LESS ->
-          preferences[candidate.syncId] =
-              PlannerExerciseChoice(
-                  candidate.id,
-                  candidate.syncId,
-                  PlannerExercisePreference.LESS,
-              )
-      ExerciseAccent.EXCLUDE ->
-          preferences[candidate.syncId] =
-              PlannerExerciseChoice(
-                  candidate.id,
-                  candidate.syncId,
-                  PlannerExercisePreference.NEVER,
-              )
-    }
+    accents[candidate.syncId] =
+        PlannerExerciseAccentChoice(
+            candidate.id,
+            candidate.syncId,
+            preference,
+        )
     copy(
-        keyExercises = keys.sortedWith(keyExerciseComparator),
-        plannerPreferences = preferences.values.sortedBy { it.exerciseSyncId },
+        plannerAccents = accents.values.sortedBy { it.exerciseSyncId },
+        plannerAccentEdits =
+            (plannerAccentEdits.filterNot { it.exerciseSyncId == candidate.syncId } +
+                    PlannerExerciseAccentEdit(candidate.syncId, preference))
+                .sortedBy { it.exerciseSyncId },
+        plannerAccentsDirty = true,
         error = null,
+    )
+  }
+
+  fun removeExerciseAccent(exerciseSyncId: String) = update {
+    copy(
+        plannerAccents = plannerAccents.filterNot { it.exerciseSyncId == exerciseSyncId },
+        plannerAccentEdits =
+            (plannerAccentEdits.filterNot { it.exerciseSyncId == exerciseSyncId } +
+                    PlannerExerciseAccentEdit(exerciseSyncId, null))
+                .sortedBy { it.exerciseSyncId },
+        plannerAccentsDirty = true,
     )
   }
 
@@ -302,6 +326,7 @@ constructor(
       _uiState.value = state.copy(isSaving = false, error = "Проверьте дату и числовые значения")
       return
     }
+    accentsObservedDuringSave = null
     _uiState.value = state.copy(isSaving = true, error = null)
     val revision = editRevision
     viewModelScope.launch {
@@ -312,7 +337,9 @@ constructor(
                   target,
                   profile,
                   state.keyExercises,
-                  state.plannerPreferences,
+                  plannerPreferences = null,
+                  plannerAccentEdits =
+                      state.plannerAccentEdits.takeIf { state.plannerAccentsDirty },
               )
             } catch (cancelled: CancellationException) {
               throw cancelled
@@ -329,7 +356,18 @@ constructor(
         if (revision != editRevision || _uiState.value.target != target) return@withLock
         when (saveResult) {
           ProfileSaveResult.Saved -> {
-            _uiState.value = _uiState.value.copy(isSaving = false)
+            val accepted =
+                _uiState.value.copy(
+                    isSaving = false,
+                    plannerAccents = accentsObservedDuringSave ?: _uiState.value.plannerAccents,
+                    plannerAccentsDirty =
+                        if (revision == editRevision) false else _uiState.value.plannerAccentsDirty,
+                    plannerAccentEdits =
+                        if (revision == editRevision) emptyList()
+                        else _uiState.value.plannerAccentEdits,
+                )
+            accepted.saveDraft(savedStateHandle)
+            _uiState.value = accepted
           }
           ProfileSaveResult.Invalid ->
               _uiState.value =
@@ -427,6 +465,30 @@ private fun profileDraftFrom(
                     }
                     ?.let { preference -> PlannerExerciseChoice(null, syncId, preference) }
               },
+      plannerAccents =
+          handle.get<ArrayList<String>>("profile_draft_accent_sync").orEmpty().mapIndexedNotNull {
+              index,
+              syncId ->
+            handle
+                .get<ArrayList<String>>("profile_draft_accent_value")
+                ?.getOrNull(index)
+                ?.let { runCatching { PlannerExerciseAccent.valueOf(it) }.getOrNull() }
+                ?.let { PlannerExerciseAccentChoice(null, syncId, it) }
+          },
+      plannerAccentEdits =
+          handle.get<ArrayList<String>>("profile_draft_accent_edit_sync").orEmpty().mapIndexed {
+              index,
+              syncId ->
+            PlannerExerciseAccentEdit(
+                syncId,
+                handle
+                    .get<ArrayList<String>>("profile_draft_accent_edit_value")
+                    ?.getOrNull(index)
+                    ?.ifBlank { null }
+                    ?.let { PlannerExerciseAccent.valueOf(it) },
+            )
+          },
+      plannerAccentsDirty = handle.get<Boolean>("profile_draft_accent_dirty") ?: false,
       showPlannerPreferences = handle.get<Boolean>("profile_draft_preference_sheet") ?: false,
       preferredRepMin = handle.get<String>("profile_draft_rep_min").orEmpty(),
       preferredRepMax = handle.get<String>("profile_draft_rep_max").orEmpty(),
@@ -453,6 +515,12 @@ private fun ProfileEditorUiState.saveDraft(handle: SavedStateHandle) {
   handle["profile_draft_preference_value"] =
       ArrayList(plannerPreferences.map { it.preference.name })
   handle["profile_draft_preference_sheet"] = showPlannerPreferences
+  handle["profile_draft_accent_sync"] = ArrayList(plannerAccents.map { it.exerciseSyncId })
+  handle["profile_draft_accent_value"] = ArrayList(plannerAccents.map { it.preference.name })
+  handle["profile_draft_accent_dirty"] = plannerAccentsDirty
+  handle["profile_draft_accent_edit_sync"] = ArrayList(plannerAccentEdits.map { it.exerciseSyncId })
+  handle["profile_draft_accent_edit_value"] =
+      ArrayList(plannerAccentEdits.map { it.preference?.name.orEmpty() })
   handle["profile_draft_rep_min"] = preferredRepMin
   handle["profile_draft_rep_max"] = preferredRepMax
 }
