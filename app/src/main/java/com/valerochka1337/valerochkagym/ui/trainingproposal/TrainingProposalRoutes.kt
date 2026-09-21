@@ -4,6 +4,7 @@ import androidx.compose.runtime.*
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.valerochka1337.valerochkagym.ui.calendarai.WorkoutPreparationPolling
+import com.valerochka1337.valerochkagym.ui.calendarai.WorkoutPreparationViewModel
 import com.valerochka1337.valerochkagym.ui.components.GlowBackground
 
 @Composable
@@ -12,11 +13,12 @@ fun TrainingProposalInboxScreen(
     onOpen: (String) -> Unit,
     onBack: () -> Unit,
     viewModel: TrainingProposalViewModel = hiltViewModel(),
+    preparationViewModel: WorkoutPreparationViewModel = hiltViewModel(),
 ) {
   val state by viewModel.uiState.collectAsStateWithLifecycle()
+  val preparation by preparationViewModel.current.collectAsStateWithLifecycle()
   LaunchedEffect(viewModel, state.inbox.bindingGeneration) { viewModel.ensureInbox() }
-  // The inbox intentionally hides the preparation card, but active requests must keep polling.
-  WorkoutPreparationPolling()
+  WorkoutPreparationPolling(preparation, preparationViewModel::refreshWhileVisible)
   GlowBackground {
     TrainingProposalInboxContent(
         state.inbox.items,
@@ -29,6 +31,7 @@ fun TrainingProposalInboxScreen(
         onBack,
         onCreateAi = onCreateAi,
         onDelete = viewModel::delete,
+        preparation = preparation,
     )
   }
 }
