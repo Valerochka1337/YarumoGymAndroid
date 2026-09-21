@@ -44,8 +44,23 @@ constructor(
       sessions.session.flatMapLatest { session ->
         if (session == null) flowOf(null)
         else
-            combine(dao.observe(session.userId), dao.observeGeneration(session.userId)) { row, _ ->
+            combine(dao.observeLatest(session.userId), dao.observeGeneration(session.userId)) {
+                row,
+                _ ->
               row?.takeIf { sync.owner() == session.userId }
+            }
+      }
+
+  @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+  val all: Flow<List<PreparationEntity>> =
+      sessions.session.flatMapLatest { session ->
+        if (session == null) flowOf(emptyList())
+        else
+            combine(
+                dao.observeAll(session.userId).onStart { emit(emptyList()) },
+                dao.observeGeneration(session.userId),
+            ) { rows, _ ->
+              if (sync.owner() == session.userId) rows else emptyList()
             }
       }
 
@@ -56,40 +71,17 @@ constructor(
     return db.withTransaction {
       guard(session)
       val owner = session.tokens.userId
-      val old = dao.get(owner)
       val encoded = ProposalWire.json.encodeToString(intent)
-      if (old?.intentJson == encoded && old.state.startsWith("PAUSED_")) {
-        dao.save(
-            old.copy(
-                state = if (old.state == "PAUSED_WAITING") "WAITING" else "QUEUED",
-                errorCode = null,
-            )
-        )
-        return@withTransaction old.requestId
-      }
-      if (
-          old?.intentJson == encoded &&
-              old.state in activeStates &&
-              (old.generation == null || old.generation == dao.generation(owner))
-      )
-          return@withTransaction old.requestId
-      val ancestors =
-          old?.let {
-                (if (it.state in setOf("QUEUED", "RUNNING", "READY", "PAUSED_STATUS")) emptyList()
-                else ProposalWire.json.decodeFromString<List<String>>(it.replacesJson)) +
-                    it.requestId
-              }
-              .orEmpty()
-              .distinct()
-      if (ancestors.size > 1000) throw BackendException(409, "ai_sync_failed", "")
       val id = UUID.randomUUID().toString()
+      val previous = dao.get(owner)
       dao.save(
           PreparationEntity(
               owner,
               id,
               encoded,
-              ProposalWire.json.encodeToString(ancestors),
-              proposalJson = old?.proposalJson,
+              replacesJson = "[]",
+              createdAtMillis =
+                  maxOf(clock.nowMillis(), (previous?.createdAtMillis ?: Long.MIN_VALUE) + 1),
           )
       )
       id
@@ -100,23 +92,45 @@ constructor(
     val session = sessions.snapshot() ?: throw BackendException(401, "unauthorized", "")
     db.withTransaction {
       guard(session)
-      val row = dao.get(session.tokens.userId) ?: return@withTransaction
-      if (row.requestId != expectedId || row.state in activeStates || row.state == "READY")
+      val row = dao.get(session.tokens.userId, expectedId) ?: return@withTransaction
+      if (row.state in activeStates || row.state == "READY") return@withTransaction
+      if (!row.state.startsWith("PAUSED_") && dao.replacementOf(row.owner, row.requestId) != null)
           return@withTransaction
-      enqueue(ProposalWire.json.decodeFromString<CalendarAiIntent>(row.intentJson))
+      if (row.state.startsWith("PAUSED_")) {
+        dao.save(
+            row.copy(
+                state = if (row.state == "PAUSED_WAITING") "WAITING" else "QUEUED",
+                errorCode = null,
+            )
+        )
+      } else {
+        val previous = dao.get(row.owner)
+        dao.save(
+            PreparationEntity(
+                owner = row.owner,
+                requestId = UUID.randomUUID().toString(),
+                intentJson = row.intentJson,
+                replacesJson = ProposalWire.json.encodeToString(listOf(row.requestId)),
+                createdAtMillis =
+                    maxOf(clock.nowMillis(), (previous?.createdAtMillis ?: Long.MIN_VALUE) + 1),
+            )
+        )
+      }
       guard(session)
     }
   }
 
   private val processing = Mutex()
 
-  suspend fun step(expectedId: String? = null): Boolean =
-      processing.withLock { process(expectedId) }
+  suspend fun step(expectedId: String? = null, expectedOwner: String? = null): Boolean =
+      processing.withLock { process(expectedId, expectedOwner) }
 
-  private suspend fun process(expectedId: String?): Boolean {
+  private suspend fun process(expectedId: String?, expectedOwner: String?): Boolean {
     val session = sessions.snapshot() ?: return false
-    val row = dao.get(session.tokens.userId) ?: return false
-    if (expectedId != null && row.requestId != expectedId) return false
+    if (expectedOwner != null && expectedOwner != session.tokens.userId) return false
+    val row =
+        (if (expectedId == null) dao.get(session.tokens.userId)
+        else dao.get(session.tokens.userId, expectedId)) ?: return false
     if (row.state !in activeStates && row.state != "READY") return false
     try {
       guard(session)
@@ -240,10 +254,10 @@ constructor(
     }
   }
 
-  suspend fun pausePending(expectedId: String) {
+  suspend fun pausePending(expectedId: String, expectedOwner: String? = null) {
     val session = sessions.snapshot() ?: return
-    val row = dao.get(session.tokens.userId) ?: return
-    if (row.requestId != expectedId) return
+    if (expectedOwner != null && expectedOwner != session.tokens.userId) return
+    val row = dao.get(session.tokens.userId, expectedId) ?: return
     update(session, row) { latest ->
       if (latest.state in activeStates)
           latest.copy(
@@ -275,8 +289,7 @@ constructor(
             } != true || sync.owner() != session.tokens.userId
         )
             return@withTransaction false
-        val latest = dao.get(expected.owner) ?: return@withTransaction false
-        if (latest.requestId != expected.requestId) return@withTransaction false
+        val latest = dao.get(expected.owner, expected.requestId) ?: return@withTransaction false
         dao.save(change(latest))
         true
       }

@@ -36,6 +36,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.valerochka1337.valerochkagym.data.ai.PreparationEntity
+import com.valerochka1337.valerochkagym.data.ai.WorkoutPreparationRepository
 import com.valerochka1337.valerochkagym.data.db.PlannedSet
 import com.valerochka1337.valerochkagym.data.db.entity.ExerciseType
 import com.valerochka1337.valerochkagym.data.db.entity.Muscle
@@ -84,7 +85,7 @@ fun TrainingProposalInboxContent(
     onBack: () -> Unit,
     onCreateAi: (() -> Unit)? = null,
     onDelete: (TrainingProposal) -> Unit = {},
-    preparation: PreparationEntity? = null,
+    preparations: List<PreparationEntity> = emptyList(),
 ) {
   val haptics = gymHaptics()
   var deleteTarget by remember { mutableStateOf<TrainingProposal?>(null) }
@@ -122,11 +123,14 @@ fun TrainingProposalInboxContent(
           modifier = Modifier.fillMaxWidth(),
       )
     }
-    val calculation = preparation?.let { proposalCalculationLabel(it.state) }
-    if (preparation != null && calculation != null) {
-      key(preparation.requestId) { ProposalCalculationCard(preparation, calculation) }
+    val activePreparations =
+        preparations.filter { it.state in WorkoutPreparationRepository.activeStates }
+    activePreparations.forEach { preparation ->
+      proposalCalculationLabel(preparation.state)?.let { calculation ->
+        key(preparation.requestId) { ProposalCalculationCard(preparation, calculation) }
+      }
     }
-    if (!loading && error == null && items.isEmpty() && calculation == null) {
+    if (!loading && error == null && items.isEmpty() && activePreparations.isEmpty()) {
       GymCard(Modifier.fillMaxWidth()) {
         Text("Пока нет предложений", style = MaterialTheme.typography.titleMedium)
         Text(

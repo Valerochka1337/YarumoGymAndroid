@@ -13,6 +13,7 @@ import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.v2.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -50,7 +51,7 @@ class TrainingProposalComposeTest {
             { opened = it },
             {},
             onCreateAi = {},
-            preparation = preparation.value,
+            preparations = listOf(preparation.value),
         )
       }
     }
@@ -96,12 +97,12 @@ class TrainingProposalComposeTest {
               {},
               {},
               onCreateAi = { create++ },
-              preparation = preparation.value,
+              preparations = listOf(preparation.value),
           )
         }
       }
     }
-    compose.onNodeWithContentDescription("Расчёт предложения").assertIsNotEnabled()
+    compose.onNodeWithContentDescription("Расчёт предложения").assertDoesNotExist()
     compose
         .onAllNodes(
             SemanticsMatcher.expectValue(
@@ -110,14 +111,11 @@ class TrainingProposalComposeTest {
             )
         )
         .assertCountEquals(0)
-    compose.onNodeWithText("Пока нет предложений").assertDoesNotExist()
+    compose.onNodeWithText("Пока нет предложений").assertIsDisplayed()
     compose.onNodeWithText("Составить с ИИ").performClick()
     compose.runOnIdle { assertEquals(1, create) }
     compose.runOnIdle { preparation.value = preparation.value.copy(state = "SUPERSEDED") }
-    compose.onNodeWithContentDescription("Расчёт предложения").assertIsNotEnabled()
-    compose
-        .onNodeWithText("Расчёт заменён другим запросом. При необходимости составьте план ещё раз.")
-        .assertIsDisplayed()
+    compose.onNodeWithContentDescription("Расчёт предложения").assertDoesNotExist()
     compose
         .onAllNodes(
             SemanticsMatcher.expectValue(
@@ -126,6 +124,36 @@ class TrainingProposalComposeTest {
             )
         )
         .assertCountEquals(0)
+  }
+
+  @Test
+  fun `each active calculation has its own card and ready leaves the other active`() {
+    val first = mutableStateOf(PreparationEntity("owner", "request-1", "{}", "[]"))
+    val second =
+        mutableStateOf(PreparationEntity("owner", "request-2", "{}", "[]", state = "RUNNING"))
+    val proposals = mutableStateOf(emptyList<TrainingProposal>())
+    compose.setContent {
+      GymTheme {
+        TrainingProposalInboxContent(
+            items = proposals.value,
+            loading = false,
+            error = null,
+            hasMore = false,
+            onRetry = {},
+            onMore = {},
+            onOpen = {},
+            onBack = {},
+            preparations = listOf(first.value, second.value),
+        )
+      }
+    }
+    compose.onAllNodesWithContentDescription("Расчёт предложения").assertCountEquals(2)
+    compose.runOnIdle {
+      first.value = first.value.copy(state = "READY")
+      proposals.value = listOf(proposal())
+    }
+    compose.onAllNodesWithContentDescription("Расчёт предложения").assertCountEquals(1)
+    compose.onNodeWithText("Силовой план").assertIsDisplayed()
   }
 
   @Test

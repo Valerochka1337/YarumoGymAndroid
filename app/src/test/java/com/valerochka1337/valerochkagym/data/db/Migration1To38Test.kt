@@ -14,7 +14,7 @@ import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
 @Config(application = android.app.Application::class)
-class Migration1To38Test {
+class Migration1To39Test {
   @get:Rule
   val helper =
       MigrationTestHelper(InstrumentationRegistry.getInstrumentation(), GymDatabase::class.java)
@@ -26,11 +26,11 @@ class Migration1To38Test {
   }
 
   @Test
-  fun `full migration retains routines and reaches empty v2 accent schema`() {
+  fun `full migration retains routines and reaches the concurrent preparation schema`() {
     helper.createDatabase(name, 1).use {
       it.execSQL("INSERT INTO routines(id,name,note) VALUES(1,'Ноги','')")
     }
-    helper.runMigrationsAndValidate(name, 38, true, *GymDatabase.ALL_MIGRATIONS).use { db ->
+    helper.runMigrationsAndValidate(name, 39, true, *GymDatabase.ALL_MIGRATIONS).use { db ->
       db.query("SELECT COUNT(*) FROM routines WHERE id=1").use {
         it.moveToFirst()
         assertEquals(1, it.getInt(0))

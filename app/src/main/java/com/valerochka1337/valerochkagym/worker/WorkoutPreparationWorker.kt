@@ -23,9 +23,12 @@ constructor(
 ) : CoroutineWorker(context, params) {
   override suspend fun doWork(): Result {
     val id = inputData.getString("requestId") ?: return Result.failure()
-    if (!repository.step(id)) return Result.success()
+    val owner = inputData.getString("owner")
+    // Pre-v39 input had no owner. It can only proceed when the repository's current session
+    // resolves that request; an explicit owner is always fenced before any transport work.
+    if (!repository.step(id, owner)) return Result.success()
     if (runAttemptCount < 8) return Result.retry()
-    repository.pausePending(id)
+    repository.pausePending(id, owner)
     return Result.success()
   }
 }
@@ -38,21 +41,27 @@ constructor(
     private val repository: WorkoutPreparationRepository,
 ) {
   suspend fun start() {
-    repository.current
+    var scheduled = emptySet<Pair<String, String>>()
+    repository.all
         .map {
-          it?.takeIf { row -> row.state in WorkoutPreparationRepository.activeStates }?.requestId
+          it.filter { row -> row.state in WorkoutPreparationRepository.activeStates }
+              .map { row -> row.owner to row.requestId }
+              .toSet()
         }
         .distinctUntilChanged()
-        .collect { if (it != null) enqueue(it) }
+        .collect { active ->
+          (active - scheduled).forEach { (owner, id) -> enqueue(owner, id) }
+          scheduled = active
+        }
   }
 
-  fun enqueue(id: String) {
+  fun enqueue(owner: String, id: String) {
     WorkManager.getInstance(context)
         .enqueueUniqueWork(
-            "workout_preparation_$id",
+            "workout_preparation_${owner}_$id",
             ExistingWorkPolicy.APPEND_OR_REPLACE,
             OneTimeWorkRequestBuilder<WorkoutPreparationWorker>()
-                .setInputData(workDataOf("requestId" to id))
+                .setInputData(workDataOf("owner" to owner, "requestId" to id))
                 .setConstraints(
                     Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
                 )

@@ -155,11 +155,15 @@ class WorkoutPreparationRepositoryTest : RoomDaoTest() {
   }
 
   @Test
-  fun `offline enqueue is durable and repeated taps keep one identity`() = runTest {
+  fun `identical explicit launches are durable with independent identities`() = runTest {
     val (sync, repo) = fixture()
     val id = repo.enqueue(intent())
-    assertEquals(id, repo.enqueue(intent()))
-    assertEquals(id, repository(sync).current.first()!!.requestId)
+    val second = repo.enqueue(intent())
+    assertNotEquals(id, second)
+    assertEquals(
+        setOf(id, second),
+        repository(sync).all.first { it.size == 2 }.map { it.requestId }.toSet(),
+    )
     assertEquals(0, api.posts.size)
     assertEquals("WAITING", db.preparationDao().get(OWNER)!!.state)
   }
@@ -186,14 +190,14 @@ class WorkoutPreparationRepositoryTest : RoomDaoTest() {
     val next = db.preparationDao().get(OWNER)!!
     assertNotEquals(first, next.requestId)
     assertEquals("WAITING", next.state)
-    assertTrue(next.replacesJson.contains(first))
+    assertEquals("[]", next.replacesJson)
     api.beforeReply = null
     repo.step()
-    assertTrue(api.posts.last().contains(first))
+    assertTrue(api.posts.last().contains(next.requestId))
   }
 
   @Test
-  fun `exhausted delivery is explicit and manual retry keeps exact request`() = runTest {
+  fun `paused request retries its exact request without creating another identity`() = runTest {
     val (_, repo) = fixture()
     val id = repo.enqueue(intent())
     api.loseAck = true
@@ -201,21 +205,22 @@ class WorkoutPreparationRepositoryTest : RoomDaoTest() {
     val bytes = db.preparationDao().get(OWNER)!!.requestJson
     repo.pausePending(id)
     assertEquals("PAUSED_WAITING", db.preparationDao().get(OWNER)!!.state)
-    assertEquals(id, repo.enqueue(intent()))
+    repo.retryCurrent(id)
     assertEquals(bytes, db.preparationDao().get(OWNER)!!.requestJson)
     assertTrue(repo.step(id))
   }
 
   @Test
-  fun `obsolete worker cannot process or pause replacement`() = runTest {
+  fun `one request can pause while another continues`() = runTest {
     val (_, repo) = fixture()
     val old = repo.enqueue(intent())
     val next = repo.enqueue(intent().copy(availableDurationMinutes = 75))
-    assertFalse(repo.step(old))
+    assertTrue(repo.step(old))
     repo.pausePending(old)
     assertEquals(next, db.preparationDao().get(OWNER)!!.requestId)
     assertEquals("WAITING", db.preparationDao().get(OWNER)!!.state)
-    assertTrue(api.posts.isEmpty())
+    assertEquals("PAUSED_STATUS", db.preparationDao().get(OWNER, old)!!.state)
+    assertEquals(1, api.posts.size)
   }
 
   @Test
@@ -245,7 +250,25 @@ class WorkoutPreparationRepositoryTest : RoomDaoTest() {
     val row = db.preparationDao().get(OWNER)!!
     db.preparationDao().save(row.copy(state = "READY", proposalJson = "retained typed result"))
     repo.enqueue(intent().copy(availableDurationMinutes = 90))
-    assertEquals("retained typed result", db.preparationDao().get(OWNER)!!.proposalJson)
+    assertEquals(
+        "retained typed result",
+        db.preparationDao().get(OWNER, row.requestId)!!.proposalJson,
+    )
+  }
+
+  @Test
+  fun `backward clock still makes the latest explicit launch the form default`() = runTest {
+    val (_, repo) = fixture()
+    now = 500L
+    val first = repo.enqueue(intent())
+    now = 100L
+    val second = repo.enqueue(intent())
+    val rows = db.preparationDao().observeAll(OWNER).first()
+    assertEquals(second, db.preparationDao().get(OWNER)!!.requestId)
+    assertTrue(
+        checkNotNull(rows.firstOrNull { it.requestId == second }).createdAtMillis >
+            checkNotNull(rows.firstOrNull { it.requestId == first }).createdAtMillis
+    )
   }
 }
 

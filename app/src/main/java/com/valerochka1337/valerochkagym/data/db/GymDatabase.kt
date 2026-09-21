@@ -160,7 +160,7 @@ import kotlinx.serialization.json.JsonPrimitive
             com.valerochka1337.valerochkagym.data.db.entity.CoachSessionOutboxEntity::class,
             com.valerochka1337.valerochkagym.data.db.entity.CoachReceiptOutboxEntity::class,
         ],
-    version = 38,
+    version = 39,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -1568,6 +1568,21 @@ abstract class GymDatabase : RoomDatabase() {
           }
         }
 
+    /** v38 → v39: retain every preparation request instead of one owner pointer. */
+    val MIGRATION_38_39: Migration =
+        object : Migration(38, 39) {
+          override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                "CREATE TABLE `workout_preparations_new` (`owner` TEXT NOT NULL, `requestId` TEXT NOT NULL, `intentJson` TEXT NOT NULL, `replacesJson` TEXT NOT NULL, `requestJson` TEXT, `revision` INTEGER, `catalogRevision` INTEGER, `generation` INTEGER, `state` TEXT NOT NULL, `errorCode` TEXT, `proposalJson` TEXT, `createdAtMillis` INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(`owner`, `requestId`))"
+            )
+            db.execSQL(
+                "INSERT INTO `workout_preparations_new` (`owner`,`requestId`,`intentJson`,`replacesJson`,`requestJson`,`revision`,`catalogRevision`,`generation`,`state`,`errorCode`,`proposalJson`,`createdAtMillis`) SELECT `owner`,`requestId`,`intentJson`,`replacesJson`,`requestJson`,`revision`,`catalogRevision`,`generation`,`state`,`errorCode`,`proposalJson`,0 FROM `workout_preparations`"
+            )
+            db.execSQL("DROP TABLE `workout_preparations`")
+            db.execSQL("ALTER TABLE `workout_preparations_new` RENAME TO `workout_preparations`")
+          }
+        }
+
     /** Единственный production/test реестр всех поддерживаемых путей до текущей схемы. */
     val ALL_MIGRATIONS: Array<Migration> =
         arrayOf(
@@ -1608,6 +1623,7 @@ abstract class GymDatabase : RoomDatabase() {
             MIGRATION_35_36,
             MIGRATION_36_37,
             MIGRATION_37_38,
+            MIGRATION_38_39,
         )
 
     private val legacyCoachJson = Json {
