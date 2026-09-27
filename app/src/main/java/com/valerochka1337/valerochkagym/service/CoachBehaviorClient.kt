@@ -117,7 +117,13 @@ internal class CoachBehaviorClient(
                 )
             )
             if (relevant)
-                message(id, owner, workout, result.text("text") ?: "Уточните результат подхода", sourceSetsJson = result["sourceSets"]?.toString())
+                message(
+                    id,
+                    owner,
+                    workout,
+                    result.text("text") ?: "Уточните результат подхода",
+                    sourceSetsJson = result["sourceSets"]?.toString(),
+                )
             return relevant
           }
         }
@@ -170,7 +176,13 @@ internal class CoachBehaviorClient(
             receipt(entry, "STALE")
             return false
           }
-          message(id, owner, workout, result.text("text") ?: "Предлагаю изменить оставшийся план", sourceSetsJson = result["sourceSets"]?.toString())
+          message(
+              id,
+              owner,
+              workout,
+              result.text("text") ?: "Предлагаю изменить оставшийся план",
+              sourceSetsJson = result["sourceSets"]?.toString(),
+          )
           return true
         }
       }

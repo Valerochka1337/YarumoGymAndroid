@@ -15,8 +15,8 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.serialization.json.Json
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
 
 @HiltViewModel
 class CoachChatViewModel
@@ -80,20 +80,32 @@ constructor(
         )
       }
   private val persisted =
-      combine(basePersisted, coachDao.observeBehavior(workoutId), coachDao.observeWorkoutFull(workoutId)) { chat, behavior, full ->
+      combine(
+          basePersisted,
+          coachDao.observeBehavior(workoutId),
+          coachDao.observeWorkoutFull(workoutId),
+      ) { chat, behavior, full ->
         val current = full?.exercises?.flatMap { it.sets }?.associateBy { it.syncId }.orEmpty()
         chat.copy(
             behavior = behavior,
-            messages = chat.messages.map { message ->
-              message.copy(sourceSets = message.sourceSets.map { source ->
-                val set = current[source.sourceSetId]
-                source.copy(changed = set == null ||
-                    (set.actualWeightKg ?: set.weightKg) != source.actualWeightKg ||
-                    (set.actualReps ?: set.reps) != source.actualReps ||
-                    set.actualRir != source.actualRir ||
-                    set.completedAt != source.completedAt)
-              })
-            },
+            messages =
+                chat.messages.map { message ->
+                  message.copy(
+                      sourceSets =
+                          message.sourceSets.map { source ->
+                            val set = current[source.sourceSetId]
+                            source.copy(
+                                changed =
+                                    set == null ||
+                                        (set.actualWeightKg ?: set.weightKg) !=
+                                            source.actualWeightKg ||
+                                        (set.actualReps ?: set.reps) != source.actualReps ||
+                                        set.actualRir != source.actualRir ||
+                                        set.completedAt != source.completedAt
+                            )
+                          }
+                  )
+                },
         )
       }
   private val transient =
@@ -231,8 +243,9 @@ constructor(
   }
 
   private fun decodeSourceSets(value: String?): List<CoachSourceSet> =
-      value?.let { runCatching { Json.decodeFromString<List<CoachSourceSet>>(it) }.getOrDefault(emptyList()) }
-          ?: emptyList()
+      value?.let {
+        runCatching { Json.decodeFromString<List<CoachSourceSet>>(it) }.getOrDefault(emptyList())
+      } ?: emptyList()
 
   private data class PersistedChat(
       val messages: List<CoachChatMessage>,

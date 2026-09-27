@@ -380,20 +380,35 @@ fun CoachChatContent(
                       onClick = { expanded = !expanded },
                       modifier = Modifier.testTag("coach-source:${message.id}:$index"),
                   ) {
-                    Text(if (message.sourceSets.size == 1) "Подход, на котором основана рекомендация"
-                         else "Подход, на котором основана рекомендация · ${index + 1}")
+                    Text(
+                        if (message.sourceSets.size == 1) "Подход, на котором основана рекомендация"
+                        else "Подход, на котором основана рекомендация · ${index + 1}"
+                    )
                   }
                   if (expanded) {
                     Surface(
                         color = MaterialTheme.colorScheme.surfaceContainerLow,
                         shape = MaterialTheme.shapes.medium,
-                        modifier = Modifier.fillMaxWidth().testTag("coach-source-card:${message.id}:$index"),
+                        modifier =
+                            Modifier.fillMaxWidth()
+                                .testTag("coach-source-card:${message.id}:$index"),
                     ) {
                       Column(Modifier.padding(12.dp)) {
-                        Text("${source.exerciseName} · подход ${source.setIndex + 1}", style = MaterialTheme.typography.titleSmall)
-                        Text("План: ${source.plannedWeightKg?.let { "$it кг" } ?: "—"} × ${source.plannedReps ?: "—"}")
-                        Text("Записано: ${source.actualWeightKg?.let { "$it кг" } ?: "—"} × ${source.actualReps ?: "—"}; RIR ${source.actualRir ?: "не указан"}")
-                        if (source.changed) Text("Текущая запись изменена после рекомендации", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            "${source.exerciseName} · подход ${source.setIndex + 1}",
+                            style = MaterialTheme.typography.titleSmall,
+                        )
+                        Text(
+                            "План: ${source.plannedWeightKg?.let { "$it кг" } ?: "—"} × ${source.plannedReps ?: "—"}"
+                        )
+                        Text(
+                            "Записано: ${source.actualWeightKg?.let { "$it кг" } ?: "—"} × ${source.actualReps ?: "—"}; RIR ${source.actualRir ?: "не указан"}"
+                        )
+                        if (source.changed)
+                            Text(
+                                "Текущая запись изменена после рекомендации",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                       }
                     }
                   }

@@ -101,221 +101,240 @@ object CoachToolCodec {
       CoachContextFingerprint.of(snapshotJson(snapshot))
 
   fun snapshotJson(snapshot: WorkoutSnapshot): String {
-    val initialSets = snapshot.originalPlanJson
-        ?.let { Json.parseToJsonElement(it).jsonArray }
-        ?.flatMap { exercise -> exercise.jsonObject["sets"]?.jsonArray.orEmpty() }
-        ?.associateBy { it.jsonObject["set_id"]?.jsonPrimitive?.content }
-        .orEmpty()
+    val initialSets =
+        snapshot.originalPlanJson
+            ?.let { Json.parseToJsonElement(it).jsonArray }
+            ?.flatMap { exercise -> exercise.jsonObject["sets"]?.jsonArray.orEmpty() }
+            ?.associateBy { it.jsonObject["set_id"]?.jsonPrimitive?.content }
+            .orEmpty()
     return json.encodeToString(
-          buildJsonObject {
-            put("workout_id", snapshot.workoutId)
-            put("revision", snapshot.revision)
-            put("snapshot_schema_version", 2)
-            put("decision_mode", if (snapshot.originalPlanJson != null) "V2" else "LEGACY")
-            put("original_plan", buildJsonObject {
-              put("complete", snapshot.originalPlanJson != null)
-              put("exercises", snapshot.originalPlanJson?.let(Json::parseToJsonElement) ?: JsonArray(emptyList()))
-            })
-            snapshot.weeklyLoadJson?.let { put("weekly_load", Json.parseToJsonElement(it)) }
-            put("phase", snapshot.phase)
-            put("paused", snapshot.paused)
-            put("elapsed_seconds", snapshot.elapsedSeconds)
-            put("observed_at_millis", snapshot.observedAtMillis)
-            snapshot.futureRestSeconds?.let { put("future_rest_seconds", it) }
-            put(
-                "autoregulation_options",
-                buildJsonObject {
-                  put("goal", snapshot.autoregulationOptions.goal.name)
-                  snapshot.autoregulationOptions.observedRestSeconds?.let {
-                    put("observed_rest_seconds", it)
-                  }
-                  put(
-                      "available_weights_kg",
-                      buildJsonObject {
-                        snapshot.autoregulationOptions.availableWeightsKg.toSortedMap().forEach {
-                            (id, weights) ->
-                          put(
-                              id,
-                              buildJsonArray {
-                                weights.sorted().forEach { add(JsonPrimitive(it)) }
-                              },
-                          )
-                        }
-                      },
+        buildJsonObject {
+          put("workout_id", snapshot.workoutId)
+          put("revision", snapshot.revision)
+          put("snapshot_schema_version", 2)
+          put("decision_mode", if (snapshot.originalPlanJson != null) "V2" else "LEGACY")
+          put(
+              "original_plan",
+              buildJsonObject {
+                put("complete", snapshot.originalPlanJson != null)
+                put(
+                    "exercises",
+                    snapshot.originalPlanJson?.let(Json::parseToJsonElement)
+                        ?: JsonArray(emptyList()),
+                )
+              },
+          )
+          snapshot.weeklyLoadJson?.let { put("weekly_load", Json.parseToJsonElement(it)) }
+          put("phase", snapshot.phase)
+          put("paused", snapshot.paused)
+          put("elapsed_seconds", snapshot.elapsedSeconds)
+          put("observed_at_millis", snapshot.observedAtMillis)
+          snapshot.futureRestSeconds?.let { put("future_rest_seconds", it) }
+          put(
+              "autoregulation_options",
+              buildJsonObject {
+                put("goal", snapshot.autoregulationOptions.goal.name)
+                snapshot.autoregulationOptions.observedRestSeconds?.let {
+                  put("observed_rest_seconds", it)
+                }
+                put(
+                    "available_weights_kg",
+                    buildJsonObject {
+                      snapshot.autoregulationOptions.availableWeightsKg.toSortedMap().forEach {
+                          (id, weights) ->
+                        put(
+                            id,
+                            buildJsonArray { weights.sorted().forEach { add(JsonPrimitive(it)) } },
+                        )
+                      }
+                    },
+                )
+              },
+          )
+          snapshot.availableTimeMinutes?.let { put("available_time_minutes", it) }
+          snapshot.availableTimeEndsAtMillis?.let { put("available_time_ends_at_millis", it) }
+          put(
+              "excluded_exercise_ids",
+              buildJsonArray {
+                (snapshot.excludedExerciseSyncIds +
+                        snapshot.exercises
+                            .filter { it.exerciseId in snapshot.excludedExerciseIds }
+                            .map { it.exerciseSyncId }
+                            .filter { it.isNotBlank() })
+                    .sorted()
+                    .forEach { add(JsonPrimitive(it)) }
+              },
+          )
+          put(
+              "profile",
+              buildJsonObject {
+                snapshot.profile.trainingGoal?.let { put("training_goal", it) }
+                snapshot.profile.experienceLevel?.let { put("experience_level", it) }
+                snapshot.profile.constraints?.let { put("constraints", it) }
+                put("equipment_preferences", stringArray(snapshot.profile.equipmentIds))
+                snapshot.profile.preferredRepMin?.let { put("preferred_rep_min", it) }
+                snapshot.profile.preferredRepMax?.let { put("preferred_rep_max", it) }
+              },
+          )
+          put(
+              "decisions",
+              Json.parseToJsonElement(
+                  com.valerochka1337.valerochkagym.domain.CoachDecisionMemory.encode(
+                      snapshot.coachDecisions
                   )
-                },
-            )
-            snapshot.availableTimeMinutes?.let { put("available_time_minutes", it) }
-            snapshot.availableTimeEndsAtMillis?.let { put("available_time_ends_at_millis", it) }
+              ),
+          )
+          put("feelings", stringArray(snapshot.feelings))
+          snapshot.pulse?.let { pulse ->
             put(
-                "excluded_exercise_ids",
-                buildJsonArray {
-                  (snapshot.excludedExerciseSyncIds +
-                          snapshot.exercises
-                              .filter { it.exerciseId in snapshot.excludedExerciseIds }
-                              .map { it.exerciseSyncId }
-                              .filter { it.isNotBlank() })
-                      .sorted()
-                      .forEach { add(JsonPrimitive(it)) }
-                },
-            )
-            put(
-                "profile",
+                "pulse",
                 buildJsonObject {
-                  snapshot.profile.trainingGoal?.let { put("training_goal", it) }
-                  snapshot.profile.experienceLevel?.let { put("experience_level", it) }
-                  snapshot.profile.constraints?.let { put("constraints", it) }
-                  put("equipment_preferences", stringArray(snapshot.profile.equipmentIds))
-                  snapshot.profile.preferredRepMin?.let { put("preferred_rep_min", it) }
-                  snapshot.profile.preferredRepMax?.let { put("preferred_rep_max", it) }
+                  put("bpm", pulse.bpm)
+                  put("measured_at_millis", pulse.measuredAtMillis)
                 },
             )
+          }
+          snapshot.currentSetId?.let { put("current_set_id", it) }
+          snapshot.previousSetId?.let { put("previous_set_id", it) }
+          snapshot.nextSetId?.let { put("next_set_id", it) }
+          snapshot.rest?.let { rest ->
             put(
-                "decisions",
-                Json.parseToJsonElement(
-                    com.valerochka1337.valerochkagym.domain.CoachDecisionMemory.encode(
-                        snapshot.coachDecisions
-                    )
-                ),
-            )
-            put("feelings", stringArray(snapshot.feelings))
-            snapshot.pulse?.let { pulse ->
-              put(
-                  "pulse",
-                  buildJsonObject {
-                    put("bpm", pulse.bpm)
-                    put("measured_at_millis", pulse.measuredAtMillis)
-                  },
-              )
-            }
-            snapshot.currentSetId?.let { put("current_set_id", it) }
-            snapshot.previousSetId?.let { put("previous_set_id", it) }
-            snapshot.nextSetId?.let { put("next_set_id", it) }
-            snapshot.rest?.let { rest ->
-              put(
-                  "rest",
-                  buildJsonObject {
-                    put("start_id", rest.startId)
-                    put("started_at_millis", rest.startedAtMillis)
-                    rest.endsAtMillis?.let { put("ends_at_millis", it) }
-                    rest.plannedSeconds?.let { put("planned_seconds", it) }
-                    rest.remainingSeconds?.let { put("remaining_seconds", it) }
-                  },
-              )
-            }
-            put(
-                "exercises",
-                buildJsonArray {
-                  snapshot.exercises.forEach { exercise ->
-                    add(
-                        buildJsonObject {
-                          put("section_id", exercise.sectionId)
-                          put("exercise_id", exercise.exerciseSyncId)
-                          put("name", exercise.name)
-                          exercise.type?.let { put("type", it.name) }
-                          put("position", exercise.position)
-                          put("muscles", stringArray(exercise.muscleIds))
-                          put("equipment", stringArray(exercise.equipmentIds))
-                          put(
-                              "sets",
-                              buildJsonArray {
-                                exercise.sets.forEach { set ->
-                                  add(
-                                      buildJsonObject {
-                                        put("set_id", set.syncId)
-                                        val initial = initialSets[set.syncId]?.jsonObject
-                                        val changedFromStart = initial != null && (
-                                            set.weightKg != initial["weight_kg"]?.jsonPrimitive?.doubleOrNull ||
-                                            set.reps != initial["reps"]?.jsonPrimitive?.intOrNull ||
-                                            set.durationSec != initial["duration_sec"]?.jsonPrimitive?.intOrNull ||
-                                            set.speedKmh != initial["speed_kmh"]?.jsonPrimitive?.doubleOrNull ||
-                                            set.inclinePct != initial["incline_pct"]?.jsonPrimitive?.doubleOrNull ||
-                                            set.setType != initial["set_type"]?.jsonPrimitive?.content
-                                        )
-                                        put("plan_provenance", when {
-                                          snapshot.originalPlanJson == null -> "UNKNOWN"
-                                          initial == null -> "ADDED_AFTER_START"
-                                          changedFromStart -> "MODIFIED_AFTER_START"
-                                          else -> "INITIAL_PLAN"
-                                        })
-                                        put("note", set.note)
-                                        put("index", set.setIndex)
-                                        put("completed", set.completed)
-                                        set.completedAt?.let { put("completed_at", it) }
-                                        set.weightKg?.let { put("weight_kg", it) }
-                                        set.reps?.let { put("reps", it) }
-                                        set.durationSec?.let { put("duration_sec", it) }
-                                        set.speedKmh?.let { put("speed_kmh", it) }
-                                        set.inclinePct?.let { put("incline_pct", it) }
-                                        put("set_type", set.setType)
-                                        set.originalWeightKg?.let { put("original_weight_kg", it) }
-                                        set.originalReps?.let { put("original_reps", it) }
-                                        set.originalDurationSec?.let {
-                                          put("original_duration_sec", it)
-                                        }
-                                        set.originalSpeedKmh?.let { put("original_speed_kmh", it) }
-                                        set.originalInclinePct?.let {
-                                          put("original_incline_pct", it)
-                                        }
-                                        set.targetWeightKg?.let { put("target_weight_kg", it) }
-                                        set.targetReps?.let { put("target_reps", it) }
-                                        set.targetDurationSec?.let {
-                                          put("target_duration_sec", it)
-                                        }
-                                        set.targetSpeedKmh?.let { put("target_speed_kmh", it) }
-                                        set.targetInclinePct?.let { put("target_incline_pct", it) }
-                                        set.actualWeightKg?.let { put("actual_weight_kg", it) }
-                                        set.actualReps?.let { put("actual_reps", it) }
-                                        set.actualDurationSec?.let {
-                                          put("actual_duration_sec", it)
-                                        }
-                                        set.actualSpeedKmh?.let { put("actual_speed_kmh", it) }
-                                        set.actualInclinePct?.let { put("actual_incline_pct", it) }
-                                        if (set.actualRirAtLeastFour)
-                                            put("actual_rir_at_least_four", true)
-                                        put("reported_feelings", stringArray(set.reportedFeelings))
-                                        put(
-                                            "actual_rir",
-                                            set.actualRir?.let(::JsonPrimitive) ?: JsonNull,
-                                        )
-                                      }
-                                  )
-                                }
-                              },
-                          )
-                          put(
-                              "history",
-                              buildJsonArray {
-                                exercise.history.forEach { row ->
-                                  add(
-                                      buildJsonObject {
-                                        put("completed_at", row.completedAt)
-                                        put("workout_id", row.workoutId)
-                                        put("set_id", row.setSyncId)
-                                        put("note", row.note)
-                                        put("interrupted", row.interrupted)
-                                        put("set_index", row.setIndex)
-                                        row.weightKg?.let { put("weight_kg", it) }
-                                        row.reps?.let { put("reps", it) }
-                                        row.durationSec?.let { put("duration_sec", it) }
-                                        row.speedKmh?.let { put("speed_kmh", it) }
-                                        row.inclinePct?.let { put("incline_pct", it) }
-                                        put("set_type", row.setType)
-                                        row.actualRir?.let { put("actual_rir", it) }
-                                        if (row.actualRirAtLeastFour)
-                                            put("actual_rir_at_least_four", true)
-                                      }
-                                  )
-                                }
-                              },
-                          )
-                        }
-                    )
-                  }
+                "rest",
+                buildJsonObject {
+                  put("start_id", rest.startId)
+                  put("started_at_millis", rest.startedAtMillis)
+                  rest.endsAtMillis?.let { put("ends_at_millis", it) }
+                  rest.plannedSeconds?.let { put("planned_seconds", it) }
+                  rest.remainingSeconds?.let { put("remaining_seconds", it) }
                 },
             )
-          },
-      )
+          }
+          put(
+              "exercises",
+              buildJsonArray {
+                snapshot.exercises.forEach { exercise ->
+                  add(
+                      buildJsonObject {
+                        put("section_id", exercise.sectionId)
+                        put("exercise_id", exercise.exerciseSyncId)
+                        put("name", exercise.name)
+                        exercise.type?.let { put("type", it.name) }
+                        put("position", exercise.position)
+                        put("muscles", stringArray(exercise.muscleIds))
+                        put("equipment", stringArray(exercise.equipmentIds))
+                        put(
+                            "sets",
+                            buildJsonArray {
+                              exercise.sets.forEach { set ->
+                                add(
+                                    buildJsonObject {
+                                      put("set_id", set.syncId)
+                                      val initial = initialSets[set.syncId]?.jsonObject
+                                      val changedFromStart =
+                                          initial != null &&
+                                              (set.weightKg !=
+                                                  initial["weight_kg"]
+                                                      ?.jsonPrimitive
+                                                      ?.doubleOrNull ||
+                                                  set.reps !=
+                                                      initial["reps"]?.jsonPrimitive?.intOrNull ||
+                                                  set.durationSec !=
+                                                      initial["duration_sec"]
+                                                          ?.jsonPrimitive
+                                                          ?.intOrNull ||
+                                                  set.speedKmh !=
+                                                      initial["speed_kmh"]
+                                                          ?.jsonPrimitive
+                                                          ?.doubleOrNull ||
+                                                  set.inclinePct !=
+                                                      initial["incline_pct"]
+                                                          ?.jsonPrimitive
+                                                          ?.doubleOrNull ||
+                                                  set.setType !=
+                                                      initial["set_type"]?.jsonPrimitive?.content)
+                                      put(
+                                          "plan_provenance",
+                                          when {
+                                            snapshot.originalPlanJson == null -> "UNKNOWN"
+                                            initial == null -> "ADDED_AFTER_START"
+                                            changedFromStart -> "MODIFIED_AFTER_START"
+                                            else -> "INITIAL_PLAN"
+                                          },
+                                      )
+                                      put("note", set.note)
+                                      put("index", set.setIndex)
+                                      put("completed", set.completed)
+                                      set.completedAt?.let { put("completed_at", it) }
+                                      set.weightKg?.let { put("weight_kg", it) }
+                                      set.reps?.let { put("reps", it) }
+                                      set.durationSec?.let { put("duration_sec", it) }
+                                      set.speedKmh?.let { put("speed_kmh", it) }
+                                      set.inclinePct?.let { put("incline_pct", it) }
+                                      put("set_type", set.setType)
+                                      set.originalWeightKg?.let { put("original_weight_kg", it) }
+                                      set.originalReps?.let { put("original_reps", it) }
+                                      set.originalDurationSec?.let {
+                                        put("original_duration_sec", it)
+                                      }
+                                      set.originalSpeedKmh?.let { put("original_speed_kmh", it) }
+                                      set.originalInclinePct?.let {
+                                        put("original_incline_pct", it)
+                                      }
+                                      set.targetWeightKg?.let { put("target_weight_kg", it) }
+                                      set.targetReps?.let { put("target_reps", it) }
+                                      set.targetDurationSec?.let { put("target_duration_sec", it) }
+                                      set.targetSpeedKmh?.let { put("target_speed_kmh", it) }
+                                      set.targetInclinePct?.let { put("target_incline_pct", it) }
+                                      set.actualWeightKg?.let { put("actual_weight_kg", it) }
+                                      set.actualReps?.let { put("actual_reps", it) }
+                                      set.actualDurationSec?.let { put("actual_duration_sec", it) }
+                                      set.actualSpeedKmh?.let { put("actual_speed_kmh", it) }
+                                      set.actualInclinePct?.let { put("actual_incline_pct", it) }
+                                      if (set.actualRirAtLeastFour)
+                                          put("actual_rir_at_least_four", true)
+                                      put("reported_feelings", stringArray(set.reportedFeelings))
+                                      put(
+                                          "actual_rir",
+                                          set.actualRir?.let(::JsonPrimitive) ?: JsonNull,
+                                      )
+                                    }
+                                )
+                              }
+                            },
+                        )
+                        put(
+                            "history",
+                            buildJsonArray {
+                              exercise.history.forEach { row ->
+                                add(
+                                    buildJsonObject {
+                                      put("completed_at", row.completedAt)
+                                      put("workout_id", row.workoutId)
+                                      put("set_id", row.setSyncId)
+                                      put("note", row.note)
+                                      put("interrupted", row.interrupted)
+                                      put("set_index", row.setIndex)
+                                      row.weightKg?.let { put("weight_kg", it) }
+                                      row.reps?.let { put("reps", it) }
+                                      row.durationSec?.let { put("duration_sec", it) }
+                                      row.speedKmh?.let { put("speed_kmh", it) }
+                                      row.inclinePct?.let { put("incline_pct", it) }
+                                      put("set_type", row.setType)
+                                      row.actualRir?.let { put("actual_rir", it) }
+                                      if (row.actualRirAtLeastFour)
+                                          put("actual_rir_at_least_four", true)
+                                    }
+                                )
+                              }
+                            },
+                        )
+                      }
+                  )
+                }
+              },
+          )
+        },
+    )
   }
 
   private fun stringArray(values: Set<String>) = buildJsonArray {

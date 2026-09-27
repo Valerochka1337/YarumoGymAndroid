@@ -158,7 +158,10 @@ class ActiveWorkoutRepositoryTest : RoomDaoTest() {
     assertEquals(listOf(2, 1), full.exercises.map { it.sets.size })
     val original = requireNotNull(full.workout.coachOriginalPlanJson)
     val plan = kotlinx.serialization.json.Json.parseToJsonElement(original).jsonArray
-    assertEquals(listOf("Присед", "Жим"), plan.map { it.jsonObject["name"]!!.jsonPrimitive.content })
+    assertEquals(
+        listOf("Присед", "Жим"),
+        plan.map { it.jsonObject["name"]!!.jsonPrimitive.content },
+    )
     repository.mutateSet(full.exercises.first().sets.first().id) { it.copy(reps = 3) }
     assertEquals(original, workoutFull(workoutId).workout.coachOriginalPlanJson)
   }
