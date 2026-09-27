@@ -842,6 +842,7 @@ constructor(
                 System.currentTimeMillis(),
                 if (state == "FAILED" || invalidResult) "ERROR" else "DELIVERED",
                 CoachReply.encodeQuickReplies(replies.orEmpty()),
+                sourceSetsJson = result?.get("sourceSets")?.toString(),
             )
         )
         visible = true

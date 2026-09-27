@@ -46,6 +46,24 @@ import com.valerochka1337.valerochkagym.ui.theme.LocalCoachActionColors
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.collectLatest
 
+@kotlinx.serialization.Serializable
+data class CoachSourceSet(
+    val workoutId: String,
+    val sectionId: String,
+    val sourceSetId: String,
+    val exerciseName: String,
+    val setIndex: Int,
+    val setType: String? = null,
+    val plannedWeightKg: Double? = null,
+    val plannedReps: Int? = null,
+    val actualWeightKg: Double? = null,
+    val actualReps: Int? = null,
+    val actualRir: Int? = null,
+    val completedAt: Long? = null,
+    val revision: Long = 0,
+    val changed: Boolean = false,
+)
+
 data class CoachChatMessage(
     val id: String,
     val role: String,
@@ -56,6 +74,7 @@ data class CoachChatMessage(
     val streaming: Boolean = false,
     val unread: Boolean = false,
     val isNew: Boolean = false,
+    val sourceSets: List<CoachSourceSet> = emptyList(),
 )
 
 data class CoachChatProposal(
@@ -352,6 +371,30 @@ fun CoachChatContent(
                         modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
                     ) {
                       Icon(Icons.Rounded.Refresh, "Повторить запрос")
+                    }
+                  }
+                }
+                message.sourceSets.forEachIndexed { index, source ->
+                  var expanded by remember(message.id, source.sourceSetId) { mutableStateOf(false) }
+                  TextButton(
+                      onClick = { expanded = !expanded },
+                      modifier = Modifier.testTag("coach-source:${message.id}:$index"),
+                  ) {
+                    Text(if (message.sourceSets.size == 1) "Подход, на котором основана рекомендация"
+                         else "Подход, на котором основана рекомендация · ${index + 1}")
+                  }
+                  if (expanded) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceContainerLow,
+                        shape = MaterialTheme.shapes.medium,
+                        modifier = Modifier.fillMaxWidth().testTag("coach-source-card:${message.id}:$index"),
+                    ) {
+                      Column(Modifier.padding(12.dp)) {
+                        Text("${source.exerciseName} · подход ${source.setIndex + 1}", style = MaterialTheme.typography.titleSmall)
+                        Text("План: ${source.plannedWeightKg?.let { "$it кг" } ?: "—"} × ${source.plannedReps ?: "—"}")
+                        Text("Записано: ${source.actualWeightKg?.let { "$it кг" } ?: "—"} × ${source.actualReps ?: "—"}; RIR ${source.actualRir ?: "не указан"}")
+                        if (source.changed) Text("Текущая запись изменена после рекомендации", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                      }
                     }
                   }
                 }

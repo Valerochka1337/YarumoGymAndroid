@@ -160,7 +160,7 @@ import kotlinx.serialization.json.JsonPrimitive
             com.valerochka1337.valerochkagym.data.db.entity.CoachSessionOutboxEntity::class,
             com.valerochka1337.valerochkagym.data.db.entity.CoachReceiptOutboxEntity::class,
         ],
-    version = 39,
+    version = 40,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -1583,6 +1583,15 @@ abstract class GymDatabase : RoomDatabase() {
           }
         }
 
+    /** v39 → v40: freeze the workout plan and preserve source-set evidence in chat. */
+    val MIGRATION_39_40: Migration =
+        object : Migration(39, 40) {
+          override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE workouts ADD COLUMN coachOriginalPlanJson TEXT")
+            db.execSQL("ALTER TABLE coach_messages ADD COLUMN sourceSetsJson TEXT")
+          }
+        }
+
     /** Единственный production/test реестр всех поддерживаемых путей до текущей схемы. */
     val ALL_MIGRATIONS: Array<Migration> =
         arrayOf(
@@ -1624,6 +1633,7 @@ abstract class GymDatabase : RoomDatabase() {
             MIGRATION_36_37,
             MIGRATION_37_38,
             MIGRATION_38_39,
+            MIGRATION_39_40,
         )
 
     private val legacyCoachJson = Json {

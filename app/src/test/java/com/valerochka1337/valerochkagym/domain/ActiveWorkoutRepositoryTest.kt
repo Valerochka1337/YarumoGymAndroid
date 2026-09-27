@@ -17,6 +17,9 @@ import com.valerochka1337.valerochkagym.data.db.entity.WorkoutSetEntity
 import com.valerochka1337.valerochkagym.data.sortedWorkoutFull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -153,6 +156,11 @@ class ActiveWorkoutRepositoryTest : RoomDaoTest() {
     assertEquals(listOf("Присед", "Жим"), full.exercises.map { it.exercise.name })
     assertEquals(listOf(0, 1), full.exercises.map { it.workoutExercise.position })
     assertEquals(listOf(2, 1), full.exercises.map { it.sets.size })
+    val original = requireNotNull(full.workout.coachOriginalPlanJson)
+    val plan = kotlinx.serialization.json.Json.parseToJsonElement(original).jsonArray
+    assertEquals(listOf("Присед", "Жим"), plan.map { it.jsonObject["name"]!!.jsonPrimitive.content })
+    repository.mutateSet(full.exercises.first().sets.first().id) { it.copy(reps = 3) }
+    assertEquals(original, workoutFull(workoutId).workout.coachOriginalPlanJson)
   }
 
   @Test

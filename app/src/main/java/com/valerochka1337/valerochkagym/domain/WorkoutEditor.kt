@@ -836,6 +836,8 @@ constructor(
     }
     database.coachRunDao().markDirty(workoutId)
     val receipt = saveReceipt(accountId, workoutId, operationId, revision, CommandResult.APPLIED)
+    if (packet.operations.singleOrNull() is WorkoutChangeSet.Operation.UndoLast)
+        saveJournal(journalId("$operationId:undo"), accountId, workoutId, "undo", "system", "Правка отменена")
     saveCommandJournal(operationId, accountId, workoutId, packet, receipt)
     return Applied(receipt, calculated.stagedRest)
   }

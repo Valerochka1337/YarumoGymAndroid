@@ -23,6 +23,7 @@ import java.util.UUID
 import javax.inject.Inject
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.serialization.json.*
 
 /** Имя тренировки без программы. */
 private const val EMPTY_WORKOUT_NAME = "Тренировка"
@@ -115,6 +116,7 @@ constructor(
                     }
                 if (sets.isNotEmpty()) workoutDao.insertSets(sets)
               }
+          captureOriginalPlan(workoutId)
           workoutId
         }
       }
@@ -419,7 +421,40 @@ constructor(
             finishedAt = null,
         ),
     )
+    captureOriginalPlan(workoutId)
     return workoutId
+  }
+
+  private suspend fun captureOriginalPlan(workoutId: String) {
+    val full = workoutDao.getWorkoutFull(workoutId) ?: return
+    val plan = buildJsonArray {
+      full.exercises.sortedBy { it.workoutExercise.position }.forEach { row ->
+        val exercise = database.exerciseDao().getById(row.workoutExercise.exerciseId) ?: return@forEach
+        add(buildJsonObject {
+          put("section_id", row.workoutExercise.sectionId)
+          put("exercise_id", exercise.syncId)
+          put("name", exercise.name)
+          put("type", exercise.type.name)
+          put("position", row.workoutExercise.position)
+          put("sets", buildJsonArray {
+            row.sets.sortedBy { it.setIndex }.forEach { set ->
+              add(buildJsonObject {
+                put("set_id", set.syncId)
+                put("index", set.setIndex)
+                put("set_type", set.setType)
+                put("completed", false)
+                set.weightKg?.let { put("weight_kg", it) }
+                set.reps?.let { put("reps", it) }
+                set.durationSec?.let { put("duration_sec", it) }
+                set.speedKmh?.let { put("speed_kmh", it) }
+                set.inclinePct?.let { put("incline_pct", it) }
+              })
+            }
+          })
+        })
+      }
+    }
+    database.coachDao().captureCoachOriginalPlan(workoutId, plan.toString())
   }
 
   private fun now(): Long = System.currentTimeMillis()

@@ -238,6 +238,49 @@ class CoachChatViewModelTest : RoomDaoTest() {
         assertTrue(model.uiState.first { it.messages.size == 2 }.quickReplies.isEmpty())
       }
 
+  @Test
+  fun `reopened source card keeps original result and marks later correction`() =
+      runTest(mainDispatcherRule.testDispatcher.scheduler) {
+        val workout = insertWorkout("source")
+        val exercise = db.exerciseDao().insert(
+            com.valerochka1337.valerochkagym.data.db.entity.ExerciseEntity(
+                name = "Присед",
+                muscleGroup = com.valerochka1337.valerochkagym.data.db.entity.MuscleGroup.LEGS,
+                type = com.valerochka1337.valerochkagym.data.db.entity.ExerciseType.STRENGTH,
+            )
+        )
+        val section = com.valerochka1337.valerochkagym.data.db.entity.WorkoutExerciseEntity(
+            workoutId = workout, exerciseId = exercise, position = 0,
+        )
+        val sectionRow = db.workoutDao().insertWorkoutExercise(section)
+        val set = com.valerochka1337.valerochkagym.data.db.entity.WorkoutSetEntity(
+            workoutExerciseId = sectionRow, setIndex = 0, weightKg = 50.0, reps = 8,
+            isCompleted = true, completedAt = 1000L, actualWeightKg = 50.0, actualReps = 8,
+            setType = "WORK",
+        )
+        val setRow = db.workoutDao().insertSet(set)
+        val evidence = com.valerochka1337.valerochkagym.ui.coach.CoachSourceSet(
+            workoutId = workout, sectionId = section.sectionId, sourceSetId = set.syncId,
+            exerciseName = "Присед", setIndex = 0, plannedWeightKg = 50.0,
+            plannedReps = 8, actualWeightKg = 50.0, actualReps = 8, completedAt = 1000L,
+        )
+        db.coachDao().saveMessage(
+            com.valerochka1337.valerochkagym.data.db.entity.CoachMessageEntity(
+                "recommendation", "user", workout, "assistant", "Снизить вес", 2000L,
+                sourceSetsJson = Json.encodeToString(listOf(evidence)),
+            )
+        )
+        val vm = viewModel(workout)
+        backgroundScope.launch(kotlinx.coroutines.test.UnconfinedTestDispatcher(testScheduler)) {
+          vm.uiState.collect()
+        }
+        val initial = vm.uiState.first { it.messages.any { m -> m.id == "recommendation" } }
+        assertFalse(initial.messages.single().sourceSets.single().changed)
+        db.workoutDao().updateSet(requireNotNull(db.workoutDao().getSet(setRow)).copy(actualReps = 7))
+        val corrected = vm.uiState.first { it.messages.single().sourceSets.single().changed }
+        assertEquals(8, corrected.messages.single().sourceSets.single().actualReps)
+      }
+
   private fun TestScope.viewModel(
       workoutId: String,
       service: CoachConversationService = conversation(),

@@ -197,6 +197,7 @@ internal object MigrationRecoveryFixtures {
             "coach_session_context",
             "coach_sync_state",
         )) db.execSQL("DROP TABLE $table")
+    db.execSQL("ALTER TABLE workouts DROP COLUMN coachOriginalPlanJson")
     db.execSQL("ALTER TABLE workouts DROP COLUMN coachRevision")
     db.execSQL("DROP INDEX index_workout_sets_syncId")
     for (column in

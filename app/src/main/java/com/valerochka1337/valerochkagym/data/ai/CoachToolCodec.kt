@@ -100,11 +100,23 @@ object CoachToolCodec {
   fun contextVersion(snapshot: WorkoutSnapshot): String =
       CoachContextFingerprint.of(snapshotJson(snapshot))
 
-  fun snapshotJson(snapshot: WorkoutSnapshot): String =
-      json.encodeToString(
+  fun snapshotJson(snapshot: WorkoutSnapshot): String {
+    val initialSets = snapshot.originalPlanJson
+        ?.let { Json.parseToJsonElement(it).jsonArray }
+        ?.flatMap { exercise -> exercise.jsonObject["sets"]?.jsonArray.orEmpty() }
+        ?.associateBy { it.jsonObject["set_id"]?.jsonPrimitive?.content }
+        .orEmpty()
+    return json.encodeToString(
           buildJsonObject {
             put("workout_id", snapshot.workoutId)
             put("revision", snapshot.revision)
+            put("snapshot_schema_version", 2)
+            put("decision_mode", if (snapshot.originalPlanJson != null) "V2" else "LEGACY")
+            put("original_plan", buildJsonObject {
+              put("complete", snapshot.originalPlanJson != null)
+              put("exercises", snapshot.originalPlanJson?.let(Json::parseToJsonElement) ?: JsonArray(emptyList()))
+            })
+            snapshot.weeklyLoadJson?.let { put("weekly_load", Json.parseToJsonElement(it)) }
             put("phase", snapshot.phase)
             put("paused", snapshot.paused)
             put("elapsed_seconds", snapshot.elapsedSeconds)
@@ -211,6 +223,21 @@ object CoachToolCodec {
                                   add(
                                       buildJsonObject {
                                         put("set_id", set.syncId)
+                                        val initial = initialSets[set.syncId]?.jsonObject
+                                        val changedFromStart = initial != null && (
+                                            set.weightKg != initial["weight_kg"]?.jsonPrimitive?.doubleOrNull ||
+                                            set.reps != initial["reps"]?.jsonPrimitive?.intOrNull ||
+                                            set.durationSec != initial["duration_sec"]?.jsonPrimitive?.intOrNull ||
+                                            set.speedKmh != initial["speed_kmh"]?.jsonPrimitive?.doubleOrNull ||
+                                            set.inclinePct != initial["incline_pct"]?.jsonPrimitive?.doubleOrNull ||
+                                            set.setType != initial["set_type"]?.jsonPrimitive?.content
+                                        )
+                                        put("plan_provenance", when {
+                                          snapshot.originalPlanJson == null -> "UNKNOWN"
+                                          initial == null -> "ADDED_AFTER_START"
+                                          changedFromStart -> "MODIFIED_AFTER_START"
+                                          else -> "INITIAL_PLAN"
+                                        })
                                         put("note", set.note)
                                         put("index", set.setIndex)
                                         put("completed", set.completed)
@@ -289,6 +316,7 @@ object CoachToolCodec {
             )
           },
       )
+  }
 
   private fun stringArray(values: Set<String>) = buildJsonArray {
     values.sorted().forEach { add(JsonPrimitive(it)) }

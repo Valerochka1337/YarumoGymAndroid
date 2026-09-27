@@ -117,7 +117,7 @@ internal class CoachBehaviorClient(
                 )
             )
             if (relevant)
-                message(id, owner, workout, result.text("text") ?: "Уточните результат подхода")
+                message(id, owner, workout, result.text("text") ?: "Уточните результат подхода", sourceSetsJson = result["sourceSets"]?.toString())
             return relevant
           }
         }
@@ -170,7 +170,7 @@ internal class CoachBehaviorClient(
             receipt(entry, "STALE")
             return false
           }
-          message(id, owner, workout, result.text("text") ?: "Предлагаю изменить оставшийся план")
+          message(id, owner, workout, result.text("text") ?: "Предлагаю изменить оставшийся план", sourceSetsJson = result["sourceSets"]?.toString())
           return true
         }
       }
@@ -280,6 +280,7 @@ internal class CoachBehaviorClient(
       workout: String,
       text: String,
       role: String = "assistant",
+      sourceSetsJson: String? = null,
   ) {
     val stableId =
         runCatching { UUID.fromString(id).toString() }
@@ -295,6 +296,7 @@ internal class CoachBehaviorClient(
                 text,
                 System.currentTimeMillis(),
                 "DELIVERED",
+                sourceSetsJson = sourceSetsJson,
             )
         )
     db.coachDao()
