@@ -10,6 +10,17 @@ import kotlinx.coroutines.flow.Flow
 @Dao
 interface CoachDao {
   @Query(
+      "UPDATE workouts SET coachOriginalPlanJson=:plan WHERE id=:workoutId AND coachOriginalPlanJson IS NULL"
+  )
+  suspend fun captureCoachOriginalPlan(workoutId: String, plan: String)
+
+  @androidx.room.Transaction
+  @Query("SELECT * FROM workouts WHERE id=:id")
+  fun observeWorkoutFull(
+      id: String
+  ): Flow<com.valerochka1337.valerochkagym.data.db.relation.WorkoutFull?>
+
+  @Query(
       """
     SELECT s.*, w.id AS historyWorkoutId, w.finishedAt AS historyWorkoutFinishedAt FROM workout_sets s
     JOIN workout_exercises we ON we.id=s.workoutExerciseId

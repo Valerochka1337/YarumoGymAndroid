@@ -29,4 +29,5 @@ data class CoachMessageEntity(
     val quickRepliesJson: String? = null,
     /** Only assistant replies participate in the Live Coach unread counter. */
     val readAt: Long? = null,
+    val sourceSetsJson: String? = null,
 )

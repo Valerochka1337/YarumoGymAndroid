@@ -3,14 +3,26 @@ package com.valerochka1337.valerochkagym.domain
 import androidx.room.withTransaction
 import com.valerochka1337.valerochkagym.data.backend.BackendSessionStore
 import com.valerochka1337.valerochkagym.data.db.GymDatabase
+import com.valerochka1337.valerochkagym.data.db.entity.MuscleLoad
+import com.valerochka1337.valerochkagym.di.ComputeDispatcher
 import com.valerochka1337.valerochkagym.diagnostics.CoachDiagnostics
+import com.valerochka1337.valerochkagym.domain.analysis.*
 import com.valerochka1337.valerochkagym.service.RestTimerEngine
 import com.valerochka1337.valerochkagym.service.RestTimerState
 import com.valerochka1337.valerochkagym.service.heartrate.HeartRateMonitor
 import com.valerochka1337.valerochkagym.service.heartrate.freshAt
+import java.time.ZoneId
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 @Singleton
 class CoachWorkoutReader
@@ -20,6 +32,8 @@ constructor(
     private val restTimer: RestTimerEngine,
     private val sessions: BackendSessionStore,
     private val heartRateMonitor: HeartRateMonitor? = null,
+    @param:ComputeDispatcher
+    private val computeDispatcher: CoroutineDispatcher = Dispatchers.Unconfined,
 ) {
   private val json = Json { ignoreUnknownKeys = false }
 
@@ -31,6 +45,7 @@ constructor(
       CoachDiagnostics.trace("context.snapshot") {
         database
             .withTransaction { readSnapshot(accountId, workoutId, expectedSessionEpoch) }
+            ?.let { base -> base.copy(weeklyLoadJson = weeklyLoad(base)) }
             .also {
               CoachDiagnostics.event(
                   "context.snapshot.result",
@@ -41,6 +56,51 @@ constructor(
               )
             }
       }
+
+  private suspend fun weeklyLoad(snapshot: WorkoutSnapshot): String? {
+    val zone = ZoneId.systemDefault()
+    return combine(
+            database.workoutDao().observeCompletedSets(),
+            database.workoutDao().observeFinishedWorkouts(),
+            database.exerciseMuscleDao().observeAll(),
+        ) { sets, workouts, muscles ->
+          val map =
+              muscles
+                  .groupBy { it.exerciseId }
+                  .mapValues { (_, rows) -> rows.map { MuscleLoad(it.muscle, it.contribution) } }
+          val report =
+              AnalyticsEngine()
+                  .analyze(
+                      AnalyticsInput(sets, workouts, map, snapshot.observedAtMillis, zone),
+                      AnalysisPeriod.WEEKS_4,
+                  )
+          val start = report.range.start.atStartOfDay(zone).toInstant().toEpochMilli()
+          val until =
+              report.range.endInclusive.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
+          val complete =
+              workouts.any { it.startedAt <= start } &&
+                  sets
+                      .filter { it.completedAt in start until until }
+                      .all { map[it.exerciseId].orEmpty().isNotEmpty() }
+          buildJsonObject {
+                put("from_millis", start)
+                put("until_millis", until)
+                put("complete", complete)
+                put("completed_workout_count", report.sessions)
+                put(
+                    "effective_sets_per_week",
+                    buildJsonObject {
+                      report.muscleLoads.forEach {
+                        put(it.muscle.name, JsonPrimitive(it.weeklySets))
+                      }
+                    },
+                )
+              }
+              .toString()
+        }
+        .flowOn(computeDispatcher)
+        .first()
+  }
 
   private suspend fun readSnapshot(
       accountId: String,
@@ -162,6 +222,7 @@ constructor(
         accountId = accountId,
         workoutId = workoutId,
         revision = full.workout.coachRevision,
+        originalPlanJson = full.workout.coachOriginalPlanJson,
         exercises = exercises,
         profile =
             CoachProfile(

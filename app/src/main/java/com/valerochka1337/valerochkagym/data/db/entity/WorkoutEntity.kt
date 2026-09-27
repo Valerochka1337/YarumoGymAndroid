@@ -30,4 +30,6 @@ data class WorkoutEntity(
     val uploadError: String? = null,
     /** Monotonic local revision used by the coach command/proposal gate. */
     @ColumnInfo(defaultValue = "0") val coachRevision: Long = 0,
+    /** Captured once when the workout is created. Null marks a legacy session. */
+    val coachOriginalPlanJson: String? = null,
 )
