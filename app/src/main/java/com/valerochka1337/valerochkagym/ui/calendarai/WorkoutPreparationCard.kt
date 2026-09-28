@@ -41,13 +41,19 @@ constructor(private val repository: WorkoutPreparationRepository) : ViewModel() 
 
   private val _retrying = MutableStateFlow(false)
   val retrying = _retrying.asStateFlow()
+  private val _retryingRequestId = MutableStateFlow<String?>(null)
+  val retryingRequestId = _retryingRequestId.asStateFlow()
   private val _error = MutableStateFlow<String?>(null)
   val error = _error.asStateFlow()
+  private val _retryErrorRequestId = MutableStateFlow<String?>(null)
+  val retryErrorRequestId = _retryErrorRequestId.asStateFlow()
 
   fun retry(id: String) {
     if (_retrying.value) return
     _retrying.value = true
+    _retryingRequestId.value = id
     _error.value = null
+    _retryErrorRequestId.value = null
     viewModelScope.launch {
       try {
         repository.retryCurrent(id)
@@ -55,8 +61,10 @@ constructor(private val repository: WorkoutPreparationRepository) : ViewModel() 
         throw e
       } catch (e: Exception) {
         _error.value = calendarAiErrorMessage(e)
+        _retryErrorRequestId.value = id
       } finally {
         _retrying.value = false
+        _retryingRequestId.value = null
       }
     }
   }

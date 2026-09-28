@@ -14,6 +14,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -79,8 +80,10 @@ class TrainingProposalComposeTest {
   }
 
   @Test
-  fun `stopped calculation leaves planner action reachable without progress at large font`() {
-    var create = 0
+  fun `terminal calculations remain visible and retry once at large font`() {
+    val retrying = mutableStateOf(false)
+    val retryError = mutableStateOf<String?>(null)
+    val retried = mutableListOf<String>()
     val preparation =
         mutableStateOf(PreparationEntity("owner", "request", "{}", "[]", state = "FAILED"))
     compose.setContent {
@@ -96,26 +99,53 @@ class TrainingProposalComposeTest {
               {},
               {},
               {},
-              onCreateAi = { create++ },
               preparations = listOf(preparation.value),
+              onRetryPreparation = { retried += it },
+              retryingPreparationId = if (retrying.value) "request" else null,
+              preparationRetryError = retryError.value,
+              preparationRetryErrorId = if (retryError.value != null) "request" else null,
           )
         }
       }
     }
-    compose.onNodeWithContentDescription("Расчёт предложения").assertDoesNotExist()
-    compose
-        .onAllNodes(
-            SemanticsMatcher.expectValue(
-                SemanticsProperties.ProgressBarRangeInfo,
-                ProgressBarRangeInfo.Indeterminate,
-            )
-        )
-        .assertCountEquals(0)
-    compose.onNodeWithText("Пока нет предложений").assertIsDisplayed()
-    compose.onNodeWithText("Составить тренировку").performClick()
-    compose.runOnIdle { assertEquals(1, create) }
+    compose.onNodeWithContentDescription("Расчёт предложения").assertIsDisplayed()
+    compose.onNodeWithText("Не удалось завершить расчёт.").assertIsDisplayed()
+    compose.onNodeWithText("Повторить").performClick()
+    compose.runOnIdle { assertEquals(listOf("request"), retried) }
+    compose.runOnIdle { retrying.value = true }
+    compose.onNodeWithText("Повторяем…").assertIsNotEnabled()
+    compose.runOnIdle {
+      retrying.value = false
+      retryError.value = "Не удалось повторить расчёт"
+      preparation.value = preparation.value.copy(state = "PAUSED_WAITING")
+    }
+    compose.onNodeWithText("Расчёт приостановлен.").assertIsDisplayed()
+    compose.onNodeWithText("Не удалось повторить расчёт").assertIsDisplayed()
+    compose.runOnIdle { preparation.value = preparation.value.copy(state = "STALE") }
+    compose.onNodeWithText("Условия расчёта устарели. Составьте новый план.").assertIsDisplayed()
+    compose.onNodeWithText("Повторить расчёт").assertIsDisplayed()
     compose.runOnIdle { preparation.value = preparation.value.copy(state = "SUPERSEDED") }
-    compose.onNodeWithContentDescription("Расчёт предложения").assertDoesNotExist()
+    compose.onNodeWithText("Расчёт заменён другим запросом.").assertIsDisplayed()
+    compose.onNodeWithText("Повторить расчёт").assertIsDisplayed()
+    compose.runOnIdle { preparation.value = preparation.value.copy(state = "EXPIRED") }
+    compose.onNodeWithText("Условия расчёта устарели. Составьте новый план.").assertIsDisplayed()
+    compose.onNodeWithText("Повторить расчёт").assertDoesNotExist()
+    compose.runOnIdle { preparation.value = preparation.value.copy(state = "IMPOSSIBLE") }
+    compose
+        .onNodeWithText(
+            "С этими условиями готовый план не найден. Измените условия или отредактируйте тренировку вручную."
+        )
+        .assertIsDisplayed()
+    compose.runOnIdle { preparation.value = preparation.value.copy(state = "UPDATE_REQUIRED") }
+    compose
+        .onNodeWithText("Для планирования нужна более новая версия приложения.")
+        .assertIsDisplayed()
+    compose.runOnIdle {
+      preparation.value = preparation.value.copy(state = "FAILED", errorCode = "ai_busy")
+    }
+    compose
+        .onNodeWithText("Сервис планирования временно занят. Попробуйте позже. Код: ai_busy")
+        .assertIsDisplayed()
     compose
         .onAllNodes(
             SemanticsMatcher.expectValue(
@@ -124,6 +154,72 @@ class TrainingProposalComposeTest {
             )
         )
         .assertCountEquals(0)
+  }
+
+  @Test
+  fun `retry lineage hides every replaced ancestor while ready remains distinct`() {
+    val retry2 = mutableStateOf(PreparationEntity("owner", "retry-2", "{}", "[\"retry-1\"]"))
+    val proposals = mutableStateOf(emptyList<TrainingProposal>())
+    var opened: String? = null
+    compose.setContent {
+      GymTheme {
+        TrainingProposalInboxContent(
+            items = proposals.value,
+            loading = false,
+            error = null,
+            hasMore = false,
+            onRetry = {},
+            onMore = {},
+            onOpen = { opened = it },
+            onBack = {},
+            preparations =
+                listOf(
+                    PreparationEntity("owner", "old", "{}", "[]", state = "FAILED"),
+                    PreparationEntity("owner", "retry-1", "{}", "[\"old\"]", state = "FAILED"),
+                    retry2.value,
+                ),
+        )
+      }
+    }
+    compose.onAllNodesWithContentDescription("Расчёт предложения").assertCountEquals(1)
+    compose.onNodeWithText("Не удалось завершить расчёт.").assertDoesNotExist()
+    compose.runOnIdle {
+      retry2.value = retry2.value.copy(state = "READY")
+      proposals.value = listOf(proposal())
+    }
+    compose.onAllNodesWithContentDescription("Расчёт предложения").assertCountEquals(0)
+    compose.onNodeWithText("Силовой план").performClick()
+    compose.runOnIdle { assertEquals("proposal-1", opened) }
+  }
+
+  @Test
+  fun `retry feedback belongs only to the selected calculation`() {
+    compose.setContent {
+      GymTheme {
+        TrainingProposalInboxContent(
+            items = emptyList(),
+            loading = false,
+            error = null,
+            hasMore = false,
+            onRetry = {},
+            onMore = {},
+            onOpen = {},
+            onBack = {},
+            preparations =
+                listOf(
+                    PreparationEntity("owner", "first", "{}", "[]", state = "FAILED"),
+                    PreparationEntity("owner", "second", "{}", "[]", state = "STALE"),
+                ),
+            retryingPreparationId = "second",
+            preparationRetryError = "Не удалось повторить расчёт",
+            preparationRetryErrorId = "second",
+        )
+      }
+    }
+    compose.onNodeWithText("Повторяем…").assertIsDisplayed().assertIsNotEnabled()
+    compose.onNodeWithText("Не удалось повторить расчёт").assertIsDisplayed()
+    compose.onNodeWithText("Повторить").assertIsNotEnabled()
+    compose.onAllNodesWithText("Не удалось повторить расчёт").assertCountEquals(1)
   }
 
   @Test
