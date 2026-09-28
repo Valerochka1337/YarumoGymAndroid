@@ -79,7 +79,7 @@ class TrainingProposalComposeTest {
   }
 
   @Test
-  fun `stopped calculation leaves AI action reachable without progress at large font`() {
+  fun `stopped calculation leaves planner action reachable without progress at large font`() {
     var create = 0
     val preparation =
         mutableStateOf(PreparationEntity("owner", "request", "{}", "[]", state = "FAILED"))
@@ -112,7 +112,7 @@ class TrainingProposalComposeTest {
         )
         .assertCountEquals(0)
     compose.onNodeWithText("Пока нет предложений").assertIsDisplayed()
-    compose.onNodeWithText("Составить с ИИ").performClick()
+    compose.onNodeWithText("Составить тренировку").performClick()
     compose.runOnIdle { assertEquals(1, create) }
     compose.runOnIdle { preparation.value = preparation.value.copy(state = "SUPERSEDED") }
     compose.onNodeWithContentDescription("Расчёт предложения").assertDoesNotExist()
@@ -157,7 +157,7 @@ class TrainingProposalComposeTest {
   }
 
   @Test
-  fun `inbox has fixed AI action and confirms proposal deletion`() {
+  fun `inbox has planner action and confirms proposal deletion`() {
     var create = 0
     var deleted: String? = null
     compose.setContent {
@@ -177,7 +177,7 @@ class TrainingProposalComposeTest {
       }
     }
     compose.onNodeWithText("Новая тренировка").assertDoesNotExist()
-    compose.onNodeWithText("Составить с ИИ").performClick()
+    compose.onNodeWithText("Составить тренировку").performClick()
     compose.onNodeWithContentDescription("Меню предложения").performClick()
     compose.onNodeWithText("Удалить").performClick()
     compose.onNodeWithText("Удалить предложение?").assertIsDisplayed()
@@ -222,6 +222,76 @@ class TrainingProposalComposeTest {
         .performScrollTo()
         .assertIsDisplayed()
     compose.onNodeWithText("Сохранить в тренировки").performScrollTo().assertIsDisplayed()
+  }
+
+  @Test
+  fun `rule based refinement exposes typed replacement at large font`() {
+    var replacement: Pair<String, String>? = null
+    val ruleProposal =
+        proposal()
+            .copy(
+                author = ProposalAuthor(ProposalSource.RULE_BASED, null),
+                source = ProposalSource.RULE_BASED,
+            )
+    val explanation =
+        PlannerExplanation(
+            ruleProposal.proposalId,
+            ruleProposal.currentVersion,
+            "planner-duration-v2",
+            60,
+            1,
+            1,
+            emptyList(),
+            emptyList(),
+            null,
+            1,
+            "RULE_BASED",
+            "NONE",
+            "NONE",
+            RuleBasedPlannerDetails(
+                "deterministic-planner-v2",
+                2,
+                "fingerprint",
+                "STRENGTH",
+                null,
+                false,
+                1,
+                1,
+                emptyList(),
+                emptyList(),
+                listOf(RuleBasedSlotSelection("upper-push", "upper-push-1", "bench")),
+            ),
+        )
+    compose.setContent {
+      val density = LocalDensity.current
+      CompositionLocalProvider(LocalDensity provides Density(density.density, 2f)) {
+        GymTheme {
+          TrainingProposalDetailContent(
+              proposal = ruleProposal,
+              draft = ruleProposal.snapshot.draft,
+              saving = false,
+              applied = false,
+              error = null,
+              exerciseChoices = listOf("bench" to "Жим лёжа", "row" to "Тяга"),
+              gymChoices = emptyList(),
+              onDraftChange = {},
+              onApply = {},
+              onReject = {},
+              onBack = {},
+              onRetry = {},
+              explanation = explanation,
+              availableExerciseIds = setOf("bench", "row"),
+              onReplaceRefinementSelection = { selectionId, exerciseId ->
+                replacement = selectionId to exerciseId
+              },
+          )
+        }
+      }
+    }
+    compose.onNodeWithText("Заменить в слотах").performScrollTo().assertIsDisplayed()
+    compose.onNodeWithText("upper-push: Жим лёжа").performScrollTo().performClick()
+    compose.onNodeWithText("Тяга").performClick()
+    compose.runOnIdle { assertEquals("upper-push-1" to "row", replacement) }
   }
 
   @androidx.compose.runtime.Composable

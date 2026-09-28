@@ -182,6 +182,45 @@ class WorkoutPreparationRepositoryTest : RoomDaoTest() {
   }
 
   @Test
+  fun `refinement lost acknowledgement and server failure replay same uuid and bytes after recreation`() =
+      runTest {
+        val (sync, repo) = fixture()
+        val first =
+            repo.enqueueRefinement(
+                ruleProposal(),
+                refinementDraft(),
+                listOf(excludeChange()),
+                75,
+                REFINEMENT,
+            )
+        api.loseAck = true
+        assertTrue(repo.step(first))
+        val firstBytes = db.preparationDao().get(OWNER, first)!!.requestJson
+        assertEquals("WAITING", db.preparationDao().get(OWNER, first)!!.state)
+        assertTrue(repository(sync).step(first))
+        assertEquals(first, jsonRequestId(api.posts[0]))
+        assertEquals(api.posts[0], api.posts[1])
+        assertEquals(firstBytes, api.posts[1])
+
+        val second =
+            repo.enqueueRefinement(
+                ruleProposal(),
+                refinementDraft(),
+                listOf(excludeChange()),
+                75,
+                REFINEMENT_TWO,
+            )
+        api.failServer = true
+        assertTrue(repo.step(second))
+        val secondBytes = db.preparationDao().get(OWNER, second)!!.requestJson
+        assertEquals("WAITING", db.preparationDao().get(OWNER, second)!!.state)
+        assertTrue(repository(sync).step(second))
+        assertEquals(second, jsonRequestId(api.posts[2]))
+        assertEquals(api.posts[2], api.posts[3])
+        assertEquals(secondBytes, api.posts[3])
+      }
+
+  @Test
   fun `late response cannot replace newer conditions and carries lineage`() = runTest {
     val (_, repo) = fixture()
     val first = repo.enqueue(intent())
@@ -277,6 +316,50 @@ private fun intent() = CalendarAiIntent(2000, "UTC", emptyList())
 private const val OWNER = "00000000-0000-4000-8000-000000000001"
 private const val OTHER = "00000000-0000-4000-8000-000000000002"
 private const val EXERCISE = "00000000-0000-4000-8000-000000000003"
+private const val REFINEMENT = "00000000-0000-4000-8000-000000000004"
+private const val REFINEMENT_TWO = "00000000-0000-4000-8000-000000000005"
+
+private fun refinementDraft() =
+    ApprovalDraft(
+        "План",
+        emptyList(),
+        listOf(
+            ProposalPlannedExercise(
+                EXERCISE,
+                60,
+                listOf(ProposalPlannedSet(null, 10, null, null, null)),
+            )
+        ),
+        2000,
+        "UTC",
+    )
+
+private fun ruleProposal() =
+    TrainingProposal(
+        "00000000-0000-4000-8000-000000000008",
+        ProposalAuthor(ProposalSource.RULE_BASED, null),
+        OWNER,
+        ProposalSource.RULE_BASED,
+        ProposalStatus.PENDING,
+        1,
+        100,
+        100,
+        10000,
+        ProposalSnapshot(1, refinementDraft(), 4, 7, 100),
+    )
+
+private fun excludeChange() = buildJsonObject {
+  put("kind", JsonPrimitive("EXCLUDE"))
+  put("exerciseId", JsonPrimitive(EXERCISE))
+}
+
+private fun jsonRequestId(bytes: String) =
+    ProposalWire.json
+        .parseToJsonElement(bytes)
+        .jsonObject
+        .getValue("requestId")
+        .jsonPrimitive
+        .content
 
 private class Sessions : BackendSessionStore {
   override val session = MutableStateFlow<BackendTokens?>(BackendTokens(OWNER, "", "", ""))
@@ -304,6 +387,7 @@ private class Server : BackendTransport {
   var invalidResult = false
   var gets = 0
   var loseAck = false
+  var failServer = false
   var beforeReply: (suspend () -> Unit)? = null
 
   override suspend fun public(method: String, path: String, body: JsonElement?) =
@@ -323,17 +407,38 @@ private class Server : BackendTransport {
       maxResponseBytes: Int?,
   ): BackendResponse {
     assertTrue(retryOnUnauthorized)
+    if (path == "/planning/v2/capabilities") {
+      assertEquals("GET", method)
+      assertEquals(mapOf("X-Planner-Protocol" to "2"), headers)
+      val body =
+          "{\"schemaVersion\":2,\"protocol\":2,\"capability\":\"deterministic-workout-planner-v2\"}"
+      return BackendResponse(
+          json.parseToJsonElement(body),
+          body.encodeToByteArray(),
+          setOf("deterministic-workout-planner-v2"),
+          expectedOwner,
+          requireNotNull(expectedSessionEpoch),
+      )
+    }
+    assertEquals(mapOf("X-Planner-Protocol" to "2"), headers)
     if (method == "POST") {
-      assertEquals("/ai/calendar-draft-jobs", path)
+      assertTrue(
+          path == "/planning/v2/jobs" ||
+              path == "/planning/v2/proposals/00000000-0000-4000-8000-000000000008/refinements"
+      )
       posts += rawBody.decodeToString()
     } else {
-      assertTrue(path.startsWith("/ai/calendar-draft-jobs/"))
+      assertTrue(path.startsWith("/planning/v2/jobs/"))
       assertTrue(rawBody.isEmpty())
       gets++
     }
     if (loseAck) {
       loseAck = false
       throw IOException("lost ACK")
+    }
+    if (failServer) {
+      failServer = false
+      throw BackendException(503, "server_unavailable", "")
     }
     beforeReply?.invoke()
     val id = json.parseToJsonElement(posts.last()).jsonObject.getValue("requestId")
@@ -386,7 +491,7 @@ private class Server : BackendTransport {
     return BackendResponse(
         result,
         result.toString().encodeToByteArray(),
-        emptySet(),
+        setOf("deterministic-workout-planner-v2"),
         expectedOwner,
         expectedSessionEpoch!!,
     )

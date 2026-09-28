@@ -23,7 +23,10 @@ constructor(
         ROOT +
             "?limit=50" +
             (cursor?.let { "&cursor=${URLEncoder.encode(it, UTF_8.name())}" } ?: "")
-    val result = ProposalWire.decode<ProposalListResponse>(request(session, "GET", path))
+    val result =
+        ProposalWire.decode<ProposalListResponse>(
+            request(session, "GET", path, plannerProtocol = plannerAvailable(session))
+        )
     require(
         result.items.size <= 50 &&
             result.items.map { it.proposalId }.distinct().size == result.items.size
@@ -34,7 +37,10 @@ constructor(
   }
 
   suspend fun detail(session: BackendSessionSnapshot, proposalId: String): TrainingProposal {
-    val result = ProposalWire.decode<TrainingProposal>(request(session, "GET", path(proposalId)))
+    val result =
+        ProposalWire.decode<TrainingProposal>(
+            request(session, "GET", path(proposalId), plannerProtocol = plannerAvailable(session))
+        )
     require(
         ProposalWire.valid(result) &&
             result.proposalId == proposalId &&
@@ -47,10 +53,20 @@ constructor(
       session: BackendSessionSnapshot,
       proposal: TrainingProposal,
   ): PlannerExplanation {
-    val result =
-        ProposalWire.decode<PlannerExplanation>(
-            request(session, "GET", path(proposal.proposalId) + "/planner-explanation")
+    val ruleBased = proposal.source == ProposalSource.RULE_BASED
+    val bytes =
+        request(
+            session,
+            "GET",
+            path(proposal.proposalId) + "/planner-explanation",
+            plannerProtocol = ruleBased,
         )
+    val result =
+        if (ruleBased) {
+          val deterministic = ProposalWire.decode<RuleBasedPlannerExplanation>(bytes)
+          require(deterministic.validFor(proposal))
+          deterministic.legacyShape()
+        } else ProposalWire.decode<PlannerExplanation>(bytes)
     require(result.validFor(proposal))
     return result
   }
@@ -60,6 +76,7 @@ constructor(
       session: BackendSessionSnapshot,
       proposalId: String,
       bytes: ByteArray,
+      source: ProposalSource = ProposalSource.AI,
   ): AcceptedProposalResult {
     require(bytes.size in 1..ProposalWire.REQUEST_LIMIT)
     val bound = ProposalWire.decode<ApprovalRequest>(bytes)
@@ -70,7 +87,13 @@ constructor(
     )
     val result =
         ProposalWire.decode<AcceptedProposalResult>(
-            request(session, "POST", path(proposalId) + "/approve", bytes)
+            request(
+                session,
+                "POST",
+                path(proposalId) + "/approve",
+                bytes,
+                plannerProtocol = source == ProposalSource.RULE_BASED,
+            )
         )
     require(
         ProposalWire.valid(result) &&
@@ -83,10 +106,16 @@ constructor(
   suspend fun acceptedResult(
       session: BackendSessionSnapshot,
       proposalId: String,
+      source: ProposalSource = ProposalSource.AI,
   ): AcceptedProposalResult {
     val result =
         ProposalWire.decode<AcceptedProposalResult>(
-            request(session, "GET", path(proposalId) + "/accepted-result")
+            request(
+                session,
+                "GET",
+                path(proposalId) + "/accepted-result",
+                plannerProtocol = source == ProposalSource.RULE_BASED,
+            )
         )
     require(ProposalWire.valid(result) && result.proposalId == proposalId)
     return result
@@ -97,13 +126,20 @@ constructor(
       proposalId: String,
       version: Int,
       reason: String? = null,
+      source: ProposalSource = ProposalSource.AI,
   ): ProposalDecision {
     require(version > 0 && (reason == null || reason.codePointCount(0, reason.length) <= 500))
     val bytes =
         ProposalWire.json.encodeToString(ProposalRejectRequest(version, reason)).encodeToByteArray()
     val result =
         ProposalWire.decode<ProposalDecision>(
-            request(session, "POST", path(proposalId) + "/reject", bytes)
+            request(
+                session,
+                "POST",
+                path(proposalId) + "/reject",
+                bytes,
+                plannerProtocol = source == ProposalSource.RULE_BASED,
+            )
         )
     require(
         result.proposalId == proposalId &&
@@ -114,47 +150,37 @@ constructor(
     return result
   }
 
-  suspend fun refine(
-      session: BackendSessionSnapshot,
-      proposal: TrainingProposal,
-      text: String,
-      requestId: String,
-  ): TrainingProposal {
-    require(text == text.trim() && text.length in 1..2000)
-    require(ProposalWire.uuid(requestId))
-    val bytes =
-        ProposalWire.json
-            .encodeToString(
-                CalendarRefinementRequest(
-                    requestId,
-                    proposal.snapshot.ownerRevision,
-                    proposal.snapshot.catalogRevision,
-                    proposal.currentVersion,
-                    text,
-                )
-            )
-            .encodeToByteArray()
-    val result =
-        ProposalWire.decode<TrainingProposal>(
-            request(
-                session,
-                "POST",
-                "/ai/calendar-drafts/${proposal.proposalId}/refinements",
-                bytes,
-            )
-        )
-    require(
-        ProposalWire.valid(result) &&
-            result.proposalId == proposal.proposalId &&
-            result.currentVersion == proposal.currentVersion + 1 &&
-            result.status == ProposalStatus.PENDING
-    )
-    return result
-  }
-
   private fun path(id: String): String {
     require(ProposalWire.uuid(id))
     return "$ROOT/$id"
+  }
+
+  /** A legacy server is read through its V1 endpoints; a confirmed V2 server never falls back. */
+  private suspend fun plannerAvailable(session: BackendSessionSnapshot): Boolean {
+    assertSession(session)
+    return try {
+      val response =
+          api.authorizedRawResponse(
+              method = "GET",
+              path = "/planning/v2/capabilities",
+              rawBody = ByteArray(0),
+              headers = mapOf("X-Planner-Protocol" to "2"),
+              expectedOwner = session.tokens.userId,
+              expectedSessionEpoch = session.epoch,
+              retryOnUnauthorized = true,
+              maxResponseBytes = ProposalWire.RESPONSE_LIMIT,
+          )
+      assertSession(session)
+      if (response.owner != session.tokens.userId || response.sessionEpoch != session.epoch)
+          throw BackendException(401, "owner_changed", "Аккаунт изменился")
+      if (PLANNER_CAPABILITY !in response.acceptedCapabilities) return false
+      val capability = ProposalWire.decode<PlannerCapability>(response.rawBody)
+      capability.schemaVersion == 2 &&
+          capability.protocol == 2 &&
+          capability.capability == PLANNER_CAPABILITY
+    } catch (error: BackendException) {
+      if (error.status in setOf(404, 405, 426)) false else throw error
+    }
   }
 
   private suspend fun request(
@@ -162,22 +188,35 @@ constructor(
       method: String,
       path: String,
       bytes: ByteArray = ByteArray(0),
+      plannerProtocol: Boolean = false,
   ): ByteArray {
     assertSession(session)
     val response =
-        api.authorizedRawResponse(
-            method = method,
-            path = path,
-            rawBody = bytes,
-            headers = mapOf("X-Gym-Capabilities" to "calendar-plans"),
-            expectedOwner = session.tokens.userId,
-            expectedSessionEpoch = session.epoch,
-            retryOnUnauthorized = method == "GET",
-            maxResponseBytes = ProposalWire.RESPONSE_LIMIT,
-        )
+        try {
+          api.authorizedRawResponse(
+              method = method,
+              path = path,
+              rawBody = bytes,
+              headers =
+                  buildMap {
+                    put("X-Gym-Capabilities", "calendar-plans")
+                    if (plannerProtocol) put("X-Planner-Protocol", "2")
+                  },
+              expectedOwner = session.tokens.userId,
+              expectedSessionEpoch = session.epoch,
+              retryOnUnauthorized = method == "GET",
+              maxResponseBytes = ProposalWire.RESPONSE_LIMIT,
+          )
+        } catch (error: BackendException) {
+          if (plannerProtocol && error.status in setOf(404, 405, 426))
+              throw BackendException(426, "planner_update_required", "Обновите приложение")
+          throw error
+        }
     assertSession(session)
     if (response.owner != session.tokens.userId || response.sessionEpoch != session.epoch)
         throw BackendException(401, "owner_changed", "Аккаунт изменился")
+    if (plannerProtocol && PLANNER_CAPABILITY !in response.acceptedCapabilities)
+        throw BackendException(426, "planner_update_required", "Обновите приложение")
     return response.rawBody
   }
 
@@ -189,5 +228,13 @@ constructor(
 
   companion object {
     const val ROOT = "/training-proposals"
+    private const val PLANNER_CAPABILITY = "deterministic-workout-planner-v2"
   }
 }
+
+@kotlinx.serialization.Serializable
+private data class PlannerCapability(
+    val schemaVersion: Int,
+    val protocol: Int,
+    val capability: String,
+)

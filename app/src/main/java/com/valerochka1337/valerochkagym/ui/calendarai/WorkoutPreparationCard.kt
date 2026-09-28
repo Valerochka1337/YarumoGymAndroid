@@ -168,6 +168,10 @@ internal fun WorkoutPreparationCardContent(
             "На $date · ${proposal?.snapshot?.draft?.exercises?.size ?: 0} упр. · желаемое время ${intent?.availableDurationMinutes} мин"
         "STALE" ->
             "Данные тренировок изменились. Повторите расчёт с актуальными данными — выбранные условия сохранятся."
+        "IMPOSSIBLE" ->
+            calendarAiErrorMessage(BackendException(400, row?.errorCode ?: "NO_FEASIBLE_PLAN", ""))
+        "UPDATE_REQUIRED" ->
+            calendarAiErrorMessage(BackendException(426, "planner_update_required", ""))
         "SUPERSEDED" ->
             "Этот расчёт заменён другим. Можно подготовить новый план с теми же условиями."
         "EXPIRED" -> "Выбранная дата прошла. Выберите новую дату"
@@ -201,6 +205,8 @@ internal fun WorkoutPreparationCardContent(
           "FAILED" -> if (retrying) "Повторяем…" else "Повторить"
           "STALE",
           "SUPERSEDED" -> if (retrying) "Повторяем…" else "Повторить расчёт"
+          "IMPOSSIBLE" -> "Изменить условия"
+          "UPDATE_REQUIRED" -> "Обновить приложение"
           "EXPIRED" -> "Выбрать новую дату"
           else -> "Пересчитать"
         }

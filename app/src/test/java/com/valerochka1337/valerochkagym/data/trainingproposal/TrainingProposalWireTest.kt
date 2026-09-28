@@ -127,6 +127,14 @@ class TrainingProposalWireTest {
         )
 
     assertTrue(ProposalWire.valid(personal))
+    assertTrue(
+        ProposalWire.valid(
+            personal.copy(
+                author = ProposalAuthor(ProposalSource.RULE_BASED, null),
+                source = ProposalSource.RULE_BASED,
+            )
+        )
+    )
     assertFalse(
         ProposalWire.valid(
             personal.copy(

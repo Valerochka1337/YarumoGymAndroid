@@ -32,11 +32,14 @@ internal fun proposalCalculationLabel(state: String): String? =
       "QUEUED" -> "Расчёт в очереди…"
       "RUNNING" -> "Составляем тренировку…"
       "PAUSED_WAITING",
-      "PAUSED_STATUS" -> "Расчёт приостановлен. Нажмите «Составить с ИИ», чтобы повторить."
-      "FAILED" -> "Не удалось завершить расчёт. Нажмите «Составить с ИИ», чтобы повторить."
+      "PAUSED_STATUS" -> "Расчёт приостановлен. Нажмите «Составить тренировку», чтобы повторить."
+      "FAILED" -> "Не удалось завершить расчёт. Нажмите «Составить тренировку», чтобы повторить."
       "STALE",
       "EXPIRED" -> "Условия расчёта устарели. Составьте план ещё раз."
       "SUPERSEDED" -> "Расчёт заменён другим запросом. При необходимости составьте план ещё раз."
+      "IMPOSSIBLE" ->
+          "С этими условиями готовый план не найден. Измените условия или отредактируйте тренировку вручную."
+      "UPDATE_REQUIRED" -> "Для планирования нужна более новая версия приложения."
       else -> null
     }
 
@@ -59,7 +62,7 @@ internal fun ProposalCalculationCard(preparation: PreparationEntity, label: Stri
   ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
       Text(
-          "Тренировка с ИИ",
+          "План тренировки",
           style = MaterialTheme.typography.titleLarge,
           color = MaterialTheme.colorScheme.onSurfaceVariant,
       )

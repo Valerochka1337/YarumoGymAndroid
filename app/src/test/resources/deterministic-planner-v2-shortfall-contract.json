@@ -1,0 +1,29 @@
+{
+  "proposalId": "10000000-0000-4000-8000-000000000001",
+  "version": 1,
+  "durationSpec": "planner-duration-v2",
+  "desiredMinutes": 45,
+  "estimatedSeconds": 735,
+  "minimumSeconds": 2160,
+  "focusMuscles": [],
+  "repeatedExerciseIds": ["20000000-0000-4000-8000-000000000001"],
+  "lastFinishedAtMillis": 1805005799000,
+  "eligibleExerciseCount": 2,
+  "selectionReason": "RULE_BASED",
+  "repeatReason": "CONTINUITY",
+  "shortfallReason": "CONSTRAINTS",
+  "algorithm": "deterministic-planner-v2",
+  "algorithmVersion": 2,
+  "inputFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "effectiveGoal": "GENERAL_FITNESS",
+  "terminalCode": null,
+  "optimalityNotGuaranteed": true,
+  "nodeCount": 100,
+  "evaluationCount": 12,
+  "ruleIds": ["goal-general-fitness", "equipment-gym", "accent-more"],
+  "reasons": ["SOFT_MINIMUM_SHORTFALL"],
+  "slotSelections": [
+    {"slotId":"push","selectionId":"push-1","exerciseId":"20000000-0000-4000-8000-000000000001"},
+    {"slotId":"core","selectionId":"core-1","exerciseId":"20000000-0000-4000-8000-000000000002"}
+  ]
+}

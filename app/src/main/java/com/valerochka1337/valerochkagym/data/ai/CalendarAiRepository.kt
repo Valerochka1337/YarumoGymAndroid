@@ -83,6 +83,27 @@ internal data class CalendarRequest(
 )
 
 @Serializable
+internal data class PlannerCreateRequest(
+    val requestId: String,
+    val variant: Int = 0,
+    val expectedRevision: Long,
+    val expectedCatalogRevision: Long,
+    val startsAtMillis: Long,
+    val timeZoneId: String,
+    val gymIds: List<String>,
+    val excludedExerciseIds: List<String>,
+    val excludedEquipmentIds: List<String>,
+    val priorityMuscles: List<String>,
+    val includeNotes: Boolean = false,
+    val availableDurationMinutes: Int,
+)
+
+internal data class PlannerPrepared(
+    val ready: SyncReady.Ready,
+    val request: PlannerCreateRequest,
+)
+
+@Serializable
 internal data class CalendarContext(
     val revision: Long,
     val catalogRevision: Long,
@@ -210,6 +231,34 @@ constructor(
             intent.preferences,
         )
     return Prepared(ready, request, allowed)
+  }
+
+  /** Builds the closed V2 request from the same local ownership and equipment checks as V1. */
+  internal suspend fun preparePlanner(
+      intent: CalendarAiIntent,
+      id: String,
+      variant: Int = 0,
+  ): PlannerPrepared {
+    require(variant >= 0)
+    val prepared = prepare(intent, id)
+    val request = prepared.request
+    return PlannerPrepared(
+        prepared.ready,
+        PlannerCreateRequest(
+            requestId = request.requestId,
+            variant = variant,
+            expectedRevision = request.expectedRevision,
+            expectedCatalogRevision = request.expectedCatalogRevision,
+            startsAtMillis = request.startsAtMillis,
+            timeZoneId = request.timeZoneId,
+            gymIds = request.gymIds,
+            excludedExerciseIds = request.excludedExerciseIds,
+            excludedEquipmentIds = request.excludedEquipmentIds,
+            priorityMuscles = request.priorityMuscles,
+            includeNotes = false,
+            availableDurationMinutes = request.availableDurationMinutes,
+        ),
+    )
   }
 
   suspend fun generate(intent: CalendarAiIntent): TrainingProposal {
@@ -366,7 +415,7 @@ constructor(
     checkResponse(
         ProposalWire.valid(p) &&
             p.recipientId == ready.owner &&
-            p.source == ProposalSource.AI &&
+            p.source in setOf(ProposalSource.AI, ProposalSource.RULE_BASED) &&
             p.status == ProposalStatus.PENDING &&
             p.author.accountId == null
     )

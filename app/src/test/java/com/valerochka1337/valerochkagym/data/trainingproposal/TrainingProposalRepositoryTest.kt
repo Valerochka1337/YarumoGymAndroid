@@ -3,11 +3,15 @@ package com.valerochka1337.valerochkagym.data.trainingproposal
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.emptyPreferences
+import androidx.lifecycle.SavedStateHandle
+import androidx.lifecycle.viewModelScope
 import com.valerochka1337.valerochkagym.data.RoomDaoTest
 import com.valerochka1337.valerochkagym.data.backend.*
 import com.valerochka1337.valerochkagym.data.calendar.ProposalScheduleConflict
 import com.valerochka1337.valerochkagym.data.db.entity.*
 import com.valerochka1337.valerochkagym.service.WallClock
+import com.valerochka1337.valerochkagym.ui.trainingproposal.TrainingProposalViewModel
+import com.valerochka1337.valerochkagym.util.MainDispatcherRule
 import java.io.IOException
 import java.time.LocalDate
 import java.time.ZoneOffset
@@ -24,9 +28,12 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.*
 import org.junit.After
 import org.junit.Assert.*
+import org.junit.Rule
 import org.junit.Test
 
 class TrainingProposalRepositoryTest : RoomDaoTest() {
+  @get:Rule val mainDispatcherRule = MainDispatcherRule()
+
   private val repositoryScopes = mutableListOf<CoroutineScope>()
   private val proposalStore = FakeDataStore()
 
@@ -82,6 +89,8 @@ class TrainingProposalRepositoryTest : RoomDaoTest() {
       val owner = store.session.value!!.userId
       val body: JsonElement =
           when {
+            path == "/planning/v2/capabilities" ->
+                throw BackendException(404, "not_found", "legacy server")
             path.startsWith("/training-proposals?") -> {
               listCalls++
               listStarted?.complete(Unit)
@@ -334,6 +343,102 @@ class TrainingProposalRepositoryTest : RoomDaoTest() {
             (inbox as ProposalInboxState.Content).content.items.map { it.proposalId },
         )
         assertTrue(runCatching { recreated.open(PROPOSAL) }.isFailure)
+      }
+
+  @Test
+  fun `refinement chain restores the latest proposal and its manual draft for the original route`() =
+      runTest(mainDispatcherRule.testDispatcher.scheduler) {
+        val f = fixture()
+        val handle = SavedStateHandle()
+        val viewModels = mutableListOf<TrainingProposalViewModel>()
+        fun newViewModel() =
+            TrainingProposalViewModel(
+                f.repository,
+                f.store,
+                f.sync,
+                db.exerciseDao(),
+                db.gymDao(),
+                handle,
+                com.valerochka1337.valerochkagym.domain.NoOpGymRepository,
+                copies(f),
+            )
+
+        try {
+          val first = newViewModel().also(viewModels::add)
+          first.bindRouteRoot(PROPOSAL)
+          first.open(PROPOSAL)
+          awaitEditor(first, PROPOSAL)
+          first.viewModelScope.cancel()
+
+          val replacementB =
+              f.server.proposal().copy(proposalId = "66666666-6666-4666-8666-666666666666")
+          val requestB = "00000000-0000-4000-8000-0000000000b1"
+          db.preparationDao()
+              .save(
+                  com.valerochka1337.valerochkagym.data.ai.PreparationEntity(
+                      OWNER,
+                      requestB,
+                      "{}",
+                      "[]",
+                      state = "READY",
+                      proposalJson = ProposalWire.json.encodeToString(replacementB),
+                  )
+              )
+          handle["planner_request_id"] = requestB
+          val second = newViewModel().also(viewModels::add)
+          second.bindRouteRoot(PROPOSAL)
+          second.open(second.restoredProposalId(PROPOSAL))
+          awaitEditor(second, PROPOSAL)
+          f.server.beforeDetail = { throw IOException("offline") }
+          second.openRefinementProposal(requireNotNull(db.preparationDao().get(OWNER, requestB)))
+          awaitEditor(second, replacementB.proposalId)
+          second.viewModelScope.cancel()
+
+          val replacementC =
+              f.server.proposal().copy(proposalId = "77777777-7777-4777-8777-777777777777")
+          val requestC = "00000000-0000-4000-8000-0000000000c1"
+          db.preparationDao()
+              .save(
+                  com.valerochka1337.valerochkagym.data.ai.PreparationEntity(
+                      OWNER,
+                      requestC,
+                      "{}",
+                      "[]",
+                      state = "READY",
+                      proposalJson = ProposalWire.json.encodeToString(replacementC),
+                  )
+              )
+          handle["planner_request_id"] = requestC
+          val third = newViewModel().also(viewModels::add)
+          third.bindRouteRoot(PROPOSAL)
+          third.open(third.restoredProposalId(PROPOSAL))
+          awaitEditor(third, replacementB.proposalId)
+          third.openRefinementProposal(requireNotNull(db.preparationDao().get(OWNER, requestC)))
+          awaitEditor(third, replacementC.proposalId)
+
+          val manualDraft = replacementC.snapshot.draft.copy(name = "Ручной черновик C")
+          db.trainingProposalDao()
+              .saveDraft(
+                  TrainingProposalDraftEntity(
+                      OWNER,
+                      replacementC.proposalId,
+                      replacementC.currentVersion,
+                      ProposalWire.json.encodeToString(replacementC),
+                      ProposalWire.json.encodeToString(manualDraft),
+                  )
+              )
+          third.viewModelScope.cancel()
+
+          val recreated = newViewModel().also(viewModels::add)
+          recreated.bindRouteRoot(PROPOSAL)
+          recreated.open(recreated.restoredProposalId(PROPOSAL))
+          val restored = awaitEditor(recreated, replacementC.proposalId)
+
+          assertEquals(manualDraft, restored.draft)
+          assertEquals(replacementC.proposalId, recreated.restoredProposalId(PROPOSAL))
+        } finally {
+          viewModels.forEach { it.viewModelScope.cancel() }
+        }
       }
 
   @Test
@@ -1023,6 +1128,18 @@ private suspend fun awaitInbox(
     predicate: (ProposalInboxState) -> Boolean,
 ): ProposalInboxState =
     withContext(Dispatchers.Default) { withTimeout(5_000) { repository.inbox.first(predicate) } }
+
+private suspend fun awaitEditor(
+    viewModel: TrainingProposalViewModel,
+    proposalId: String,
+): ProposalEditor =
+    withContext(Dispatchers.Default) {
+      withTimeout(5_000) {
+        requireNotNull(
+            viewModel.uiState.first { it.editor?.proposal?.proposalId == proposalId }.editor
+        )
+      }
+    }
 
 private suspend fun awaitServer(signal: CompletableDeferred<Unit>) {
   withContext(Dispatchers.Default) { withTimeout(5_000) { signal.await() } }

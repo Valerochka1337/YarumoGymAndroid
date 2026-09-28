@@ -12,6 +12,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.*
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.junit4.v2.createComposeRule
@@ -258,27 +259,13 @@ class CalendarAiComposeTest {
             onPriorityMuscle = { id ->
               displayed = displayed.withForm { copy(priorityMuscles = priorityMuscles.toggle(id)) }
             },
-            onIncludeNotes = { value ->
-              displayed = displayed.withForm { copy(includeNotes = value) }
-            },
             onDuration = { value ->
               displayed = displayed.withForm { copy(availableDurationMinutes = value) }
-            },
-            onCurrentState = { value ->
-              displayed = displayed.withForm { copy(currentState = value) }
-            },
-            onPreferences = { value ->
-              displayed = displayed.withForm { copy(preferences = value) }
             },
             onGenerate = {
               state = displayed
               generated++
             },
-            onPromptVisible = {},
-            onPromptFill = {},
-            onPromptContinue = {},
-            onPromptDisable = {},
-            onPromptDismiss = {},
         )
       }
     }
@@ -295,16 +282,11 @@ class CalendarAiComposeTest {
   }
 
   @Test
-  fun `calendar ai form keeps profile prompt actions distinct`() {
-    var visible = 0
-    var fill = 0
-    var continueCalls = 0
-    var disable = 0
-    var dismiss = 0
+  fun `calendar planner form exposes no free text or AI controls`() {
     compose.setContent {
       GymTheme {
         CalendarAiContent(
-            state = sampleState(profilePrompt = "prompt-1"),
+            state = sampleState(),
             onBack = {},
             onDate = {},
             onTime = {},
@@ -313,30 +295,15 @@ class CalendarAiComposeTest {
             onExcludedExercise = {},
             onExcludedEquipment = {},
             onPriorityMuscle = {},
-            onIncludeNotes = {},
             onDuration = {},
-            onCurrentState = {},
-            onPreferences = {},
             onGenerate = {},
-            onPromptVisible = { visible++ },
-            onPromptFill = { fill++ },
-            onPromptContinue = { continueCalls++ },
-            onPromptDisable = { disable++ },
-            onPromptDismiss = { dismiss++ },
         )
       }
     }
 
-    compose.onNodeWithContentDescription("Заполнить профиль").performClick()
-    compose.onNodeWithContentDescription("Продолжить без заполнения").performClick()
-    compose.onNodeWithContentDescription("Не предлагать профиль").performClick()
-    compose.runOnIdle {
-      assertEquals(1, visible)
-      assertEquals(1, fill)
-      assertEquals(1, continueCalls)
-      assertEquals(1, disable)
-      assertEquals(0, dismiss)
-    }
+    compose.onNodeWithText("Текущее состояние (необязательно)").assertDoesNotExist()
+    compose.onNodeWithText("Предпочтения (необязательно)").assertDoesNotExist()
+    compose.onNodeWithText("Тренировка с ИИ").assertDoesNotExist()
   }
 
   @Test
@@ -355,16 +322,8 @@ class CalendarAiComposeTest {
               onExcludedExercise = {},
               onExcludedEquipment = {},
               onPriorityMuscle = {},
-              onIncludeNotes = {},
               onDuration = {},
-              onCurrentState = {},
-              onPreferences = {},
               onGenerate = {},
-              onPromptVisible = {},
-              onPromptFill = {},
-              onPromptContinue = {},
-              onPromptDisable = {},
-              onPromptDismiss = {},
           )
         }
       }
@@ -375,20 +334,13 @@ class CalendarAiComposeTest {
   }
 }
 
-private fun sampleState(profilePrompt: String? = null) =
+private fun sampleState() =
     CalendarAiUiState(
         form = CalendarAiForm(date = "2027-01-02", timeZoneId = "Europe/Moscow"),
         gyms = listOf(CalendarAiChoice("gym-home", "Дом")),
         exercises = listOf(CalendarAiChoice("exercise-bench", "Жим лёжа")),
         equipment = listOf(CalendarAiChoice("barbell", "Штанга")),
         muscles = listOf(CalendarAiChoice("CHEST", "Грудь")),
-        profilePrompt =
-            profilePrompt?.let {
-              com.valerochka1337.valerochkagym.ui.profile.AiProfilePromptUi(
-                  it,
-                  com.valerochka1337.valerochkagym.data.profile.AiProfilePromptKind.CALENDAR,
-              )
-            },
     )
 
 private fun activePreparationWithProposal(): PreparationEntity {

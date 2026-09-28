@@ -18,6 +18,8 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.put
 
 data class TrainingProposalUiState(
     val inbox: ProposalInboxUiState = ProposalInboxUiState(),
@@ -26,7 +28,9 @@ data class TrainingProposalUiState(
     val loading: Boolean = false,
     val saving: Boolean = false,
     val scheduleConflict: Boolean = false,
-    val refinement: String = "",
+    val refinementExcludeIds: Set<String> = emptySet(),
+    val refinementReplacementIds: Map<String, String> = emptyMap(),
+    val refinementRequestId: String? = null,
     val copySaved: Boolean = false,
     val copyScheduled: Boolean = false,
     val error: String? = null,
@@ -58,7 +62,12 @@ constructor(
     private val gymRepository: com.valerochka1337.valerochkagym.domain.GymRepository,
     private val copies: ProposalCopyRepository,
 ) : ViewModel() {
-  private val mutableState = MutableStateFlow(TrainingProposalUiState())
+  private val mutableState =
+      MutableStateFlow(
+          TrainingProposalUiState(
+              refinementRequestId = savedState.get<String>("planner_request_id")
+          )
+      )
   private val edits = Mutex()
   private var generation = 0L
   private var load: Job? = null
@@ -108,6 +117,7 @@ constructor(
               generation++
               load?.cancel()
               bound = null
+              clearRefinementRoute()
               mutableState.value =
                   TrainingProposalUiState(error = "Аккаунт изменился. Обновите предложения")
             }
@@ -140,18 +150,25 @@ constructor(
                   loading = false,
                   copySaved = false,
                   copyScheduled = false,
-                  refinement =
-                      refinementKey(editor)?.let { key -> savedState.get<String>(key) }.orEmpty(),
+                  refinementExcludeIds = emptySet(),
+                  refinementReplacementIds = emptyMap(),
               )
             }
-            if (editor.proposal.source == ProposalSource.AI) {
+            if (editor.proposal.source in setOf(ProposalSource.AI, ProposalSource.RULE_BASED)) {
               val explanation =
                   try {
                     repository.explanation(editor)
                   } catch (cancelled: CancellationException) {
                     throw cancelled
                   } catch (_: Exception) {
-                    null // Optional resource, including older servers and offline viewing.
+                    if (editor.proposal.source == ProposalSource.RULE_BASED)
+                        mutableState.update {
+                          it.copy(
+                              error =
+                                  "Пояснение плана не прошло проверку. Обновите предложение перед уточнением."
+                          )
+                        }
+                    null
                   }
               if (token == generation && repository.isCurrent(editor.session))
                   mutableState.update { it.copy(explanation = explanation) }
@@ -164,6 +181,31 @@ constructor(
           }
         }
   }
+
+  /**
+   * Keeps the navigation argument stable while a refinement opens one or more replacement
+   * proposals. The replacement is state for this route, not a new route argument.
+   */
+  fun bindRouteRoot(requestedId: String) {
+    val owner = sessions.snapshot()?.tokens?.userId
+    val storedRoute = savedState.get<String>(REFINEMENT_ROUTE_ID)
+    val storedOwner = savedState.get<String>(REFINEMENT_ROUTE_OWNER)
+    if (storedRoute != null && (storedRoute != requestedId || storedOwner != owner)) {
+      clearRefinementRoute()
+    }
+    if (savedState.get<String>(REFINEMENT_ROUTE_ID) == null) {
+      savedState[REFINEMENT_ROUTE_ID] = requestedId
+      if (owner == null) savedState.remove<String>(REFINEMENT_ROUTE_OWNER)
+      else savedState[REFINEMENT_ROUTE_OWNER] = owner
+      savedState[REFINEMENT_ORIGIN_ID] = requestedId
+    }
+  }
+
+  fun restoredProposalId(requestedId: String): String =
+      savedState
+          .get<String>(REFINEMENT_ORIGIN_ID)
+          ?.takeIf { it == requestedId }
+          ?.let { savedState.get<String>(REFINEMENT_RESOLVED_ID) } ?: requestedId
 
   fun updateDraft(draft: ApprovalDraft) {
     val editor = mutableState.value.editor ?: return
@@ -251,20 +293,40 @@ constructor(
     }
   }
 
-  fun setRefinement(value: String) {
-    if (!mutableState.value.saving) {
-      refinementKey(mutableState.value.editor)?.let { key ->
-        if (savedState.get<String>(key) != value) savedState.remove<String>("$key.requestId")
-      }
-      mutableState.update { it.copy(refinement = value, error = null) }
-      refinementKey(mutableState.value.editor)?.let { savedState[it] = value }
+  fun toggleRefinementExclusion(exerciseId: String) {
+    if (!mutableState.value.saving)
+        mutableState.update {
+          it.copy(
+              refinementExcludeIds =
+                  if (exerciseId in it.refinementExcludeIds) it.refinementExcludeIds - exerciseId
+                  else it.refinementExcludeIds + exerciseId,
+              error = null,
+          )
+        }
+  }
+
+  fun replaceRefinementSelection(selectionId: String, exerciseId: String) {
+    val current =
+        mutableState.value.explanation?.ruleDetails?.slotSelections?.firstOrNull {
+          it.selectionId == selectionId
+        } ?: return
+    if (mutableState.value.saving) return
+    mutableState.update {
+      it.copy(
+          refinementReplacementIds =
+              if (exerciseId == current.exerciseId) it.refinementReplacementIds - selectionId
+              else it.refinementReplacementIds + (selectionId to exerciseId),
+          error = null,
+      )
     }
   }
 
   fun refine() {
     val editor = mutableState.value.editor ?: return
-    val text = mutableState.value.refinement.trim()
-    if (text.isEmpty() || text.length > 2000 || mutableState.value.saving) return
+    val exclusions = mutableState.value.refinementExcludeIds
+    val replacements = mutableState.value.refinementReplacementIds
+    val selections = mutableState.value.explanation?.ruleDetails?.slotSelections.orEmpty()
+    if ((exclusions.isEmpty() && replacements.isEmpty()) || mutableState.value.saving) return
     val key = refinementKey(editor) ?: return
     val requestId =
         savedState.get<String>("$key.requestId") ?: java.util.UUID.randomUUID().toString()
@@ -273,13 +335,47 @@ constructor(
     mutableState.update { it.copy(saving = true, error = null) }
     viewModelScope.launch {
       try {
-        val next = repository.refine(editor, text, requestId)
-        if (token == generation && repository.isCurrent(next.session)) {
+        val queued =
+            repository.refine(
+                editor,
+                buildList {
+                  selections.forEach { selection ->
+                    replacements[selection.selectionId]?.let { exerciseId ->
+                      add(
+                          kotlinx.serialization.json.buildJsonObject {
+                            put("kind", JsonPrimitive("REPLACE"))
+                            put("slotId", JsonPrimitive(selection.slotId))
+                            put("selectionId", JsonPrimitive(selection.selectionId))
+                            put("exerciseId", JsonPrimitive(exerciseId))
+                          }
+                      )
+                    }
+                  }
+                  exclusions.sorted().forEach { id ->
+                    add(
+                        kotlinx.serialization.json.buildJsonObject {
+                          put("kind", JsonPrimitive("EXCLUDE"))
+                          put("exerciseId", JsonPrimitive(id))
+                        }
+                    )
+                  }
+                },
+                requestId,
+                requireNotNull(mutableState.value.explanation).desiredMinutes,
+            )
+        if (token == generation && repository.isCurrent(editor.session)) {
           savedState.remove<String>("$key.requestId")
-          savedState.remove<String>(key)
           mutableState.update {
-            it.copy(editor = next, refinement = "", copySaved = false, copyScheduled = false)
+            it.copy(
+                refinementExcludeIds = emptySet(),
+                refinementReplacementIds = emptyMap(),
+                copySaved = false,
+                copyScheduled = false,
+            )
           }
+          // The preparation journal owns progress and opens the resulting proposal by request ID.
+          savedState["planner_request_id"] = queued
+          mutableState.update { it.copy(refinementRequestId = queued) }
         }
       } catch (error: CancellationException) {
         throw error
@@ -295,6 +391,43 @@ constructor(
       editor?.let {
         "proposal_refinement.${it.session.tokens.userId}.${it.session.epoch}.${it.proposal.proposalId}.${it.proposal.currentVersion}"
       }
+
+  fun openRefinementProposal(
+      preparation: com.valerochka1337.valerochkagym.data.ai.PreparationEntity
+  ) {
+    if (
+        preparation.state != "READY" ||
+            preparation.requestId != mutableState.value.refinementRequestId
+    )
+        return
+    val proposal =
+        preparation.proposalJson?.let {
+          runCatching { ProposalWire.json.decodeFromString<TrainingProposal>(it) }.getOrNull()
+        } ?: return
+    val origin =
+        savedState.get<String>(REFINEMENT_ORIGIN_ID)
+            ?: mutableState.value.editor?.proposal?.proposalId
+            ?: return
+    savedState.remove<String>("planner_request_id")
+    savedState[REFINEMENT_ORIGIN_ID] = origin
+    savedState[REFINEMENT_RESOLVED_ID] = proposal.proposalId
+    mutableState.update { it.copy(refinementRequestId = null) }
+    open(proposal.proposalId)
+  }
+
+  fun resetRefinementRequest() {
+    savedState.remove<String>("planner_request_id")
+    mutableState.update { it.copy(refinementRequestId = null, error = null) }
+  }
+
+  private fun clearRefinementRoute() {
+    savedState.remove<String>(REFINEMENT_ROUTE_ID)
+    savedState.remove<String>(REFINEMENT_ROUTE_OWNER)
+    savedState.remove<String>(REFINEMENT_ORIGIN_ID)
+    savedState.remove<String>(REFINEMENT_RESOLVED_ID)
+    savedState.remove<String>("planner_request_id")
+    mutableState.update { it.copy(refinementRequestId = null) }
+  }
 
   private fun decision(approve: Boolean) {
     val editor = mutableState.value.editor ?: return
@@ -372,4 +505,11 @@ constructor(
                 error = message(cause),
             )
       }
+
+  private companion object {
+    const val REFINEMENT_ROUTE_ID = "planner_refinement_route_id"
+    const val REFINEMENT_ROUTE_OWNER = "planner_refinement_route_owner"
+    const val REFINEMENT_ORIGIN_ID = "planner_refinement_origin_id"
+    const val REFINEMENT_RESOLVED_ID = "planner_refinement_resolved_id"
+  }
 }

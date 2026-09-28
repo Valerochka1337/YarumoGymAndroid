@@ -46,9 +46,23 @@ fun TrainingProposalDetailScreen(
     id: String,
     onBack: () -> Unit,
     viewModel: TrainingProposalViewModel = hiltViewModel(),
+    preparationViewModel: WorkoutPreparationViewModel = hiltViewModel(),
 ) {
   val state by viewModel.uiState.collectAsStateWithLifecycle()
-  LaunchedEffect(viewModel, id) { viewModel.open(id) }
+  val preparations by preparationViewModel.all.collectAsStateWithLifecycle()
+  val refinement =
+      preparations.firstOrNull {
+        it.requestId == state.refinementRequestId &&
+            it.owner == state.editor?.session?.tokens?.userId
+      }
+  LaunchedEffect(viewModel, id) {
+    viewModel.bindRouteRoot(id)
+    viewModel.open(viewModel.restoredProposalId(id))
+  }
+  WorkoutPreparationPolling(refinement, preparationViewModel::refreshWhileVisible)
+  LaunchedEffect(refinement?.requestId, refinement?.state, refinement?.proposalJson) {
+    refinement?.let(viewModel::openRefinementProposal)
+  }
   GlowBackground {
     TrainingProposalDetailContent(
         state.editor?.proposal,
@@ -62,9 +76,11 @@ fun TrainingProposalDetailScreen(
         viewModel::applyCopy,
         {},
         onBack,
-        { viewModel.open(id) },
-        refinement = state.refinement,
-        onRefinementChange = viewModel::setRefinement,
+        { viewModel.open(viewModel.restoredProposalId(id)) },
+        refinementExcludeIds = state.refinementExcludeIds,
+        onToggleRefinementExclusion = viewModel::toggleRefinementExclusion,
+        refinementReplacementIds = state.refinementReplacementIds,
+        onReplaceRefinementSelection = viewModel::replaceRefinementSelection,
         onRefine = viewModel::refine,
         explanation = state.explanation,
         exerciseTypes = state.exerciseTypes,
@@ -72,6 +88,10 @@ fun TrainingProposalDetailScreen(
         onSaveCopy = viewModel::saveCopy,
         scheduleConflict = state.scheduleConflict,
         copySaved = state.copySaved,
+        refinement = refinement,
+        onRetryRefinement = refinement?.let { { preparationViewModel.retry(it.requestId) } },
+        onOpenRefinement = viewModel::openRefinementProposal,
+        onResetRefinement = viewModel::resetRefinementRequest,
     )
   }
 }

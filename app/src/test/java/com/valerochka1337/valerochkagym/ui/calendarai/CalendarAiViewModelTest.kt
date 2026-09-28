@@ -1,16 +1,11 @@
 package com.valerochka1337.valerochkagym.ui.calendarai
 
-import androidx.datastore.core.DataStore
-import androidx.datastore.preferences.core.Preferences
-import androidx.datastore.preferences.core.emptyPreferences
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import com.valerochka1337.valerochkagym.data.RoomDaoTest
 import com.valerochka1337.valerochkagym.data.ai.CalendarAiIntent
 import com.valerochka1337.valerochkagym.data.ai.CalendarAiRepository
 import com.valerochka1337.valerochkagym.data.backend.*
-import com.valerochka1337.valerochkagym.data.profile.AiProfilePromptGate
-import com.valerochka1337.valerochkagym.data.settings.SettingsRepository
 import com.valerochka1337.valerochkagym.data.trainingproposal.ProposalWire
 import com.valerochka1337.valerochkagym.domain.*
 import com.valerochka1337.valerochkagym.service.WallClock
@@ -51,7 +46,6 @@ class CalendarAiViewModelTest : RoomDaoTest() {
         ),
         sessions,
         sync,
-        AiProfilePromptGate(SettingsRepository(Store()), Profile(), clock),
         clock,
         TestExercises(db.exerciseDao()),
         TestGyms(db.gymDao()),
@@ -109,10 +103,10 @@ class CalendarAiViewModelTest : RoomDaoTest() {
           viewModel.uiState.collect {}
         }
         advanceUntilIdle()
-        viewModel.setPreferences("Первый аккаунт")
+        viewModel.togglePriorityMuscle("CHEST")
         sessions.save(BackendTokens("other", "", "", ""))
         advanceUntilIdle()
-        assertEquals("", viewModel.uiState.value.form.preferences)
+        assertEquals(emptySet<String>(), viewModel.uiState.value.form.priorityMuscles)
         viewModel.viewModelScope.cancel()
       }
 
@@ -126,7 +120,7 @@ class CalendarAiViewModelTest : RoomDaoTest() {
         first.setDate("1970-01-03")
         first.setTime("19:30")
         first.setDuration("75")
-        first.setPreferences("Без прыжков")
+        first.togglePriorityMuscle("CHEST")
         first.viewModelScope.cancel()
 
         val restored = vm(savedStateHandle = savedStateHandle)
@@ -138,7 +132,7 @@ class CalendarAiViewModelTest : RoomDaoTest() {
         assertEquals("1970-01-03", restored.uiState.value.form.date)
         assertEquals("19:30", restored.uiState.value.form.time)
         assertEquals("75", restored.uiState.value.form.availableDurationMinutes)
-        assertEquals("Без прыжков", restored.uiState.value.form.preferences)
+        assertEquals(setOf("CHEST"), restored.uiState.value.form.priorityMuscles)
         restored.viewModelScope.cancel()
       }
 
@@ -150,7 +144,7 @@ class CalendarAiViewModelTest : RoomDaoTest() {
         val first = vm(sessions, savedStateHandle)
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { first.uiState.collect {} }
         advanceUntilIdle()
-        first.setPreferences("Только для первого аккаунта")
+        first.togglePriorityMuscle("CHEST")
         first.viewModelScope.cancel()
         sessions.save(BackendTokens("other", "", "", ""))
 
@@ -160,7 +154,7 @@ class CalendarAiViewModelTest : RoomDaoTest() {
         }
         advanceUntilIdle()
 
-        assertEquals("", restored.uiState.value.form.preferences)
+        assertEquals(emptySet<String>(), restored.uiState.value.form.priorityMuscles)
         restored.viewModelScope.cancel()
       }
 
@@ -225,7 +219,7 @@ class CalendarAiViewModelTest : RoomDaoTest() {
         val first = vm(activeSessions, savedStateHandle)
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { first.uiState.collect {} }
         advanceUntilIdle()
-        first.setPreferences("Сохранить после перезапуска")
+        first.togglePriorityMuscle("CHEST")
         first.viewModelScope.cancel()
         savedStateHandle["calendar_ai_form_process_token"] = "new-process"
 
@@ -235,10 +229,7 @@ class CalendarAiViewModelTest : RoomDaoTest() {
         }
         advanceUntilIdle()
 
-        assertEquals(
-            "Сохранить после перезапуска",
-            afterProcessDeath.uiState.value.form.preferences,
-        )
+        assertEquals(setOf("CHEST"), afterProcessDeath.uiState.value.form.priorityMuscles)
         afterProcessDeath.viewModelScope.cancel()
       }
 }
@@ -261,24 +252,6 @@ private class Server : BackendTransport {
 
   override suspend fun authorized(method: String, path: String, body: JsonElement?): JsonElement =
       error("unexpected HTTP")
-}
-
-private class Store : DataStore<Preferences> {
-  override val data = MutableStateFlow<Preferences>(emptyPreferences())
-
-  override suspend fun updateData(transform: suspend (Preferences) -> Preferences): Preferences =
-      transform(data.value).also { data.value = it }
-}
-
-private class Profile : ProfileRepository {
-  override fun observeCurrent(): Flow<ProfileEditorSnapshot?> = flowOf(null)
-
-  override suspend fun openEditor(): ProfileEditorSnapshot? = null
-
-  override fun observe(target: ProfileEditTarget): Flow<BasicProfile?> = flowOf(null)
-
-  override suspend fun save(target: ProfileEditTarget, profile: BasicProfile) =
-      ProfileSaveResult.Saved
 }
 
 private class TestExercises(
