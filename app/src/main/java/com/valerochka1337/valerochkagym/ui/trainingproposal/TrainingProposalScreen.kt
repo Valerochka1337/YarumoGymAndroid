@@ -49,6 +49,7 @@ import com.valerochka1337.valerochkagym.data.trainingproposal.TrainingProposal
 import com.valerochka1337.valerochkagym.data.trainingproposal.estimatedSeconds
 import com.valerochka1337.valerochkagym.domain.PlannerDuration
 import com.valerochka1337.valerochkagym.domain.displayName
+import com.valerochka1337.valerochkagym.ui.calendarai.WorkoutPreparationCardContent
 import com.valerochka1337.valerochkagym.ui.components.GymCard
 import com.valerochka1337.valerochkagym.ui.components.PillButton
 import com.valerochka1337.valerochkagym.ui.components.PlannedSetFields
@@ -95,7 +96,7 @@ fun TrainingProposalInboxContent(
       bottomBar = {
         if (onCreateAi != null) {
           PillButton(
-              "Составить с ИИ",
+              "Составить тренировку",
               onClick = {
                 haptics.confirm()
                 onCreateAi()
@@ -134,7 +135,7 @@ fun TrainingProposalInboxContent(
       GymCard(Modifier.fillMaxWidth()) {
         Text("Пока нет предложений", style = MaterialTheme.typography.titleMedium)
         Text(
-            "Здесь появятся планы от ИИ. Готовый план можно проверить и изменить.",
+            "Здесь появятся планы тренировок. Готовый план можно проверить и изменить.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -232,8 +233,10 @@ fun TrainingProposalDetailContent(
     onReject: () -> Unit,
     onBack: () -> Unit,
     onRetry: () -> Unit,
-    refinement: String = "",
-    onRefinementChange: (String) -> Unit = {},
+    refinementExcludeIds: Set<String> = emptySet(),
+    onToggleRefinementExclusion: (String) -> Unit = {},
+    refinementReplacementIds: Map<String, String> = emptyMap(),
+    onReplaceRefinementSelection: (String, String) -> Unit = { _, _ -> },
     onRefine: () -> Unit = {},
     explanation: PlannerExplanation? = null,
     exerciseTypes: Map<String, ExerciseType> = emptyMap(),
@@ -243,6 +246,10 @@ fun TrainingProposalDetailContent(
     onSaveCopy: (() -> Unit)? = null,
     onScheduleCopy: ((Long, String) -> Unit)? = null,
     scheduleConflict: Boolean = false,
+    refinement: PreparationEntity? = null,
+    onRetryRefinement: (() -> Unit)? = null,
+    onOpenRefinement: (PreparationEntity) -> Unit = {},
+    onResetRefinement: () -> Unit = {},
 ) {
   val haptics = gymHaptics()
   val invalidInputs =
@@ -295,10 +302,21 @@ fun TrainingProposalDetailContent(
             exerciseChoices,
             gymChoices,
             explanationContent = {
-              if (proposal.source == ProposalSource.AI)
+              if (proposal.source in setOf(ProposalSource.AI, ProposalSource.RULE_BASED))
                   PlannerExplanationCard(proposal, draft, explanation, exerciseChoices)
             },
         )
+
+    refinement?.let { row ->
+      WorkoutPreparationCardContent(
+          row = row,
+          onPrepare = onResetRefinement,
+          onOpen = { onOpenRefinement(row) },
+          onRetry =
+              if (row.state in setOf("PAUSED_WAITING", "PAUSED_STATUS")) onRetryRefinement
+              else onResetRefinement,
+      )
+    }
 
     TextButton(
         onClick = { editing = !editing },
@@ -337,24 +355,69 @@ fun TrainingProposalDetailContent(
           color = MaterialTheme.colorScheme.error,
       )
     }
-    if (proposal.source == ProposalSource.AI) {
-      OutlinedTextField(
-          value = refinement,
-          onValueChange = onRefinementChange,
-          modifier = Modifier.fillMaxWidth(),
-          label = { Text("Что изменить в плане") },
-          minLines = 2,
-          enabled = !saving,
+    if (proposal.source == ProposalSource.RULE_BASED && explanation?.ruleDetails != null) {
+      var replacingSelectionId by
+          rememberSaveable(proposal.proposalId, proposal.currentVersion) {
+            mutableStateOf<String?>(null)
+          }
+      val slotSelections = explanation?.ruleDetails?.slotSelections.orEmpty()
+      Text("Уточнить следующий вариант", style = MaterialTheme.typography.titleMedium)
+      Text(
+          "Исключите упражнение или выберите замену для зафиксированного слота. Ручные изменения текущего плана сохранятся.",
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
       )
+      FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        draft.exercises.forEach { exercise ->
+          FilterChip(
+              selected = exercise.exerciseId in refinementExcludeIds,
+              onClick = { onToggleRefinementExclusion(exercise.exerciseId) },
+              enabled = !saving,
+              label = { Text(exerciseChoices.nameFor(exercise.exerciseId) ?: "Упражнение") },
+          )
+        }
+      }
+      if (slotSelections.isNotEmpty()) {
+        Text("Заменить в слотах", style = MaterialTheme.typography.labelLarge)
+        slotSelections.forEach { selection ->
+          val currentName = exerciseChoices.nameFor(selection.exerciseId) ?: "Упражнение"
+          val replacementId = refinementReplacementIds[selection.selectionId]
+          val replacementName = replacementId?.let(exerciseChoices::nameFor)
+          OutlinedButton(
+              onClick = { replacingSelectionId = selection.selectionId },
+              enabled = !saving,
+              modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+          ) {
+            Text(
+                if (replacementName == null) "${selection.slotId}: $currentName"
+                else "${selection.slotId}: $currentName → $replacementName"
+            )
+          }
+        }
+      }
+      replacingSelectionId?.let { selectionId ->
+        val selection = slotSelections.firstOrNull { it.selectionId == selectionId }
+        if (selection != null) {
+          PlanningChoiceSheet(
+              title = "Выберите замену для ${selection.slotId}",
+              choices = exerciseChoices.filter { it.first in availableExerciseIds },
+              selected = setOf(refinementReplacementIds[selectionId] ?: selection.exerciseId),
+              onToggle = { exerciseId -> onReplaceRefinementSelection(selectionId, exerciseId) },
+              onDismiss = { replacingSelectionId = null },
+              singleChoice = true,
+          )
+        }
+      }
       OutlinedButton(
           onClick = onRefine,
-          enabled = !saving && refinement.trim().isNotEmpty() && refinement.length <= 2000,
+          enabled =
+              !saving &&
+                  (refinementExcludeIds.isNotEmpty() || refinementReplacementIds.isNotEmpty()),
           modifier =
               Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics {
                 contentDescription = "Уточнить предложение"
               },
       ) {
-        Text("Уточнить с ИИ")
+        Text("Создать уточнённый вариант")
       }
     }
     val canApply = !saving && !scheduleConflict && !transientInputInvalid && isDraftValid(draft)
@@ -887,7 +950,7 @@ private fun PlannerExplanationCard(
       Text("Пояснение пока недоступно. План можно просмотреть и изменить.")
     } else if (draft != proposal.snapshot.draft) {
       Text(
-          "Вы изменили план. Обоснование ИИ относится к исходному варианту; оценка времени выше пересчитана."
+          "Вы изменили план. Обоснование относится к исходному варианту; оценка времени выше пересчитана."
       )
     } else {
       Text(
@@ -899,7 +962,7 @@ private fun PlannerExplanationCard(
                   explanation.focusMuscles.joinToString { Muscle.valueOf(it).displayName() }
           )
       Text(
-          "Замысел ИИ: " +
+          "Основание выбора: " +
               when (explanation.selectionReason) {
                 "CONTINUITY" -> "продолжить последовательность тренировок."
                 "PRIORITY" -> "учесть выбранные приоритеты."
@@ -916,7 +979,7 @@ private fun PlannerExplanationCard(
                 }
         )
         Text(
-            "Причина по замыслу ИИ: " +
+            "Причина повторения: " +
                 when (explanation.repeatReason) {
                   "CONTINUITY" -> "сохранить преемственность нагрузки."
                   "PRIORITY" -> "поддержать выбранный акцент."
@@ -929,13 +992,13 @@ private fun PlannerExplanationCard(
         Text(
             "План существенно короче желаемого времени. " +
                 when (explanation.shortfallReason) {
-                  "CONSTRAINTS" -> "ИИ связывает недобор с заданными условиями."
+                  "CONSTRAINTS" -> "Недобор связан с заданными условиями."
                   "VOLUME_LIMIT" ->
-                      "ИИ оставил меньший объём, чтобы не добавлять подходы только ради минут."
+                      "Оставлен меньший объём, чтобы не добавлять подходы только ради минут."
                   else -> "Подходящий по времени вариант не получен; причина не сохранена."
                 }
         )
-        Text("Это объяснение выбора ИИ, а не доказательство, что более длинный план невозможен.")
+        Text("Это объяснение выбора, а не доказательство, что более длинный план невозможен.")
       }
     }
   }

@@ -28,7 +28,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
-import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -115,12 +115,12 @@ fun CalendarScreen(
                 actions = {
                   if (!separatePlanningRow) {
                     PillButton(
-                        "AI-план",
+                        "План тренировки",
                         {
                           haptics.tap()
                           onOpenPlanning()
                         },
-                        leadingIcon = Icons.Rounded.AutoAwesome,
+                        leadingIcon = Icons.Rounded.CalendarMonth,
                         compact = true,
                     )
                   }
@@ -128,12 +128,12 @@ fun CalendarScreen(
             )
             if (separatePlanningRow) {
               PillButton(
-                  "AI-план",
+                  "План тренировки",
                   {
                     haptics.tap()
                     onOpenPlanning()
                   },
-                  leadingIcon = Icons.Rounded.AutoAwesome,
+                  leadingIcon = Icons.Rounded.CalendarMonth,
                   compact = true,
                   modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
               )

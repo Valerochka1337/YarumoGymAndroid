@@ -69,6 +69,9 @@ constructor(
     private val clock: WallClock,
     private val dataStore: DataStore<Preferences>,
     @param:ApplicationScope private val inboxScope: CoroutineScope,
+    private val preparations:
+        com.valerochka1337.valerochkagym.data.ai.WorkoutPreparationRepository? =
+        null,
 ) {
   private val dao
     get() = database.trainingProposalDao()
@@ -272,7 +275,9 @@ constructor(
         val proposal =
             try {
               api.detail(session, id)
-            } catch (error: java.io.IOException) {
+            } catch (error: Exception) {
+              if (error !is java.io.IOException && (error as? BackendException)?.status != 404)
+                  throw error
               guard(session)
               val cached =
                   database
@@ -325,30 +330,35 @@ constructor(
         result
       }
 
-  suspend fun refine(editor: ProposalEditor, text: String, requestId: String): ProposalEditor =
+  suspend fun refine(
+      editor: ProposalEditor,
+      changes: List<kotlinx.serialization.json.JsonObject>,
+      requestId: String,
+      desiredMinutes: Int,
+  ): String =
       withContext(Dispatchers.IO) {
         actions.withLock {
           guard(editor.session)
           val proposal = editor.proposal
           require(
-              proposal.status == ProposalStatus.PENDING && proposal.expiresAt > clock.nowMillis()
+              proposal.source == ProposalSource.RULE_BASED &&
+                  proposal.status == ProposalStatus.PENDING &&
+                  proposal.expiresAt > clock.nowMillis()
           )
-          val next = api.refine(editor.session, proposal, text, requestId)
+          val current =
+              dao.draft(editor.session.tokens.userId, proposal.proposalId, proposal.currentVersion)
+          val draft =
+              current?.let { ProposalWire.decode<ApprovalDraft>(it.draftJson.encodeToByteArray()) }
+                  ?: editor.draft
           guard(editor.session)
-          database.withTransaction {
-            dao.saveDraft(
-                TrainingProposalDraftEntity(
-                    editor.session.tokens.userId,
-                    next.proposalId,
-                    next.currentVersion,
-                    ProposalWire.json.encodeToString(next),
-                    ProposalWire.json.encodeToString(next.snapshot.draft),
-                )
-            )
-          }
-          editor.copy(proposal = next, draft = next.snapshot.draft, applied = false).also {
-            upsertInbox(editor.session, next)
-          }
+          requireNotNull(preparations)
+              .enqueueRefinement(
+                  proposal,
+                  draft,
+                  changes,
+                  desiredMinutes = desiredMinutes,
+                  requestId = requestId,
+              )
         }
       }
 
@@ -483,7 +493,7 @@ constructor(
                 ProposalWire.decode<AcceptedProposalResult>(it.encodeToByteArray())
               }
                   ?: try {
-                    api.acceptedResult(session, proposal.proposalId)
+                    api.acceptedResult(session, proposal.proposalId, proposal.source)
                   } catch (error: BackendException) {
                     if (
                         proposal.status == ProposalStatus.PENDING &&
@@ -491,7 +501,12 @@ constructor(
                             error.code == "proposal_not_approved"
                     )
                         try {
-                          api.approve(session, proposal.proposalId, operation.requestBytes)
+                          api.approve(
+                              session,
+                              proposal.proposalId,
+                              operation.requestBytes,
+                              proposal.source,
+                          )
                         } catch (rejection: BackendException) {
                           if (rejection.status == 400 && rejection.code == "invalid_request") {
                             database.withTransaction {
@@ -553,7 +568,12 @@ constructor(
                   "Сначала проверьте результат подтверждения",
               )
           val decision =
-              api.reject(editor.session, editor.proposal.proposalId, editor.proposal.currentVersion)
+              api.reject(
+                  editor.session,
+                  editor.proposal.proposalId,
+                  editor.proposal.currentVersion,
+                  source = editor.proposal.source,
+              )
           guard(editor.session)
           upsertInbox(
               editor.session,

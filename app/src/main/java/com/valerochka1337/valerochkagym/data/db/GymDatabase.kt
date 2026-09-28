@@ -160,7 +160,7 @@ import kotlinx.serialization.json.JsonPrimitive
             com.valerochka1337.valerochkagym.data.db.entity.CoachSessionOutboxEntity::class,
             com.valerochka1337.valerochkagym.data.db.entity.CoachReceiptOutboxEntity::class,
         ],
-    version = 40,
+    version = 41,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -1592,6 +1592,17 @@ abstract class GymDatabase : RoomDatabase() {
           }
         }
 
+    /** v40 → v41: annotate planner jobs without changing any legacy request or Coach bytes. */
+    val MIGRATION_40_41: Migration =
+        object : Migration(40, 41) {
+          override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                "ALTER TABLE workout_preparations ADD COLUMN protocolVersion INTEGER NOT NULL DEFAULT 1"
+            )
+            db.execSQL("ALTER TABLE workout_preparations ADD COLUMN proposalId TEXT")
+          }
+        }
+
     /** Единственный production/test реестр всех поддерживаемых путей до текущей схемы. */
     val ALL_MIGRATIONS: Array<Migration> =
         arrayOf(
@@ -1634,6 +1645,7 @@ abstract class GymDatabase : RoomDatabase() {
             MIGRATION_37_38,
             MIGRATION_38_39,
             MIGRATION_39_40,
+            MIGRATION_40_41,
         )
 
     private val legacyCoachJson = Json {

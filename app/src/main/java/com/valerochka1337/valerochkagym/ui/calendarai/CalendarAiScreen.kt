@@ -1,7 +1,6 @@
 package com.valerochka1337.valerochkagym.ui.calendarai
 
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -15,7 +14,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -40,13 +38,11 @@ import com.valerochka1337.valerochkagym.ui.components.PlanningDateTimeFields
 import com.valerochka1337.valerochkagym.ui.components.PlanningScreen
 import com.valerochka1337.valerochkagym.ui.components.rememberDeviceTimeZone
 import com.valerochka1337.valerochkagym.ui.haptics.gymHaptics
-import com.valerochka1337.valerochkagym.ui.profile.AiProfilePromptDialog
 
 @Composable
 fun CalendarAiScreen(
     onBack: () -> Unit,
     onOpenProposal: (String) -> Unit,
-    onOpenProfile: () -> Unit,
     viewModel: CalendarAiViewModel = hiltViewModel(),
 ) {
   val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -55,7 +51,6 @@ fun CalendarAiScreen(
   LaunchedEffect(viewModel, zone) { viewModel.synchronizeDeviceTimeZone() }
   LaunchedEffect(viewModel, onBack) { viewModel.saved.collect { onBack() } }
   LaunchedEffect(viewModel, onOpenProposal) { viewModel.openProposal.collect(onOpenProposal) }
-  LaunchedEffect(viewModel, onOpenProfile) { viewModel.openProfile.collect { onOpenProfile() } }
   CalendarAiContent(
       state = state,
       onBack = onBack,
@@ -66,19 +61,11 @@ fun CalendarAiScreen(
       onExcludedExercise = viewModel::toggleExcludedExercise,
       onExcludedEquipment = viewModel::toggleExcludedEquipment,
       onPriorityMuscle = viewModel::togglePriorityMuscle,
-      onIncludeNotes = viewModel::setIncludeNotes,
       onDuration = viewModel::setDuration,
-      onCurrentState = viewModel::setCurrentState,
-      onPreferences = viewModel::setPreferences,
       onGenerate = {
         haptics.confirm()
         viewModel.generate()
       },
-      onPromptVisible = viewModel::acknowledgeProfilePrompt,
-      onPromptFill = viewModel::fillProfileFromPrompt,
-      onPromptContinue = { viewModel.continueAfterProfilePrompt(it) },
-      onPromptDisable = { viewModel.continueAfterProfilePrompt(it, disableFuturePrompts = true) },
-      onPromptDismiss = viewModel::dismissProfilePrompt,
   )
 }
 
@@ -93,20 +80,12 @@ internal fun CalendarAiContent(
     onExcludedExercise: (String) -> Unit,
     onExcludedEquipment: (String) -> Unit,
     onPriorityMuscle: (String) -> Unit,
-    onIncludeNotes: (Boolean) -> Unit,
     onDuration: (String) -> Unit,
-    onCurrentState: (String) -> Unit,
-    onPreferences: (String) -> Unit,
     onGenerate: () -> Unit,
-    onPromptVisible: (String) -> Unit,
-    onPromptFill: (String) -> Unit,
-    onPromptContinue: (String) -> Unit,
-    onPromptDisable: (String) -> Unit,
-    onPromptDismiss: (String) -> Unit,
 ) {
   var extras by rememberSaveable { mutableStateOf(false) }
   PlanningScreen(
-      "Тренировка с ИИ",
+      "Планирование тренировки",
       onBack,
       bottomBar = {
         PillButton(
@@ -121,7 +100,7 @@ internal fun CalendarAiContent(
       },
   ) {
     Text(
-        "Укажите, когда и где хотите заниматься. ИИ предложит план — вы сможете проверить и изменить его перед добавлением в календарь.",
+        "Укажите, когда и где хотите заниматься. План можно проверить и изменить перед добавлением в календарь.",
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
@@ -152,42 +131,6 @@ internal fun CalendarAiContent(
           onPriorityMuscle,
           null,
       )
-      GymCard(modifier = Modifier.fillMaxWidth()) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-          Column(modifier = Modifier.weight(1f)) {
-            Text("Использовать заметки", style = MaterialTheme.typography.titleMedium)
-            Text(
-                "Заметки завершённых тренировок и личные подсказки помогут составить запрос.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-          }
-          Switch(
-              checked = state.form.includeNotes,
-              onCheckedChange = onIncludeNotes,
-              modifier = Modifier.semantics { contentDescription = "Использовать заметки" },
-          )
-        }
-      }
-      GymCard(modifier = Modifier.fillMaxWidth()) {
-        Text("Дополнительно", style = MaterialTheme.typography.titleMedium)
-        OutlinedTextField(
-            value = state.form.currentState,
-            onValueChange = onCurrentState,
-            modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
-            shape = MaterialTheme.shapes.medium,
-            label = { Text("Текущее состояние (необязательно)") },
-            minLines = 2,
-        )
-        OutlinedTextField(
-            value = state.form.preferences,
-            onValueChange = onPreferences,
-            modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
-            shape = MaterialTheme.shapes.medium,
-            label = { Text("Предпочтения (необязательно)") },
-            minLines = 2,
-        )
-      }
     }
     state.error?.let { message ->
       Text(
@@ -196,16 +139,6 @@ internal fun CalendarAiContent(
           modifier = Modifier.semantics { contentDescription = "Ошибка: $message" },
       )
     }
-  }
-  state.profilePrompt?.let { prompt ->
-    AiProfilePromptDialog(
-        token = prompt.token,
-        onVisible = onPromptVisible,
-        onFillProfile = onPromptFill,
-        onContinue = onPromptContinue,
-        onDisable = onPromptDisable,
-        onDismiss = onPromptDismiss,
-    )
   }
 }
 
@@ -252,7 +185,7 @@ private fun ChoiceCard(
           choices.map { it.id to it.label },
           selected,
           onToggle,
-          emptyText = if (title.startsWith("Исключить")) "Без исключений" else "На усмотрение ИИ",
+          emptyText = if (title.startsWith("Исключить")) "Без исключений" else "Без предпочтений",
       )
       return@GymCard
     }

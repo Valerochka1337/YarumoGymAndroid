@@ -60,6 +60,7 @@ import java.time.ZoneOffset
 @Composable
 fun ProfileScreen(
     onBack: () -> Unit,
+    onOpenMappings: () -> Unit = {},
     modifier: Modifier = Modifier,
     viewModel: ProfileViewModel = hiltViewModel(),
 ) {
@@ -110,6 +111,7 @@ fun ProfileScreen(
         haptics.tap()
         viewModel.removeExerciseAccent(it)
       },
+      onOpenMappings = onOpenMappings,
       modifier = modifier,
   )
 }
@@ -136,6 +138,7 @@ internal fun ProfileScreenContent(
     onPlannerPreferenceSheet: (Boolean) -> Unit = {},
     onExerciseAccent: (Long, ExerciseAccent) -> Unit = { _, _ -> },
     onRemoveExerciseAccent: (String) -> Unit = {},
+    onOpenMappings: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
   GlowBackground(modifier = modifier) {
@@ -240,6 +243,20 @@ internal fun ProfileScreenContent(
                 text = "Настроить (${state.plannerAccents.size})",
                 onClick = { onPlannerPreferenceSheet(true) },
                 compact = true,
+            )
+          }
+          GymCard(modifier = Modifier.fillMaxWidth()) {
+            Text("Личные упражнения", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Классифицируйте личные упражнения, чтобы они могли попасть в автоматический план.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            PillButton(
+                text = "Открыть классификации",
+                onClick = onOpenMappings,
+                compact = true,
+                modifier = Modifier.padding(top = 8.dp),
             )
           }
           ProfileChoiceCard(

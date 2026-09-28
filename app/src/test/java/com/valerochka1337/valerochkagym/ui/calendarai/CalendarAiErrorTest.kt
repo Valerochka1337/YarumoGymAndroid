@@ -16,7 +16,7 @@ class CalendarAiErrorTest {
             "ai_context_stale" to "синхронизацию",
             "ai_sync_failed" to "синхронизацию",
             "unauthorized" to "Войдите",
-            "ai_unavailable" to "недоступен",
+            "ai_unavailable" to "временно занят",
             "ai_timeout" to "не успел",
             "ai_invalid_response" to "не прошёл проверку",
             "ai_no_candidates" to "Нет подходящих упражнений",

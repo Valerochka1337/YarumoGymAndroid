@@ -11,6 +11,8 @@ data class PreparationEntity(
     val intentJson: String,
     val replacesJson: String,
     val requestJson: String? = null,
+    @ColumnInfo(defaultValue = "1") val protocolVersion: Int = 1,
+    val proposalId: String? = null,
     val revision: Long? = null,
     val catalogRevision: Long? = null,
     val generation: Long? = null,

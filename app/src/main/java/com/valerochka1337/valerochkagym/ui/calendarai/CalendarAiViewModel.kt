@@ -10,14 +10,12 @@ import com.valerochka1337.valerochkagym.data.db.LocalEquipmentCatalog
 import com.valerochka1337.valerochkagym.data.db.dao.ExerciseDao
 import com.valerochka1337.valerochkagym.data.db.dao.GymDao
 import com.valerochka1337.valerochkagym.data.db.entity.Muscle
-import com.valerochka1337.valerochkagym.data.profile.AiProfilePromptGate
 import com.valerochka1337.valerochkagym.domain.displayName
 import com.valerochka1337.valerochkagym.service.WallClock
 import com.valerochka1337.valerochkagym.ui.components.PlanningDateTimeResolution
 import com.valerochka1337.valerochkagym.ui.components.displayPlanningDateTime
 import com.valerochka1337.valerochkagym.ui.components.resolvePlanningDateTime
 import com.valerochka1337.valerochkagym.ui.components.tomorrowAtSix
-import com.valerochka1337.valerochkagym.ui.profile.AiProfilePromptUi
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.time.ZoneId
 import java.util.UUID
@@ -49,10 +47,8 @@ data class CalendarAiForm(
     val excludedExerciseIds: Set<String> = emptySet(),
     val excludedEquipmentIds: Set<String> = emptySet(),
     val priorityMuscles: Set<String> = emptySet(),
-    val includeNotes: Boolean = true,
+    val includeNotes: Boolean = false,
     val availableDurationMinutes: String = "60",
-    val currentState: String = "",
-    val preferences: String = "",
 )
 
 data class CalendarAiUiState(
@@ -64,7 +60,6 @@ data class CalendarAiUiState(
         Muscle.entries.map { CalendarAiChoice(it.name, it.displayName()) },
     val generating: Boolean = false,
     val error: String? = null,
-    val profilePrompt: AiProfilePromptUi? = null,
 )
 
 @HiltViewModel
@@ -74,7 +69,6 @@ constructor(
     private val repository: com.valerochka1337.valerochkagym.data.ai.WorkoutPreparationRepository,
     private val sessions: BackendSessionStore,
     private val sync: BackendSync,
-    private val profileGate: AiProfilePromptGate,
     private val clock: WallClock,
     exercises: ExerciseDao,
     gyms: GymDao,
@@ -93,9 +87,6 @@ constructor(
   private val _openProposal = Channel<Pair<Long, String>>(Channel.BUFFERED)
   val openProposal =
       _openProposal.receiveAsFlow().filter { it.first == sessions.sessionEpoch }.map { it.second }
-  private val _openProfile = Channel<Long>(Channel.BUFFERED)
-  val openProfile = _openProfile.receiveAsFlow().filter { it == sessions.sessionEpoch }
-
   private var request: Job? = null
   private var generation = 0L
   private var sessionEpoch = sessions.sessionEpoch
@@ -185,57 +176,14 @@ constructor(
     copy(priorityMuscles = priorityMuscles.toggle(id))
   }
 
-  fun setIncludeNotes(value: Boolean) = updateForm { copy(includeNotes = value) }
-
   fun setDuration(value: String) = updateForm { copy(availableDurationMinutes = value) }
 
-  fun setCurrentState(value: String) = updateForm { copy(currentState = value) }
-
-  fun setPreferences(value: String) = updateForm { copy(preferences = value) }
-
   fun generate() {
-    if (mutableState.value.generating || mutableState.value.profilePrompt != null) return
+    if (mutableState.value.generating) return
     val intent = intentOrNull() ?: return
     val token = ++generation
     val epoch = sessions.sessionEpoch
     request = viewModelScope.launch { generateIntent(token, epoch, intent) }
-  }
-
-  fun acknowledgeProfilePrompt(token: String) {
-    viewModelScope.launch { profileGate.acknowledgeVisible(token) }
-  }
-
-  fun continueAfterProfilePrompt(token: String, disableFuturePrompts: Boolean = false) {
-    val intent = intentOrNull() ?: return
-    val tokenGeneration = generation
-    val epoch = sessions.sessionEpoch
-    viewModelScope.launch {
-      if (mutableState.value.profilePrompt?.token != token) return@launch
-      val consumed = profileGate.consume(token, disableFuturePrompts)
-      if (mutableState.value.profilePrompt?.token != token) return@launch
-      mutableState.update { it.copy(profilePrompt = null) }
-      if (consumed) generateIntent(tokenGeneration, epoch, intent)
-    }
-  }
-
-  fun fillProfileFromPrompt(token: String) {
-    viewModelScope.launch {
-      if (mutableState.value.profilePrompt?.token != token) return@launch
-      val consumed = profileGate.consume(token, disableFuturePrompts = false)
-      if (mutableState.value.profilePrompt?.token != token) return@launch
-      mutableState.update { it.copy(profilePrompt = null) }
-      if (consumed) _openProfile.send(sessions.sessionEpoch)
-    }
-  }
-
-  fun dismissProfilePrompt(token: String) {
-    viewModelScope.launch {
-      if (mutableState.value.profilePrompt?.token != token) return@launch
-      profileGate.cancel(token)
-      if (mutableState.value.profilePrompt?.token == token) {
-        mutableState.update { it.copy(profilePrompt = null) }
-      }
-    }
   }
 
   private suspend fun generateIntent(token: Long, epoch: Long, intent: CalendarAiIntent) {
@@ -266,27 +214,16 @@ constructor(
   private fun invalidateForContextChange() {
     generation++
     request?.cancel()
-    mutableState.value.profilePrompt?.let { prompt ->
-      viewModelScope.launch { profileGate.cancel(prompt.token) }
-    }
     val form = defaultForm()
     clearSavedForm()
     mutableState.update {
       it.copy(
           form = form,
           generating = false,
-          profilePrompt = null,
           error = "Аккаунт или синхронизация изменились. Проверьте форму ещё раз",
       )
     }
     saveForm(form)
-  }
-
-  override fun onCleared() {
-    mutableState.value.profilePrompt?.token?.let { token ->
-      viewModelScope.launch(kotlinx.coroutines.NonCancellable) { profileGate.cancel(token) }
-    }
-    super.onCleared()
   }
 
   private fun intentOrNull(): CalendarAiIntent? {
@@ -316,10 +253,8 @@ constructor(
             excludedExerciseIds = form.excludedExerciseIds.sorted(),
             excludedEquipmentIds = form.excludedEquipmentIds.sorted(),
             priorityMuscles = form.priorityMuscles.sorted(),
-            includeNotes = form.includeNotes,
+            includeNotes = false,
             availableDurationMinutes = duration,
-            currentState = form.currentState.trim().ifEmpty { null },
-            preferences = form.preferences.trim().ifEmpty { null },
         )
     return intent.takeIf { it.valid(clock.nowMillis()) } ?: showFormError(FormError.Parameters)
   }
@@ -404,8 +339,6 @@ constructor(
         priorityMuscles = intent.priorityMuscles.toSet(),
         includeNotes = intent.includeNotes,
         availableDurationMinutes = intent.availableDurationMinutes.toString(),
-        currentState = intent.currentState.orEmpty(),
-        preferences = intent.preferences.orEmpty(),
     )
   }
 
@@ -445,10 +378,8 @@ constructor(
             excludedExerciseIds = savedStateHandle.stringSet(SAVED_EXERCISES),
             excludedEquipmentIds = savedStateHandle.stringSet(SAVED_EQUIPMENT),
             priorityMuscles = savedStateHandle.stringSet(SAVED_MUSCLES),
-            includeNotes = savedStateHandle.get<Boolean>(SAVED_NOTES) ?: true,
+            includeNotes = false,
             availableDurationMinutes = savedStateHandle.get<String>(SAVED_DURATION) ?: "60",
-            currentState = savedStateHandle.get<String>(SAVED_CURRENT_STATE).orEmpty(),
-            preferences = savedStateHandle.get<String>(SAVED_PREFERENCES).orEmpty(),
         )
     return restored.preservedInstantMillis?.let { instant ->
       val displayed = displayPlanningDateTime(instant, deviceZone)
@@ -469,10 +400,7 @@ constructor(
     savedStateHandle[SAVED_EXERCISES] = ArrayList(form.excludedExerciseIds.sorted())
     savedStateHandle[SAVED_EQUIPMENT] = ArrayList(form.excludedEquipmentIds.sorted())
     savedStateHandle[SAVED_MUSCLES] = ArrayList(form.priorityMuscles.sorted())
-    savedStateHandle[SAVED_NOTES] = form.includeNotes
     savedStateHandle[SAVED_DURATION] = form.availableDurationMinutes
-    savedStateHandle[SAVED_CURRENT_STATE] = form.currentState
-    savedStateHandle[SAVED_PREFERENCES] = form.preferences
   }
 
   private fun SavedStateHandle.stringSet(key: String): Set<String> =
@@ -504,8 +432,6 @@ constructor(
     const val SAVED_MUSCLES = "calendar_ai_form_muscles"
     const val SAVED_NOTES = "calendar_ai_form_notes"
     const val SAVED_DURATION = "calendar_ai_form_duration"
-    const val SAVED_CURRENT_STATE = "calendar_ai_form_current_state"
-    const val SAVED_PREFERENCES = "calendar_ai_form_preferences"
     val savedKeys =
         listOf(
             SAVED_OWNER,
@@ -520,8 +446,6 @@ constructor(
             SAVED_MUSCLES,
             SAVED_NOTES,
             SAVED_DURATION,
-            SAVED_CURRENT_STATE,
-            SAVED_PREFERENCES,
         )
   }
 }

@@ -86,4 +86,62 @@ class PlannerExplanationTest {
         ),
     )
   }
+
+  @Test
+  fun `frozen deterministic shortfall explanation round trips through strict validator`() {
+    val fixture =
+        requireNotNull(
+                javaClass.classLoader.getResourceAsStream(
+                    "deterministic-planner-v2-shortfall-contract.json"
+                )
+            )
+            .bufferedReader()
+            .use { it.readText() }
+    val explanation = ProposalWire.decode<RuleBasedPlannerExplanation>(fixture.encodeToByteArray())
+    val push = "20000000-0000-4000-8000-000000000001"
+    val core = "20000000-0000-4000-8000-000000000002"
+    val ruleProposal =
+        TrainingProposal(
+            "10000000-0000-4000-8000-000000000001",
+            ProposalAuthor(ProposalSource.RULE_BASED, null),
+            id,
+            ProposalSource.RULE_BASED,
+            ProposalStatus.PENDING,
+            1,
+            1_805_005_800_000,
+            1_805_005_800_000,
+            1_805_105_800_000,
+            ProposalSnapshot(
+                1,
+                ApprovalDraft(
+                    "План",
+                    emptyList(),
+                    listOf(
+                        ProposalPlannedExercise(
+                            push,
+                            null,
+                            listOf(ProposalPlannedSet(null, 1, null, null, null)),
+                        ),
+                        ProposalPlannedExercise(
+                            core,
+                            null,
+                            listOf(ProposalPlannedSet(null, null, 600, null, null)),
+                        ),
+                    ),
+                    1_805_006_000_000,
+                    "UTC",
+                ),
+                1,
+                1,
+                1_805_005_800_000,
+            ),
+        )
+    assertTrue(explanation.validFor(ruleProposal))
+    assertEquals(
+        explanation,
+        ProposalWire.decode<RuleBasedPlannerExplanation>(
+            ProposalWire.json.encodeToString(explanation).encodeToByteArray()
+        ),
+    )
+  }
 }

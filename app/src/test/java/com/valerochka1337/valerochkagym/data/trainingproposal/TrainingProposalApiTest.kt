@@ -26,7 +26,10 @@ class TrainingProposalApiTest {
     var beforeReturn: () -> Unit = {}
     var cancellation = false
     var responseBody = RESULT
+    var supportsPlanner = false
     val retryFlags = mutableListOf<Boolean>()
+    val paths = mutableListOf<String>()
+    val requestHeaders = mutableListOf<Map<String, String>>()
 
     override suspend fun public(method: String, path: String, body: JsonElement?) = error("unused")
 
@@ -43,6 +46,20 @@ class TrainingProposalApiTest {
         retryOnUnauthorized: Boolean,
         maxResponseBytes: Int?,
     ): BackendResponse {
+      paths += path
+      requestHeaders += headers
+      if (path == "/planning/v2/capabilities") {
+        if (!supportsPlanner) throw BackendException(404, "not_found", "legacy server")
+        val capability =
+            "{\"schemaVersion\":2,\"protocol\":2,\"capability\":\"deterministic-workout-planner-v2\"}"
+        return BackendResponse(
+            Json.parseToJsonElement(capability),
+            capability.encodeToByteArray(),
+            setOf("deterministic-workout-planner-v2"),
+            expectedOwner,
+            requireNotNull(expectedSessionEpoch),
+        )
+      }
       assertEquals(OWNER, expectedOwner)
       assertEquals(store.sessionEpoch, expectedSessionEpoch)
       assertEquals(method == "GET", retryOnUnauthorized)
@@ -55,7 +72,8 @@ class TrainingProposalApiTest {
       return BackendResponse(
           response,
           responseBody.encodeToByteArray(),
-          setOf("calendar-plans"),
+          if (supportsPlanner) setOf("calendar-plans", "deterministic-workout-planner-v2")
+          else setOf("calendar-plans"),
           expectedOwner,
           requireNotNull(expectedSessionEpoch),
       )
@@ -88,6 +106,26 @@ class TrainingProposalApiTest {
     assertEquals(2, transport.bodies.size)
     transport.bodies.forEach { assertArrayEquals(bytes, it) }
   }
+
+  @Test
+  fun `confirmed planner server lists proposals with protocol two and never retries v1`() =
+      runTest {
+        val store = Store()
+        val transport = Transport(store).also { it.supportsPlanner = true }
+        val api = TrainingProposalApi(transport, store)
+        transport.responseBody = "{\"items\":[],\"nextCursor\":null}"
+
+        assertTrue(api.list(requireNotNull(store.snapshot())).items.isEmpty())
+        assertEquals(
+            listOf("/planning/v2/capabilities", "/training-proposals?limit=50"),
+            transport.paths,
+        )
+        assertEquals(mapOf("X-Planner-Protocol" to "2"), transport.requestHeaders.first())
+        assertEquals(
+            mapOf("X-Gym-Capabilities" to "calendar-plans", "X-Planner-Protocol" to "2"),
+            transport.requestHeaders.last(),
+        )
+      }
 
   @Test
   fun `late A B A result rejects monotonic epoch and cancellation propagates`() = runTest {

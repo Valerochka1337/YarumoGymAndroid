@@ -39,7 +39,8 @@ data class ApprovalRequest(val operationId: String, val version: Int, val draft:
 
 @Serializable
 enum class ProposalSource {
-  AI
+  AI,
+  RULE_BASED,
 }
 
 @Serializable
@@ -90,15 +91,6 @@ data class AcceptedProposalResult(
 )
 
 @Serializable data class ProposalRejectRequest(val version: Int, val reason: String?)
-
-@Serializable
-data class CalendarRefinementRequest(
-    val requestId: String,
-    val expectedRevision: Long,
-    val expectedCatalogRevision: Long,
-    val expectedProposalVersion: Int,
-    val refinement: String,
-)
 
 @Serializable
 data class ProposalDecision(
@@ -229,8 +221,8 @@ internal object ProposalWire {
   fun valid(proposal: TrainingProposal): Boolean =
       uuid(proposal.proposalId) &&
           uuid(proposal.recipientId) &&
-          proposal.source == ProposalSource.AI &&
-          proposal.author.kind == ProposalSource.AI &&
+          proposal.source in setOf(ProposalSource.AI, ProposalSource.RULE_BASED) &&
+          proposal.author.kind == proposal.source &&
           proposal.author.accountId == null &&
           proposal.currentVersion > 0 &&
           proposal.currentVersion == proposal.snapshot.version &&

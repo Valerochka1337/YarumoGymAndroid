@@ -36,6 +36,7 @@ import com.valerochka1337.valerochkagym.ui.history.WorkoutDetailScreen
 import com.valerochka1337.valerochkagym.ui.library.ExerciseLibraryScreen
 import com.valerochka1337.valerochkagym.ui.measurements.MeasurementEditorScreen
 import com.valerochka1337.valerochkagym.ui.measurements.MeasurementsScreen
+import com.valerochka1337.valerochkagym.ui.profile.PlannerExerciseMappingScreen
 import com.valerochka1337.valerochkagym.ui.profile.ProfileScreen
 import com.valerochka1337.valerochkagym.ui.routine.RoutineDetailScreen
 import com.valerochka1337.valerochkagym.ui.routine.RoutineEditorScreen
@@ -237,7 +238,6 @@ fun GymNavGraph(
       CalendarAiScreen(
           onBack = { navController.popBackStack() },
           onOpenProposal = { navController.navigate("training_proposal/${Uri.encode(it)}") },
-          onOpenProfile = { navController.navigate(GymRoutes.PROFILE) },
       )
     }
     composable("training_proposals") {
@@ -290,7 +290,15 @@ fun GymNavGraph(
       )
     }
 
-    composable(GymRoutes.PROFILE) { ProfileScreen(onBack = { navController.popBackStack() }) }
+    composable(GymRoutes.PROFILE) {
+      ProfileScreen(
+          onBack = { navController.popBackStack() },
+          onOpenMappings = { navController.navigate("planner_exercise_mappings") },
+      )
+    }
+    composable("planner_exercise_mappings") {
+      PlannerExerciseMappingScreen(onBack = { navController.popBackStack() })
+    }
 
     composable(GymRoutes.GYMS) {
       GymsScreen(

@@ -14,11 +14,11 @@ import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
 @Config(application = android.app.Application::class)
-class Migration1To39Test {
+class Migration1To41Test {
   @get:Rule
   val helper =
       MigrationTestHelper(InstrumentationRegistry.getInstrumentation(), GymDatabase::class.java)
-  private val name = "planner-accents-1-38.db"
+  private val name = "planner-accents-1-41.db"
 
   @After
   fun cleanup() {
@@ -26,11 +26,11 @@ class Migration1To39Test {
   }
 
   @Test
-  fun `full migration retains routines and reaches the concurrent preparation schema`() {
+  fun `full migration retains routines and reaches the deterministic preparation schema`() {
     helper.createDatabase(name, 1).use {
       it.execSQL("INSERT INTO routines(id,name,note) VALUES(1,'Ноги','')")
     }
-    helper.runMigrationsAndValidate(name, 39, true, *GymDatabase.ALL_MIGRATIONS).use { db ->
+    helper.runMigrationsAndValidate(name, 41, true, *GymDatabase.ALL_MIGRATIONS).use { db ->
       db.query("SELECT COUNT(*) FROM routines WHERE id=1").use {
         it.moveToFirst()
         assertEquals(1, it.getInt(0))
@@ -38,6 +38,12 @@ class Migration1To39Test {
       db.query("SELECT COUNT(*) FROM planner_exercise_accent_markers").use {
         it.moveToFirst()
         assertEquals(0, it.getInt(0))
+      }
+      db.query("PRAGMA table_info(workout_preparations)").use { columns ->
+        val names =
+            generateSequence { if (columns.moveToNext()) columns.getString(1) else null }.toSet()
+        assertEquals(true, "protocolVersion" in names)
+        assertEquals(true, "proposalId" in names)
       }
     }
   }
