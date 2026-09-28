@@ -36,7 +36,6 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.valerochka1337.valerochkagym.data.ai.PreparationEntity
-import com.valerochka1337.valerochkagym.data.ai.WorkoutPreparationRepository
 import com.valerochka1337.valerochkagym.data.db.PlannedSet
 import com.valerochka1337.valerochkagym.data.db.entity.ExerciseType
 import com.valerochka1337.valerochkagym.data.db.entity.Muscle
@@ -45,6 +44,7 @@ import com.valerochka1337.valerochkagym.data.trainingproposal.PlannerExplanation
 import com.valerochka1337.valerochkagym.data.trainingproposal.ProposalPlannedExercise
 import com.valerochka1337.valerochkagym.data.trainingproposal.ProposalPlannedSet
 import com.valerochka1337.valerochkagym.data.trainingproposal.ProposalSource
+import com.valerochka1337.valerochkagym.data.trainingproposal.ProposalWire
 import com.valerochka1337.valerochkagym.data.trainingproposal.TrainingProposal
 import com.valerochka1337.valerochkagym.data.trainingproposal.estimatedSeconds
 import com.valerochka1337.valerochkagym.domain.PlannerDuration
@@ -87,6 +87,10 @@ fun TrainingProposalInboxContent(
     onCreateAi: (() -> Unit)? = null,
     onDelete: (TrainingProposal) -> Unit = {},
     preparations: List<PreparationEntity> = emptyList(),
+    onRetryPreparation: (String) -> Unit = {},
+    retryingPreparationId: String? = null,
+    preparationRetryError: String? = null,
+    preparationRetryErrorId: String? = null,
 ) {
   val haptics = gymHaptics()
   var deleteTarget by remember { mutableStateOf<TrainingProposal?>(null) }
@@ -124,14 +128,38 @@ fun TrainingProposalInboxContent(
           modifier = Modifier.fillMaxWidth(),
       )
     }
-    val activePreparations =
-        preparations.filter { it.state in WorkoutPreparationRepository.activeStates }
-    activePreparations.forEach { preparation ->
-      proposalCalculationLabel(preparation.state)?.let { calculation ->
-        key(preparation.requestId) { ProposalCalculationCard(preparation, calculation) }
+    val replacedRequestIds =
+        preparations
+            .flatMap { preparation ->
+              runCatching {
+                    ProposalWire.json.decodeFromString<List<String>>(preparation.replacesJson)
+                  }
+                  .getOrDefault(emptyList())
+            }
+            .toSet()
+    val calculationPreparations =
+        preparations.filter { preparation ->
+          preparation.state != "READY" &&
+              preparation.requestId !in replacedRequestIds &&
+              proposalCalculationLabel(preparation.state, preparation.errorCode) != null
+        }
+    calculationPreparations.forEach { preparation ->
+      proposalCalculationLabel(preparation.state, preparation.errorCode)?.let { calculation ->
+        key(preparation.requestId) {
+          ProposalCalculationCard(
+              preparation = preparation,
+              label = calculation,
+              onRetry = { onRetryPreparation(preparation.requestId) },
+              retrying = retryingPreparationId == preparation.requestId,
+              retryEnabled =
+                  retryingPreparationId == null || retryingPreparationId == preparation.requestId,
+              retryError =
+                  preparationRetryError.takeIf { preparationRetryErrorId == preparation.requestId },
+          )
+        }
       }
     }
-    if (!loading && error == null && items.isEmpty() && activePreparations.isEmpty()) {
+    if (!loading && error == null && items.isEmpty() && calculationPreparations.isEmpty()) {
       GymCard(Modifier.fillMaxWidth()) {
         Text("Пока нет предложений", style = MaterialTheme.typography.titleMedium)
         Text(

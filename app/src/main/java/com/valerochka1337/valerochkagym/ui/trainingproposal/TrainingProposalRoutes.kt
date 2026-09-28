@@ -17,6 +17,10 @@ fun TrainingProposalInboxScreen(
 ) {
   val state by viewModel.uiState.collectAsStateWithLifecycle()
   val preparations by preparationViewModel.all.collectAsStateWithLifecycle()
+  val retryingPreparationId by preparationViewModel.retryingRequestId.collectAsStateWithLifecycle()
+  val preparationRetryError by preparationViewModel.error.collectAsStateWithLifecycle()
+  val preparationRetryErrorId by
+      preparationViewModel.retryErrorRequestId.collectAsStateWithLifecycle()
   LaunchedEffect(viewModel, state.inbox.bindingGeneration) { viewModel.ensureInbox() }
   preparations
       .filter {
@@ -37,6 +41,10 @@ fun TrainingProposalInboxScreen(
         onCreateAi = onCreateAi,
         onDelete = viewModel::delete,
         preparations = preparations,
+        onRetryPreparation = preparationViewModel::retry,
+        retryingPreparationId = retryingPreparationId,
+        preparationRetryError = preparationRetryError,
+        preparationRetryErrorId = preparationRetryErrorId,
     )
   }
 }
